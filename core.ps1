@@ -55,6 +55,34 @@ Clear-Host
 $Script:ScriptVersion = "3.3"
 
 # ============================================================
+#  TWEAK CATALOG (Data-Driven Engine)
+# ============================================================
+$Script:TweakCatalog = @(
+    @{
+        Key         = "DarkMode"
+        Category    = "Personalization"
+        Description = "Switches Windows to dark theme (apps + system)."
+        Entries = @(
+            @{ Path = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"; Name = "AppsUseLightTheme";   OnValue = 0; OffValue = 1; Type = "DWord" }
+            @{ Path = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"; Name = "SystemUsesLightTheme"; OnValue = 0; OffValue = 1; Type = "DWord" }
+        )
+    },
+    @{
+        Key         = "GameMode"
+        Category    = "Performance"
+        Description = "Optimizes Windows for gaming, kills background recording."
+        Entries = @(
+            @{ Path = "HKCU:\Software\Microsoft\GameBar";           Name = "AllowAutoGameMode";               OnValue = 1; OffValue = 0; Type = "DWord" }
+            @{ Path = "HKCU:\Software\Microsoft\GameBar";           Name = "AutoGameModeEnabled";              OnValue = 1; OffValue = 0; Type = "DWord" }
+            @{ Path = "HKCU:\System\GameConfigStore";               Name = "GameDVR_Enabled";                  OnValue = 0; OffValue = 1; Type = "DWord" }
+            @{ Path = "HKCU:\System\GameConfigStore";               Name = "GameDVR_FSEBehaviorMode";          OnValue = 2; OffValue = 0; Type = "DWord" }
+            @{ Path = "HKCU:\System\GameConfigStore";               Name = "GameDVR_HonorUserFSEBehaviorMode"; OnValue = 1; OffValue = 0; Type = "DWord" }
+            @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR"; Name = "AppCaptureEnabled";   OnValue = 0; OffValue = 1; Type = "DWord" }
+        )
+    }
+)
+
+# ============================================================
 #  OS DETECTION
 # ============================================================
 $Script:OSBuild   = [System.Environment]::OSVersion.Version.Build
@@ -163,7 +191,7 @@ if (Get-Command choco -ErrorAction SilentlyContinue) {
 }
 
 # ============================================================
-#  GLOBAL STATE & LUXURY UI PRIMITIVES
+#  GLOBAL STATE & LUXU 
 # ============================================================
 $Global:UIWidth             = 63
 $Global:PanelWidth          = 54
@@ -1966,30 +1994,42 @@ function Enable-UltimatePerformancePowerPlan {
     }
 }
 
-function Enable-GameMode {
-    Write-SectionHeader "Game Mode & Game Bar Optimization"
-    New-SystemRestorePoint
-    $Path1 = "HKCU:\Software\Microsoft\GameBar"
-    $Path2 = "HKCU:\System\GameConfigStore"
-    $AlreadyOn = (Get-RegValue -Path $Path1 -Name "AutoGameModeEnabled") -eq 1 -and (Get-RegValue -Path $Path2 -Name "GameDVR_Enabled") -eq 0
-    if ($AlreadyOn) {
-        Write-AlreadyOK "Game Mode is already enabled and Game Bar recording is already disabled."
+# ============================================================
+#  DATA-DRIVEN TWEAK ENGINE
+# ============================================================
+function Test-TweakAlreadyOn {
+    param([hashtable]$Tweak)
+    foreach ($E in $Tweak.Entries) {
+        $Current = Get-RegValue -Path $E.Path -Name $E.Name
+        if ("$Current" -ne "$($E.OnValue)") { return $false }
+    }
+    return $true
+}
+
+function Invoke-Tweak {
+    param(
+        [Parameter(Mandatory)][hashtable]$Tweak,
+        [ValidateSet("On","Off")][string]$State = "On"
+    )
+
+    Write-SectionHeader $Tweak.Description
+
+    if ($State -eq "On" -and (Test-TweakAlreadyOn -Tweak $Tweak)) {
+        Write-AlreadyOK "$($Tweak.Key) is already applied."
         return
     }
-    Backup-OriginalRegValue -TweakKey "GameMode" -Path $Path1 -Name "AllowAutoGameMode"
-    Backup-OriginalRegValue -TweakKey "GameMode" -Path $Path1 -Name "AutoGameModeEnabled"
-    Backup-OriginalRegValue -TweakKey "GameMode" -Path $Path2 -Name "GameDVR_Enabled"
-    try {
-        Set-ItemProperty -Path $Path1 -Name "AllowAutoGameMode" -Value 1 -Type DWord -Force
-        Set-ItemProperty -Path $Path1 -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force
-        Set-ItemProperty -Path $Path2 -Name "GameDVR_Enabled" -Value 0 -Type DWord -Force
-        Set-ItemProperty -Path $Path2 -Name "GameDVR_FSEBehaviorMode" -Value 2 -Type DWord -Force
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" -Name "AppCaptureEnabled" -Value 0 -Type DWord -Force
-        Set-ItemProperty -Path $Path2 -Name "GameDVR_HonorUserFSEBehaviorMode" -Value 1 -Type DWord -Force
-        Write-Success "Game Mode enabled, Game Bar/recording disabled for max FPS."
-    } catch {
-        Write-ErrorX "Game Mode optimization failed: $($_.Exception.Message)"
-    }
+
+    New-SystemRestorePoint
+
+    Invoke-WithRetry -OperationName "Tweak: $($Tweak.Key)" -Action {
+        foreach ($E in $Tweak.Entries) {
+            Backup-OriginalRegValue -TweakKey $Tweak.Key -Path $E.Path -Name $E.Name
+            $Value = if ($State -eq "On") { $E.OnValue } else { $E.OffValue }
+            if (-not (Test-Path $E.Path)) { New-Item -Path $E.Path -Force | Out-Null }
+            Set-ItemProperty -Path $E.Path -Name $E.Name -Value $Value -Type $E.Type -Force -ErrorAction Stop
+        }
+        Write-Success "$($Tweak.Key) applied successfully."
+    } | Out-Null
 }
 
 function Enable-ClassicContextMenu {
@@ -2030,24 +2070,6 @@ function Enable-ClassicContextMenu {
 # ============================================================
 #  SMART SYSTEM TWEAKS (extended)
 # ============================================================
-function Enable-GlobalDarkMode {
-    New-SystemRestorePoint
-    $Path = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-    if ((Get-RegValue -Path $Path -Name "AppsUseLightTheme") -eq 0 -and (Get-RegValue -Path $Path -Name "SystemUsesLightTheme") -eq 0) {
-        Write-AlreadyOK "Dark Mode is already applied."
-        return
-    }
-    Backup-OriginalRegValue -TweakKey "DarkMode" -Path $Path -Name "AppsUseLightTheme"
-    Backup-OriginalRegValue -TweakKey "DarkMode" -Path $Path -Name "SystemUsesLightTheme"
-    try {
-        Set-ItemProperty -Path $Path -Name "AppsUseLightTheme" -Value 0 -Type DWord -ErrorAction Stop
-        Set-ItemProperty -Path $Path -Name "SystemUsesLightTheme" -Value 0 -Type DWord -ErrorAction Stop
-        Write-Success "Dark Mode values set successfully."
-    } catch {
-        Write-Warn "Skipped: Personalization keys are restricted."
-    }
-}
-
 function Disable-MouseAcceleration {
     New-SystemRestorePoint
     $Path = "HKCU:\Control Panel\Mouse"
@@ -2787,7 +2809,12 @@ function Show-SystemOptimizationMenu {
                     Write-Divider
                     $Choice = Read-Choice -Prompt "   Select option (1-7, X)" -Valid @('1','2','3','4','5','6','7','x')
                     switch ($Choice) {
-                        '1' { if (Ask-User "Dark Mode" "Force dark theme.") { Enable-GlobalDarkMode }; Read-Host "   Press Enter to continue" }
+                        '1' {
+    if (Ask-User "Dark Mode" "Force dark theme.") {
+        Invoke-Tweak -Tweak ($Script:TweakCatalog | Where-Object { $_.Key -eq "DarkMode" }) -State "On"
+    }
+    Read-Host "   Press Enter to continue"
+}
                         '2' { if (Ask-User "Mouse Acceleration" "Disable mouse acceleration.") { Disable-MouseAcceleration }; Read-Host "   Press Enter to continue" }
                         '3' { if (Ask-User "Taskbar" "Minimalist Win11 taskbar.") { Enable-MinimalistTaskbar }; Read-Host "   Press Enter to continue" }
                         '4' { if (Ask-User "OneDrive" "Purge OneDrive.") { Remove-OneDrivePackage }; Read-Host "   Press Enter to continue" }
@@ -2810,7 +2837,9 @@ function Show-SystemOptimizationMenu {
 
                 if (Ask-User "Network & Ping Optimizer" "Flushes DNS, resets Winsock and IP stack for lowest latency.") { Invoke-NetworkOptimization }
                 if (Ask-User "Activate Humam Ultimate Power Plan" "Unlocks hidden High-Performance plan renamed to your name.") { Enable-UltimatePerformancePowerPlan }
-                if (Ask-User "Enable Game Mode & Disable Game Bar" "Optimizes Windows for gaming, kills background recording.") { Enable-GameMode }
+                if (Ask-User "Enable Game Mode & Disable Game Bar" "Optimizes Windows for gaming, kills background recording.") {
+    Invoke-Tweak -Tweak ($Script:TweakCatalog | Where-Object { $_.Key -eq "GameMode" }) -State "On"
+}
                 if (Ask-User "Restore Windows 10 Classic Context Menu" "Brings back the full right-click menu without 'Show more options'. Windows 11 only.") { Enable-ClassicContextMenu }
                 Read-Host "   Press Enter to continue"
             }
