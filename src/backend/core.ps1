@@ -1,4 +1,5 @@
-﻿<#
+﻿#Requires -Version 5.1
+<#
 .SYNOPSIS
     H.T. CORE ARCHITECTURE – Ultimate Masterpiece Edition (v3.3)
     Humam Taibeh's Windows Deployment & Optimization Framework
@@ -37,14 +38,23 @@
         [X] fix, and the pending-restart flag on the main menu.
 #>
 
-#Requires -Version 5.1
+# ============================================================
+#  PARAMETER (MUST BE FIRST)
+# ============================================================
+param(
+    [string]$Task
+)
 
 # ============================================================
-#  ELEVATION
+#  ELEVATION (only runs if $Task is empty - i.e., clicked manually)
 # ============================================================
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-    Exit
+if (-not $Task) {
+    if ($MyInvocation.InvocationName -ne '.') {
+        if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+            Exit
+        }
+    }
 }
 
 $Host.UI.RawUI.BackgroundColor = "Black"
@@ -53,6 +63,11 @@ $ErrorActionPreference = "Stop"
 Clear-Host
 
 $Script:ScriptVersion = "3.3"
+
+# When invoked with -Task (i.e. from the GUI), there is no console attached
+# for Read-Host to block on. Ask-User and Invoke-WithRetry check this flag
+# so they never wait on input that can never arrive.
+$Script:NonInteractive = $false
 
 # ============================================================
 #  TWEAK CATALOG (Data-Driven Engine)
@@ -256,8 +271,6 @@ function Center-Text {
 }
 
 function Get-AutoBoxWidth {
-    # Computes the box interior width needed to fit every supplied line
-    # in full. Never shrinks below $MinWidth, and never truncates.
     param([string[]]$Lines, [int]$MinWidth = $Global:PanelWidth)
     $MaxLen = $MinWidth
     foreach ($L in $Lines) {
@@ -288,7 +301,6 @@ function Write-SectionHeader {
 }
 
 function Write-StatusPanel {
-    # Auto-sizes to the full content - descriptions are never cut off.
     param([string]$Label, [string]$Text, [int]$Width = $Global:PanelWidth)
     $Content  = " ${Label}: $Text"
     $BoxWidth = Get-AutoBoxWidth -Lines @($Content) -MinWidth $Width
@@ -298,8 +310,6 @@ function Write-StatusPanel {
 }
 
 function Write-ModulePreview {
-    # Auto-sizes to the longest line across the title and every item -
-    # descriptions are always shown in full, never cut off with "...".
     param([string[]]$Items, [int]$Width = $Global:PanelWidth)
     $Title = "MODULE PREVIEW"
     $Lines = @()
@@ -323,6 +333,13 @@ function Write-AlreadyOK { param($Text) Write-Host "   $Script:Check  $Text" -Fo
 
 function Ask-User {
     param($Title, $Explanation)
+    if ($Script:NonInteractive) {
+        # Running as a GUI task: clicking the sidebar button IS the user's
+        # confirmation. There is no console for Read-Host to wait on, so we
+        # must not block here - auto-confirm and log it instead.
+        Write-Log "AUTO-CONFIRM (GUI task, no console attached): $Title"
+        return $true
+    }
     Write-Host ""
     Write-Divider
     Write-Host "   $Title" -ForegroundColor Yellow
@@ -348,10 +365,6 @@ function Read-Choice {
 }
 
 function Read-NumericChoice {
-    # Hardened numeric-list input: builds the full set of valid numbers
-    # (1..Max) plus a cancel key and routes through Read-Choice so every
-    # numbered-list prompt in the script gets the same strict validation
-    # as the lettered menus, instead of a bare Read-Host + manual parse.
     param(
         [Parameter(Mandatory = $true)][string]$Prompt,
         [Parameter(Mandatory = $true)][int]$Max,
@@ -386,11 +399,6 @@ function Test-OSSupport {
 }
 
 function Test-EditionSupport {
-    # Cross-edition safety gate: skips gracefully instead of throwing on
-    # editions (Home/Pro/Enterprise/Education/Server) where a feature is
-    # known not to apply. Most tweaks in this tool are plain registry
-    # values that work identically on every client edition, so this is
-    # only used where a genuine edition restriction exists.
     param(
         [string]$FeatureName,
         [string[]]$UnsupportedEditionMatches = @()
@@ -405,9 +413,6 @@ function Test-EditionSupport {
 }
 
 function Invoke-WithRetry {
-    # Generic error-recovery wrapper: runs $Action, and on failure logs
-    # exactly what happened and offers to retry the SAME operation
-    # without ever exiting the surrounding menu loop.
     param(
         [Parameter(Mandatory = $true)][scriptblock]$Action,
         [Parameter(Mandatory = $true)][string]$OperationName
@@ -418,6 +423,10 @@ function Invoke-WithRetry {
             return $true
         } catch {
             Write-ErrorX "'$OperationName' failed: $($_.Exception.Message)"
+            if ($Script:NonInteractive) {
+                Write-Log "GUI task: not prompting for retry on '$OperationName' (no console attached). Reporting failure."
+                return $false
+            }
             if (-not (Ask-User "Retry '$OperationName'?" "The operation failed and was logged. You can retry it now, or skip it and keep using the menu normally.")) {
                 return $false
             }
@@ -457,10 +466,6 @@ function Show-EpicIntro {
 #  SYSTEM RESTORE
 # ============================================================
 function New-SystemRestorePoint {
-    # MANDATORY SAFETY NET: called at the top of every tweak/service/
-    # registry-modifying function in this script. No-ops instantly if a
-    # restore point has already been created this session so tweaks stay
-    # fast and Windows' restore-point throttling is never hit twice.
     if ($Script:RestorePointCreated) { return }
     Write-Info "Preparing System Restore checkpoint..."
     try {
@@ -489,11 +494,6 @@ function New-SystemRestorePoint {
 
 # ============================================================
 #  v3.3 -- TWEAK BACKUP / RESTORE FRAMEWORK
-#  Every reversible tweak calls Backup-OriginalRegValue BEFORE it
-#  changes anything. The very first captured value per key is kept
-#  forever (never overwritten), so "Reset All Tweaks" can always
-#  put things back exactly the way they were before this tool ever
-#  touched the machine, not just to Microsoft's generic defaults.
 # ============================================================
 function Backup-OriginalRegValue {
     param(
@@ -507,21 +507,17 @@ function Backup-OriginalRegValue {
         }
         $BackupName = ("$TweakKey--$Name") -replace '[\\:\s]', '_'
         $Existing = Get-RegValue -Path $Script:TweaksBackupRegPath -Name $BackupName
-        if ($null -ne $Existing) { return }  # original already captured - never clobber it
+        if ($null -ne $Existing) { return }
 
         $CurrentVal = Get-RegValue -Path $Path -Name $Name
         $Serialized = if ($null -eq $CurrentVal) { "__NOTSET__" } else { "$CurrentVal" }
         Set-ItemProperty -Path $Script:TweaksBackupRegPath -Name $BackupName -Value $Serialized -Type String -Force
     } catch {
-        # Never let a backup failure block the tweak itself.
         Write-Log "BACKUP-WARN: could not snapshot $Path\$Name for '$TweakKey': $($_.Exception.Message)"
     }
 }
 
 function Restore-OriginalRegValue {
-    # Restores the value captured by Backup-OriginalRegValue, or falls
-    # back to $DefaultIfMissing (a safe Windows default) if this tool
-    # never captured an original for that key.
     param(
         [Parameter(Mandatory = $true)][string]$TweakKey,
         [Parameter(Mandatory = $true)][string]$Path,
@@ -623,8 +619,6 @@ function Reset-AllTweaksToDefaults {
 #  v3.3 -- SERVICES SNAPSHOT & RESTORE
 # ============================================================
 function Backup-ServiceState {
-    # Captures a service's ORIGINAL startup type + status the first time
-    # this tool ever touches it. Never overwrites a prior capture.
     param([Parameter(Mandatory = $true)][string]$Name)
     try {
         if (-not (Test-Path $Script:ServicesBackupRegPath)) {
@@ -1118,8 +1112,6 @@ function Smart-Deploy {
     if ($Result.Success) {
         Write-Success "$AppName -> $($Result.Message)"
         if ($Script:DevAppPaths.ContainsKey($AppId)) { Register-DevPath -AppId $AppId -AppName $AppName }
-        # Only suggest a missing dependency on a genuine fresh install/upgrade,
-        # never when the app was already installed/current.
         if ($Result.Message -notmatch '^Already') {
             Test-DevDependencySuggestion -AppId $AppId
         }
@@ -1186,8 +1178,6 @@ $Script:DevAppPaths = @{
 # ============================================================
 #  DEV DEPENDENCY SUGGESTIONS (post-install helper)
 # ============================================================
-# Maps an IDE's winget AppId to the interpreter/toolchain command it
-# needs on PATH to actually run/compile code, plus how to fetch it.
 $Script:DevDependencyMap = @{
     "JetBrains.PyCharm.Community" = @{
         CommandName  = "python"
@@ -1204,9 +1194,6 @@ $Script:DevDependencyMap = @{
 }
 
 function Test-DevDependencySuggestion {
-    # Called only after a CONFIRMED, FRESH successful install (never on
-    # skip/fail/manual-URL paths). Suggests the missing runtime/toolchain
-    # so the IDE the user just installed is immediately usable.
     param([string]$AppId)
     if (-not $Script:DevDependencyMap.ContainsKey($AppId)) { return }
     $Dep = $Script:DevDependencyMap[$AppId]
@@ -1772,17 +1759,35 @@ function Invoke-SystemRepair {
     New-SystemRestorePoint
     Write-SectionHeader "System File Checker (SFC)"
     Write-Info "Running sfc /scannow -- live output below. This can take several minutes."
-    Invoke-WithRetry -OperationName "SFC Scan" -Action {
-        sfc /scannow
-        if ($LASTEXITCODE -ne 0) { throw "sfc /scannow exited with code $LASTEXITCODE." }
-    } | Out-Null
+    $SfcOk = Invoke-WithRetry -OperationName "SFC Scan" -Action {
+        $RawLines = & sfc /scannow 2>&1
+        $RawLines | ForEach-Object { Write-Host $_ }
+        $OutputText = ($RawLines -join [Environment]::NewLine)
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "sfc /scannow exited with code $LASTEXITCODE."
+        }
+
+        # sfc's exit code alone is not trustworthy: on several Windows builds
+        # it still returns 0 even when it explicitly says it could not fix
+        # everything it found. That text is the real signal, so treat it as
+        # a failure regardless of exit code.
+        # NOTE: this match is English-only - sfc's message is localized on
+        # non-English Windows installs, so this check is a best-effort net,
+        # not a guarantee, on those systems.
+        if ($OutputText -match "unable to fix some of them") {
+            throw "sfc /scannow found corrupt files it could not fully repair. See CBS.log for details."
+        }
+    }
 
     Write-SectionHeader "DISM Image Health Restore"
     Write-Info "Running DISM /Online /Cleanup-Image /RestoreHealth -- live output below."
-    Invoke-WithRetry -OperationName "DISM RestoreHealth" -Action {
+    $DismOk = Invoke-WithRetry -OperationName "DISM RestoreHealth" -Action {
         DISM /Online /Cleanup-Image /RestoreHealth
         if ($LASTEXITCODE -ne 0) { throw "DISM exited with code $LASTEXITCODE." }
-    } | Out-Null
+    }
+
+    return ($SfcOk -and $DismOk)
 }
 
 function Clear-SystemCaches {
@@ -2043,9 +2048,6 @@ function Enable-ClassicContextMenu {
         Write-AlreadyOK "Classic context menu is already active."
         return
     }
-    # No prior tweak-value backup needed here: the reversal action (below,
-    # via Reset-AllTweaksToDefaults) simply deletes the CLSID override key,
-    # which is the exact, safe, no-data-loss way to undo this specific tweak.
 
     try {
         if (-not (Test-Path $path)) {
@@ -2189,12 +2191,6 @@ function Reset-WindowsDefaultSettings {
 #  OFFICE DEPLOYMENT – FINAL ENHANCED VERSION
 # ============================================================
 function Get-SpecialFolderSafe {
-    # Wraps [Environment]::GetFolderPath so it NEVER throws.
-    # Some PowerShell hosts / .NET runtimes do not support the string-name
-    # overload of GetFolderPath (this is the root cause of the
-    # "Specified method is not supported." crash seen when opening the
-    # Office Deployment module) - the numeric [Environment+SpecialFolder]
-    # enum value overload is used instead, which is universally supported.
     param([Parameter(Mandatory = $true)][int]$SpecialFolderCode)
     try {
         $Path = [Environment]::GetFolderPath($SpecialFolderCode)
@@ -2207,12 +2203,6 @@ function Get-SpecialFolderSafe {
 }
 
 function Find-OfficeDeploymentFolder {
-    # Numeric SpecialFolder codes used deliberately instead of the string
-    # names ("Desktop" / "CommonDesktopDirectory") - the string-name
-    # overload of GetFolderPath is NOT supported in all PowerShell
-    # environments and throws "Specified method is not supported."
-    #   0  = Desktop
-    #   25 = CommonDesktopDirectory (All Users desktop)
     $CandidateBases = @(
         (Get-SpecialFolderSafe -SpecialFolderCode 0)
         (Get-SpecialFolderSafe -SpecialFolderCode 25)
@@ -2221,8 +2211,6 @@ function Find-OfficeDeploymentFolder {
         "$env:USERPROFILE\Desktop"
     )
 
-    # Validate every candidate before use: drop nulls/empties and any path
-    # that isn't actually a real, reachable directory.
     $Desktops = $CandidateBases |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         Select-Object -Unique |
@@ -2244,11 +2232,6 @@ function Find-OfficeDeploymentFolder {
 }
 
 function Find-OfficeSetupFile {
-    # NOTE: each candidate name is joined individually with its own
-    # Join-Path call (previously several names were passed as a single
-    # comma-separated ChildPath argument, which PowerShell parses as an
-    # array and does NOT produce the intended set of full paths - that
-    # silently broke detection of "setup.exe.exe" and similar variants).
     param([string]$Folder)
     if ([string]::IsNullOrWhiteSpace($Folder)) { return $null }
     if (-not (Test-Path -Path $Folder -PathType Container -ErrorAction SilentlyContinue)) { return $null }
@@ -2280,10 +2263,6 @@ function Find-OfficeSetupFile {
 }
 
 function Find-OfficeConfigFile {
-    # Same fix as Find-OfficeSetupFile: each candidate filename gets its
-    # own Join-Path call rather than being bundled into one ChildPath
-    # argument via commas (which PowerShell treats as an array and does
-    # not resolve to individual full paths).
     param([string]$Folder)
     if ([string]::IsNullOrWhiteSpace($Folder)) { return $null }
     if (-not (Test-Path -Path $Folder -PathType Container -ErrorAction SilentlyContinue)) { return $null }
@@ -2866,7 +2845,7 @@ function Show-MaintenanceRepairMenu {
             '1' {
                 Write-Banner "ADVANCED REPAIR & CACHE CLEAN"
                 Write-ModulePreview -Items @("SFC + DISM", "Cache Cleanup")
-                if (Ask-User "Run SFC + DISM" "Repairs system files.") { Invoke-SystemRepair }
+                if (Ask-User "Run SFC + DISM" "Repairs system files.") { Invoke-SystemRepair | Out-Null }
                 if (Ask-User "Aggressive Cache Cleanup" "Wipes temp files.") { Clear-SystemCaches }
                 Read-Host "   Press Enter to continue"
             }
@@ -3032,33 +3011,99 @@ function Show-RestartReminder {
     }
 }
 
-Show-EpicIntro
+# ============================================================
+#  TASK ENGINE (EXECUTED ONLY IF -Task PARAM IS PROVIDED)
+#  (Moved to the end so all functions are defined before use)
+# ============================================================
+if ($Task) {
+    # No console is attached when the GUI launches us with -Task, so make
+    # sure Ask-User / Invoke-WithRetry never try to Read-Host and block.
+    $Script:NonInteractive = $true
 
-do {
-    Show-MainMenu
-    $Selection = Read-Choice -Prompt "   Select Module [0-6]" -Valid @('0','1','2','3','4','5','6')
-
-    switch ($Selection) {
-        "1" { Show-SoftwareManagementMenu }
-        "2" { Show-SystemOptimizationMenu }
-        "3" { Show-MaintenanceRepairMenu }
-        "4" { Show-PrivacySecurityMenu }
-        "5" { Show-InformationUtilitiesMenu }
-        "6" { Show-SafetyRecoveryMenu }
-        "0" {
-            if (Ask-User "Exit H.T. Core Architecture" "Closes the tool. Any pending restart will still be offered first.") {
-                Write-Host ""
-                Write-Host "   📊 Session Summary: $($Script:SessionSuccessCount) successes, $($Script:SessionFailCount) failures." -ForegroundColor Cyan
-                Show-RestartReminder
-                Write-Host "   Thank you for using H.T. CORE ARCHITECTURE, Humam!" -ForegroundColor Yellow
-                Write-Host "   Exiting in 3 seconds..." -ForegroundColor DarkGray
-                Start-Sleep -Seconds 3
-                Exit
+    function Invoke-GuiTask {
+        param([string]$TaskName)
+        try {
+            switch ($TaskName) {
+                "DisableTelemetry" {
+                    Disable-Telemetry
+                    Write-Output "SUCCESS|Telemetry has been disabled successfully."
+                    break
+                }
+                "CleanCache" {
+                    Clear-SystemCaches
+                    Write-Output "SUCCESS|System cache cleaned successfully."
+                    break
+                }
+                "RunSFC" {
+                    $RepairOk = Invoke-SystemRepair
+                    if ($RepairOk) {
+                        Write-Output "SUCCESS|SFC and DISM repair completed."
+                    } else {
+                        Write-Output "ERROR|SFC/DISM finished with errors. See Desktop\HTCoreArchitecture_Log.txt for details."
+                    }
+                    break
+                }
+                "RemoveBloatware" {
+                    Remove-Bloatware
+                    Write-Output "SUCCESS|Bloatware removed successfully."
+                    break
+                }
+                "OptimizeDrives" {
+                    Optimize-AllDrives
+                    Write-Output "SUCCESS|Drives optimized (TRIM/Defrag)."
+                    break
+                }
+                "ResetTweaks" {
+                    Reset-AllTweaksToDefaults
+                    Write-Output "SUCCESS|All tweaks reset to defaults."
+                    break
+                }
+                default {
+                    Write-Output "ERROR|Unknown task: $TaskName"
+                }
             }
-        }
-        default {
-            Write-Warn "Invalid selection."
-            Start-Sleep -Seconds 1
+        } catch {
+            # Safety net: if anything above throws an exception we didn't
+            # anticipate, still emit a status line instead of exiting
+            # silently - that silence is exactly what produced "Script
+            # finished without a recognized status line" before.
+            Write-Output "ERROR|$($_.Exception.Message)"
         }
     }
-} while ($true)
+    Invoke-GuiTask -TaskName $Task
+    Exit
+}
+
+# ============================================================
+#  TERMINAL MENU (ONLY IF RUN DIRECTLY, NO PARAMS)
+# ============================================================
+if ($MyInvocation.InvocationName -ne '.') {
+    Show-EpicIntro
+    do {
+        Show-MainMenu
+        $Selection = Read-Choice -Prompt "   Select Module [0-6]" -Valid @('0','1','2','3','4','5','6')
+        switch ($Selection) {
+            "1" { Show-SoftwareManagementMenu }
+            "2" { Show-SystemOptimizationMenu }
+            "3" { Show-MaintenanceRepairMenu }
+            "4" { Show-PrivacySecurityMenu }
+            "5" { Show-InformationUtilitiesMenu }
+            "6" { Show-SafetyRecoveryMenu }
+            "0" {
+                if (Ask-User "Exit H.T. Core Architecture" "Closes the tool. Any pending restart will still be offered first.") {
+                    Write-Host ""
+                    Write-Host "   📊 Session Summary: $($Script:SessionSuccessCount) successes, $($Script:SessionFailCount) failures." -ForegroundColor Cyan
+                    Show-RestartReminder
+                    Write-Host "   Thank you for using H.T. CORE ARCHITECTURE, Humam!" -ForegroundColor Yellow
+                    Write-Host "   Exiting in 3 seconds..." -ForegroundColor DarkGray
+                    Start-Sleep -Seconds 3
+                    Exit
+                }
+            }
+            default {
+                Write-Warn "Invalid selection."
+                Start-Sleep -Seconds 1
+            }
+        }
+    } while ($true)
+}

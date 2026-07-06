@@ -1,3 +1,10 @@
+معلش يا خوي، آسف على التعجيق. هسا بالضبط:
+
+**افتح ملف `README.md` الموجود في مجلد المشروع الرئيسي، واحذف كل الكلام القديم الموجود فيه، وانسخ النص التالي كاملاً والصقه مكانه، ثم احفظ الملف.**
+
+---
+
+```markdown
 # Humam Windows Architecture
 
 **A modular, data-driven Windows deployment and optimization framework built in PowerShell.**
@@ -45,19 +52,25 @@ Every module follows the same contract: **preview → confirm → snapshot → a
 - Windows 10 or Windows 11
 - PowerShell 5.1+
 - Administrator privileges (handled automatically by the launcher)
+- Python 3.8+ (for GUI mode)
 
 ---
 
 ## Usage
 
+### Terminal Mode (Pure PowerShell)
 1. Clone or download this repository.
-2. Keep `start.bat` and `core.ps1` in the same folder.
-3. Run `start.bat` — it will self-elevate if needed.
-4. Navigate the menu to deploy software or optimize the system.
+2. Run `start.bat` — it will self-elevate if needed.
+3. Navigate the menu to deploy software or optimize the system.
+
+### GUI Mode (Graphical Interface)
+1. Ensure Python 3.8+ and `customtkinter` are installed.
+2. Run `start.bat` — it activates the virtual environment and launches the GUI.
+3. Use the left panel buttons to access all modules.
 
 ```bash
 git clone https://github.com/Humam-Taibeh/Humam-Windows-Architecture.git
-cd Humam Windows Architecture
+cd Humam-Windows-Architecture
 start.bat
 ```
 
@@ -66,11 +79,31 @@ start.bat
 ## Architecture
 
 ```
-Humam Windows Architecture/
-├── start.bat                  # Elevation + launch wrapper
-├── core.ps1    # Core engine
-└── README.md
+Humam-Windows-Architecture/
+├── start.bat                  # Elevation + launcher wrapper
+├── requirements.txt           # Python dependencies
+├── .gitignore                 # Ignored files and folders
+├── README.md                  # Project documentation
+│
+├── src/                       # Source code
+│   ├── backend/
+│   │   └── HT_Core_Architecture.ps1   # Core PowerShell engine
+│   ├── frontend/
+│   │   └── main.py                    # GUI application (CustomTkinter)
+│   └── utils/
+│       └── helpers.py                 # Shared utilities (reserved for future)
+│
+├── assets/                    # Icons, images, fonts
+│   └── icon.ico
+│
+├── .venv/                     # Python virtual environment (local, not in repo)
+├── build/                     # Temporary build files (auto-generated)
+└── dist/                      # Final .exe output (auto-generated)
 ```
+
+The backend (`HT_Core_Architecture.ps1`) contains the entire PowerShell logic.  
+The frontend (`main.py`) provides a graphical interface using `customtkinter`.  
+The launcher (`start.bat`) activates the virtual environment and runs the GUI.
 
 Tweaks, dev-tool dependencies, and app catalogs are designed to move toward a **data-driven model**: each item is defined as a single object (path, registry name, on/off values, description) processed by one generic engine function — instead of one function per tweak.
 
@@ -96,3 +129,6 @@ This tool modifies system registry keys, services, and installed software. While
 ## Author
 
 **Humam Taibeh**
+```
+
+---
