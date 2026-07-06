@@ -1,332 +1,563 @@
 """
 src/frontend/main.py
 
-Humam Windows Architecture - GUI frontend (PySide6).
+Humam Windows Architecture — GUI orchestrator (PySide6).
 
-Key fixes vs. the previous version:
-  1. THREAD SAFETY: task execution now runs on a QThread and reports back
-     through Qt signals. The old code called self.big_icon.setText(...) etc.
-     from inside a raw threading.Thread, which mutates Qt widgets off the
-     GUI thread - undefined behaviour in Qt, and the real cause of most
-     "works sometimes, glitches other times" symptoms.
-  2. UI never freezes: the subprocess call happens entirely on the worker
-     thread; the GUI thread only ever receives the final result.
-  3. PowerShell window is fully hidden (STARTUPINFO + CREATE_NO_WINDOW),
-     confirmed via src/utils/helpers.py::PowerShellTask.
-  4. Silent executor: raw PowerShell stdout is never shown in the main
-     area. Only the SUCCESS|... / ERROR|... status line drives the UI.
-  5. Sidebar buttons are disabled while a task runs (prevents overlapping
-     PowerShell processes / racing UI state), a "selected" glow marks the
-     active task, and a pulsing icon + shimmering progress bar communicate
-     "working" state.
+MODULAR BLUEPRINT (v5)
+======================
+    menu_structure.py   data      — categories, cards, task IDs, timeouts
+    theme.py            design    — dual-theme tokens, QSS factories, DWM glass
+    animations.py       motion    — glow, shimmer, cascade, page fade (60 fps)
+    widgets.py          components— TitleBar, NavButton, GlassCard, ConfirmDialog
+    utils/helpers.py    threading — PowerShellTask worker, ToastManager
+    main.py (this)      orchestration ONLY — pages, navigation, task pipeline
+
+Runtime guarantees:
+    - Qt widgets touched only from the GUI thread; PowerShell runs on a
+      QThread and reports back through signals.
+    - One task at a time; extra clicks get an info toast.
+    - No QGraphicsEffect in steady state, no setStyleSheet() in timers —
+      see animations.py for the performance doctrine.
+    - Theme switches live via ThemeManager.changed -> _apply_theme(t).
 """
+from __future__ import annotations
+
+import ctypes
 import os
+import platform
 import sys
 
-from PySide6.QtCore import QPoint, Qt, QThread, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QProgressBar,
-    QPushButton, QVBoxLayout, QWidget,
+    QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QMainWindow, QPushButton, QScrollArea, QSizeGrip, QStackedWidget,
+    QVBoxLayout, QWidget,
 )
 
-# Allow "from utils.helpers import ..." when running as src/frontend/main.py
+# Allow "from utils.helpers import ..." / "from frontend import ..." when
+# running as src/frontend/main.py or from a PyInstaller bundle.
 _FRONTEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.dirname(_FRONTEND_DIR)
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from utils.helpers import HoverGlow, PowerShellTask, PulseAnimation, TaskResult, ToastManager  # noqa: E402
+from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
+from frontend import theme as TH  # noqa: E402
+from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
+from frontend.menu_structure import CATEGORIES, total_operations  # noqa: E402
+from frontend.widgets import (  # noqa: E402
+    AppSelectorDialog, BreathingIcon, ConfirmDialog, GlassCard, LiveConsole,
+    NavButton, NavPill, TitleBar,
+)
 
 # ============================================================
-#  CONFIG
+#  APP CONSTANTS
 # ============================================================
+APP_NAME = "HUMAM ARCHITECTURE"
+APP_VERSION = "5.1"
 PS1_FILENAME = "core.ps1"
-TASK_TIMEOUT_SECONDS = 900  # SFC + DISM can legitimately take 10+ minutes
-
-TASKS = [
-    ("🛡️  Telemetry", "DisableTelemetry"),
-    ("🧹  Clean Cache", "CleanCache"),
-    ("🔧  System Repair", "RunSFC"),
-    ("📦  Remove Bloat", "RemoveBloatware"),
-    ("💾  Optimize Drives", "OptimizeDrives"),
-    ("🔄  Reset Tweaks", "ResetTweaks"),
-]
-
-SIDEBAR_BUTTON_QSS = """
-QPushButton {
-    background-color: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 12px;
-    color: #ccd6f6;
-    font-size: 14px;
-    font-weight: 500;
-    text-align: left;
-    padding-left: 20px;
-}
-QPushButton:hover {
-    background-color: rgba(0, 212, 255, 0.08);
-    border: 1px solid rgba(0, 212, 255, 0.25);
-    color: #ffffff;
-}
-QPushButton:pressed {
-    background-color: rgba(0, 212, 255, 0.18);
-}
-QPushButton:disabled {
-    color: #4a5568;
-    background-color: rgba(255, 255, 255, 0.015);
-    border: 1px solid rgba(255, 255, 255, 0.02);
-}
-QPushButton[selected="true"] {
-    background-color: rgba(0, 212, 255, 0.14);
-    border: 1px solid rgba(0, 212, 255, 0.55);
-    color: #ffffff;
-}
-"""
+DEFAULT_TIMEOUT = 900
 
 
 # ============================================================
-#  MAIN WINDOW (LUXURY GLASS)
+#  SYSTEM INSIGHTS — cheap, dependency-free hardware snapshot
+# ============================================================
+def _system_insights() -> list[tuple[str, str, str]]:
+    """(icon, value, caption) triplets for the Welcome dashboard.
+    Registry + kernel32 reads only — resolves in microseconds, so it is
+    safe to call on the GUI thread during construction."""
+    insights: list[tuple[str, str, str]] = []
+
+    # -- OS -------------------------------------------------
+    if sys.platform == "win32":
+        build = sys.getwindowsversion().build
+        name = "Windows 11" if build >= 22000 else "Windows 10"
+        try:
+            edition = platform.win32_edition() or ""
+        except OSError:
+            edition = ""
+        insights.append(("🪟", f"{name} {edition}".strip(), f"Build {build}"))
+    else:  # dev on non-Windows
+        insights.append(("🪟", platform.system(), platform.release()))
+
+    # -- CPU ------------------------------------------------
+    cores = os.cpu_count() or 0
+    cpu_name = "Logical processors"
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+                raw = str(winreg.QueryValueEx(key, "ProcessorNameString")[0])
+            cpu_name = " ".join(raw.split())
+            if len(cpu_name) > 26:
+                cpu_name = cpu_name[:25].rstrip() + "…"
+        except OSError:
+            pass
+    insights.append(("🧠", f"{cores} Cores", cpu_name))
+
+    # -- RAM ------------------------------------------------
+    ram_value, ram_caption = "—", "Installed memory"
+    if sys.platform == "win32":
+        try:
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_uint32),
+                    ("dwMemoryLoad", ctypes.c_uint32),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+
+            status = _MEMORYSTATUSEX()
+            status.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                ram_value = f"{status.ullTotalPhys / 2**30:.1f} GB"
+                ram_caption = f"{status.dwMemoryLoad}% in use"
+        except OSError:
+            pass
+    insights.append(("💾", ram_value, ram_caption))
+    return insights
+
+
+# ============================================================
+#  PAGES
+# ============================================================
+class WelcomePage(QWidget):
+    """Landing view: breathing brand mark, system insight dashboard and
+    the status chips grouped inside a unified glass dock."""
+
+    INSIGHT_W, INSIGHT_H = 200, 86   # mini-card footprint
+    INSIGHT_GAP = 14
+    DOCK_H = 66
+
+    def __init__(self, t: dict, engine_ok: bool, is_admin: bool):
+        super().__init__()
+        self._chip_meta: list[tuple[QLabel, bool]] = []
+        self._insight_frames: list[QFrame] = []
+        self._insight_values: list[QLabel] = []
+        self._insight_captions: list[QLabel] = []
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(40, 16, 40, 16)
+        lay.setSpacing(0)
+        lay.addStretch(3)
+
+        # -- brand ------------------------------------------
+        self._logo = BreathingIcon("✦", size=110, accent=t["accent"])
+        logo_row = QHBoxLayout()
+        logo_row.addStretch()
+        logo_row.addWidget(self._logo)
+        logo_row.addStretch()
+        lay.addLayout(logo_row)
+        lay.addSpacing(2)
+
+        self._name = QLabel(APP_NAME)
+        self._name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._name)
+        lay.addSpacing(6)
+
+        self._tag = QLabel("Ultimate Windows Optimization & Deployment Framework")
+        self._tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._tag)
+        lay.addSpacing(32)
+
+        # -- system insight dashboard ------------------------
+        insights_row = QHBoxLayout()
+        insights_row.setSpacing(self.INSIGHT_GAP)
+        insights_row.addStretch()
+        for icon, value, caption in _system_insights():
+            frame = QFrame()
+            frame.setObjectName("insight")
+            frame.setFixedSize(self.INSIGHT_W, self.INSIGHT_H)
+            card = QVBoxLayout(frame)
+            card.setContentsMargins(16, 12, 16, 12)
+            card.setSpacing(3)
+
+            top = QHBoxLayout()
+            top.setSpacing(8)
+            icon_lbl = QLabel(icon)
+            icon_lbl.setStyleSheet("font-size: 16px; background: transparent; border: none;")
+            top.addWidget(icon_lbl)
+            value_lbl = QLabel(value)
+            top.addWidget(value_lbl)
+            top.addStretch()
+            card.addLayout(top)
+
+            caption_lbl = QLabel(caption)
+            card.addWidget(caption_lbl)
+            card.addStretch()
+
+            self._insight_frames.append(frame)
+            self._insight_values.append(value_lbl)
+            self._insight_captions.append(caption_lbl)
+            insights_row.addWidget(frame)
+        insights_row.addStretch()
+        lay.addLayout(insights_row)
+        lay.addSpacing(26)
+
+        # -- unified glass dock (status chips) ----------------
+        self._dock = QFrame()
+        self._dock.setObjectName("dock")
+        self._dock.setFixedHeight(self.DOCK_H)
+        dock_lay = QHBoxLayout(self._dock)
+        dock_lay.setContentsMargins(18, 12, 18, 12)
+        dock_lay.setSpacing(12)
+        for icon, text, ok in (
+            ("🗂️", f"{len(CATEGORIES)} Modules", True),
+            ("⚙️", f"{total_operations()} Operations", True),
+            ("🧠", "Engine Ready" if engine_ok else "Engine Missing", engine_ok),
+            ("🔑", "Administrator" if is_admin else "Not Elevated", is_admin),
+        ):
+            chip = QLabel(f"{icon}  {text}")
+            self._chip_meta.append((chip, ok))
+            dock_lay.addWidget(chip)
+
+        dock_row = QHBoxLayout()
+        dock_row.addStretch()
+        dock_row.addWidget(self._dock)
+        dock_row.addStretch()
+        lay.addLayout(dock_row)
+        lay.addSpacing(24)
+
+        self._hint = QLabel("Select a module from the left panel to begin")
+        self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._hint)
+        lay.addStretch(4)
+
+        self.apply_theme(t)
+
+    def apply_theme(self, t: dict):
+        self._logo.apply_theme(t)
+        self._name.setStyleSheet(TH.label_qss(t, "hero"))
+        self._tag.setStyleSheet(
+            TH.label_qss(t, "body") + "font-size: 13px; letter-spacing: 1px;")
+        self._hint.setStyleSheet(TH.label_qss(t, "faint"))
+        for frame in self._insight_frames:
+            frame.setStyleSheet(TH.insight_card_qss(t))
+        for lbl in self._insight_values:
+            lbl.setStyleSheet(TH.label_qss(t, "value"))
+        for lbl in self._insight_captions:
+            lbl.setStyleSheet(TH.label_qss(t, "caption"))
+        self._dock.setStyleSheet(TH.dock_qss(t))
+        for chip, ok in self._chip_meta:
+            chip.setStyleSheet(TH.chip_qss(t, ok))
+
+
+class CategoryPage(QWidget):
+    """One category: header (back · title · home) + scrollable card grid."""
+
+    COLUMNS = 3
+
+    back_requested = Signal()
+    home_requested = Signal()
+    task_requested = Signal(dict, object)  # (item, GlassCard)
+
+    def __init__(self, category: dict, t: dict):
+        super().__init__()
+        self.category = category
+        self.cards: list[GlassCard] = []
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setSpacing(14)
+
+        # -- header -------------------------------------------
+        head = QHBoxLayout()
+        head.setSpacing(14)
+
+        self._back = NavPill("‹  Back", t)
+        self._back.clicked.connect(self.back_requested)
+        head.addWidget(self._back)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        self._title = QLabel(f"{category['icon']}  {category['title']}")
+        title_col.addWidget(self._title)
+        self._tagline = QLabel(category["tagline"])
+        title_col.addWidget(self._tagline)
+        head.addLayout(title_col)
+        head.addStretch()
+
+        self._home = NavPill("⌂  Home", t)
+        self._home.clicked.connect(self.home_requested)
+        head.addWidget(self._home)
+        lay.addLayout(head)
+
+        # -- card grid ----------------------------------------
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        grid_host = QWidget()
+        grid_host.setStyleSheet("background: transparent;")
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(2, 2, 10, 2)
+        grid.setSpacing(14)
+
+        for i, item in enumerate(category["items"]):
+            card = GlassCard(item, category["accent"], t)
+            card.clicked.connect(
+                lambda it=item, c=card: self.task_requested.emit(it, c))
+            self.cards.append(card)
+            grid.addWidget(card, i // self.COLUMNS, i % self.COLUMNS)
+
+        for col in range(self.COLUMNS):
+            grid.setColumnStretch(col, 1)
+        grid.setRowStretch(grid.rowCount(), 1)
+
+        self._scroll.setWidget(grid_host)
+        self._scroll.viewport().setStyleSheet("background: transparent;")
+        lay.addWidget(self._scroll, 1)
+
+        self.apply_theme(t)
+
+    def apply_theme(self, t: dict):
+        self._back.apply_theme(t)
+        self._home.apply_theme(t)
+        self._title.setStyleSheet(TH.label_qss(t, "title"))
+        self._tagline.setStyleSheet(TH.label_qss(t, "tagline"))
+        self._scroll.setStyleSheet(TH.scroll_area_qss(t))
+        for card in self.cards:
+            card.apply_theme(t)
+
+
+# ============================================================
+#  MAIN WINDOW
 # ============================================================
 class HumamApp(QMainWindow):
     def __init__(self):
         super().__init__()
-
         self.setWindowTitle("Humam Architecture")
-        self.setGeometry(150, 100, 1100, 700)
-        self.setMinimumSize(900, 600)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: rgba(12, 15, 25, 0.92);
-                border: 1px solid rgba(255, 255, 255, 0.06);
-                border-radius: 30px;
-            }
-        """)
+        self.setGeometry(140, 80, 1180, 740)
+        self.setMinimumSize(1020, 640)
 
-        # Keep strong references to running thread/worker + per-button glow
-        # filters + toast manager, or Qt/Python will garbage-collect them
-        # mid-flight and either crash or silently stop animating.
+        # Strong references — Qt/Python will GC these mid-flight otherwise.
         self._thread: QThread | None = None
         self._worker: PowerShellTask | None = None
-        self._glow_filters: list[HoverGlow] = []
-        self._task_buttons: dict[str, QPushButton] = {}
-        self._selected_task: str | None = None
+        self._running_card: GlassCard | None = None
+        self._nav_buttons: list[NavButton] = []
+        self._status_state = "ready"
+        self._glass_applied = False
 
-        central = QWidget()
-        central.setObjectName("central")
-        central.setStyleSheet("#central { background: transparent; }")
-        self.setCentralWidget(central)
+        self.theme = TH.ThemeManager("dark", self)
+        self.theme.changed.connect(self._apply_theme)
 
-        self.toasts = ToastManager(central)
+        self.cascade = CascadeAnimator(self)
+        self.fader = PageFader(self)
 
-        main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(20)
-
-        main_layout.addWidget(self._build_sidebar())
-        main_layout.addWidget(self._build_content())
-
-        # ============================================================
-        #  ENGINE INIT
-        # ============================================================
         self.ps1_path = self._locate_ps1()
-        if not self.ps1_path:
-            QTimer.singleShot(200, lambda: self.toasts.show(
-                "error", f"{PS1_FILENAME} not found next to the app.", 8000))
-            self._set_all_tasks_enabled(False)
-        else:
-            QTimer.singleShot(200, lambda: self.toasts.show(
-                "success", "Engine loaded successfully.", 3000))
+        self.is_admin = self._check_admin()
+
+        self._build_ui()
+        self._apply_theme(self.theme.t)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self.go_home)
+        QTimer.singleShot(300, self._startup_toasts)
 
     # ============================================================
-    #  UI BUILDERS
+    #  UI ASSEMBLY
     # ============================================================
-    def _build_sidebar(self) -> QFrame:
-        sidebar = QFrame()
-        sidebar.setFixedWidth(220)
-        sidebar.setStyleSheet("""
-            QFrame {
-                background: rgba(255, 255, 255, 0.03);
-                border-radius: 25px;
-                border: 1px solid rgba(255, 255, 255, 0.04);
-            }
-        """)
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(15, 30, 15, 30)
-        layout.setSpacing(10)
+    def _build_ui(self):
+        t = self.theme.t
 
-        logo = QLabel("✦")
-        logo.setStyleSheet("color: #00d4ff; font-size: 40px; font-weight: 300;")
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(logo)
+        self._shell = QFrame()
+        self._shell.setObjectName("shell")
+        self.setCentralWidget(self._shell)
 
-        title = QLabel("HUMAM")
-        title.setStyleSheet("color: white; font-size: 20px; font-weight: 600; letter-spacing: 3px;")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        root = QVBoxLayout(self._shell)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        subtitle = QLabel("ARCHITECTURE")
-        subtitle.setStyleSheet("color: #8892b0; font-size: 11px; letter-spacing: 5px;")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addSpacing(25)
-        layout.addWidget(subtitle)
-        layout.addSpacing(30)
+        self.titlebar = TitleBar(self, t, APP_NAME, APP_VERSION)
+        self.titlebar.theme_toggle_requested.connect(self.theme.toggle)
+        root.addWidget(self.titlebar)
 
-        for text, task in TASKS:
-            btn = QPushButton(text)
-            btn.setFixedHeight(45)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(SIDEBAR_BUTTON_QSS)
-            btn.setProperty("selected", False)
-            btn.clicked.connect(lambda checked=False, t=task: self.run_task(t))
-            glow = HoverGlow(btn, color="#00d4ff", max_blur=20.0)
-            btn.installEventFilter(glow)
-            self._glow_filters.append(glow)
-            self._task_buttons[task] = btn
-            layout.addWidget(btn)
+        body = QHBoxLayout()
+        body.setContentsMargins(18, 6, 18, 14)
+        body.setSpacing(18)
+        root.addLayout(body, 1)
 
-        layout.addStretch()
+        # -- sidebar ------------------------------------------
+        self._sidebar = QFrame()
+        self._sidebar.setFixedWidth(240)
+        side = QVBoxLayout(self._sidebar)
+        side.setContentsMargins(14, 24, 14, 20)
+        side.setSpacing(9)
 
-        exit_btn = QPushButton("✕  Exit")
-        exit_btn.setFixedHeight(45)
-        exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        exit_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 70, 70, 0.08);
-                border: 1px solid rgba(255, 70, 70, 0.15);
-                border-radius: 12px;
-                color: #ff6b6b;
-                font-size: 14px;
-                font-weight: 500;
-            }
-            QPushButton:hover { background-color: rgba(255, 70, 70, 0.2); }
-        """)
-        exit_btn.clicked.connect(self.close)
-        layout.addWidget(exit_btn)
+        self._section = QLabel("MODULES")
+        self._section.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        side.addWidget(self._section)
+        side.addSpacing(8)
 
-        return sidebar
+        for i, cat in enumerate(CATEGORIES):
+            btn = NavButton(cat["icon"], cat["title"], cat["accent"], t)
+            btn.clicked.connect(lambda checked=False, idx=i: self.open_category(idx))
+            self._nav_buttons.append(btn)
+            side.addWidget(btn)
+        side.addStretch()
 
-    def _build_content(self) -> QFrame:
-        content = QFrame()
-        content.setStyleSheet("""
-            QFrame {
-                background: rgba(255, 255, 255, 0.02);
-                border-radius: 25px;
-                border: 1px solid rgba(255, 255, 255, 0.04);
-            }
-        """)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(20)
+        self._exit_btn = QPushButton("✕  Exit")
+        self._exit_btn.setFixedHeight(44)
+        self._exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._exit_btn.clicked.connect(self.close)
+        side.addWidget(self._exit_btn)
+        body.addWidget(self._sidebar)
 
-        header = QHBoxLayout()
+        # -- content ------------------------------------------
+        self._content = QFrame()
+        content = QVBoxLayout(self._content)
+        content.setContentsMargins(18, 16, 18, 12)
+        content.setSpacing(10)
+
+        self.stack = QStackedWidget()
+        self.stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
+        self.welcome = WelcomePage(t, bool(self.ps1_path), self.is_admin)
+        self.stack.addWidget(self.welcome)
+        self.pages: list[CategoryPage] = []
+        for cat in CATEGORIES:
+            page = CategoryPage(cat, t)
+            page.back_requested.connect(self.go_home)
+            page.home_requested.connect(self.go_home)
+            page.task_requested.connect(self.request_task)
+            self.pages.append(page)
+            self.stack.addWidget(page)
+        content.addWidget(self.stack, 1)
+
+        self._console_label = QLabel("LIVE OUTPUT")
+        content.addWidget(self._console_label)
+        self.console = LiveConsole(t)
+        self.console.setFixedHeight(170)
+        content.addWidget(self.console)
+
+        self.shimmer = ShimmerBar()
+        content.addWidget(self.shimmer)
+
+        status = QHBoxLayout()
+        status.setSpacing(8)
         self.status_dot = QLabel("●")
-        self.status_dot.setStyleSheet("color: #00ff88; font-size: 18px;")
-        header.addWidget(self.status_dot)
+        status.addWidget(self.status_dot)
         self.status_text = QLabel("System Ready")
-        self.status_text.setStyleSheet("color: #ccd6f6; font-size: 18px; font-weight: 600;")
-        header.addWidget(self.status_text)
-        header.addStretch()
-        layout.addLayout(header)
+        status.addWidget(self.status_text)
+        status.addStretch()
+        grip = QSizeGrip(self._content)
+        grip.setStyleSheet("background: transparent;")
+        status.addWidget(grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+        content.addLayout(status)
 
-        self.display_frame = QFrame()
-        self.display_frame.setStyleSheet("""
-            QFrame {
-                background: rgba(0, 0, 0, 0.2);
-                border-radius: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.02);
-            }
-        """)
-        display_layout = QVBoxLayout(self.display_frame)
-
-        self.big_icon = QLabel("✦")
-        self.big_icon.setStyleSheet("color: #00d4ff; font-size: 55px;")
-        self.big_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        display_layout.addWidget(self.big_icon)
-        self.pulse = PulseAnimation(self.big_icon)
-
-        self.big_text = QLabel("Select a task from the left panel")
-        self.big_text.setStyleSheet("color: #8892b0; font-size: 22px; font-weight: 300;")
-        self.big_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        display_layout.addWidget(self.big_text)
-
-        self.big_sub = QLabel("Optimize, repair, and secure your Windows system instantly")
-        self.big_sub.setStyleSheet("color: #495670; font-size: 14px;")
-        self.big_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        display_layout.addWidget(self.big_sub)
-
-        layout.addWidget(self.display_frame)
-
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(8)
-        self.progress.setRange(0, 0)  # indeterminate; shimmer handled manually below
-        self.progress.setVisible(False)
-        layout.addWidget(self.progress)
-
-        self._shimmer_phase = 0.0
-        self._shimmer_timer = QTimer(self)
-        self._shimmer_timer.setInterval(40)
-        self._shimmer_timer.timeout.connect(self._tick_shimmer)
-
-        return content
+        body.addWidget(self._content, 1)
+        self.toasts = ToastManager(self._shell)
 
     # ============================================================
-    #  ENGINE PATH RESOLUTION
+    #  LIVE THEME PIPELINE
     # ============================================================
-    def _locate_ps1(self) -> str | None:
-        """
-        Looks for core.ps1 in the layout documented for this project
-        (src/backend/core.ps1 relative to src/frontend/main.py), then falls
-        back to a couple of sensible alternatives so the app still works
-        if the project is ever flattened or repackaged by PyInstaller.
-        """
-        candidates = [
-            os.path.join(_SRC_DIR, "backend", PS1_FILENAME),
-            os.path.join(_FRONTEND_DIR, PS1_FILENAME),
-            os.path.join(os.path.dirname(_SRC_DIR), PS1_FILENAME),
-        ]
-        # PyInstaller onefile bundles extract to sys._MEIPASS at runtime.
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            candidates.insert(0, os.path.join(meipass, "src", "backend", PS1_FILENAME))
+    def _apply_theme(self, t: dict):
+        self._shell.setStyleSheet(TH.shell_qss(t))
+        self._sidebar.setStyleSheet(TH.sidebar_qss(t))
+        self._content.setStyleSheet(TH.content_qss(t))
+        self._section.setStyleSheet(TH.label_qss(t, "section"))
+        self._exit_btn.setStyleSheet(TH.exit_button_qss(t))
+        self.titlebar.apply_theme(t)
+        self.welcome.apply_theme(t)
+        for btn in self._nav_buttons:
+            btn.apply_theme(t)
+        for page in self.pages:
+            page.apply_theme(t)
+        self.shimmer.set_theme(t)
+        self._console_label.setStyleSheet(TH.console_header_qss(t))
+        self.console.apply_theme(t)
+        self.status_text.setStyleSheet(TH.label_qss(t, "status"))
+        self._set_status(self._status_state, self.status_text.text())
 
-        for path in candidates:
-            if os.path.exists(path):
-                return path
-        return None
+    def _set_status(self, state: str, text: str | None = None):
+        """state: ready | busy | ok | err — colors come from live tokens."""
+        self._status_state = state
+        t = self.theme.t
+        color = {"ready": t["ok"], "busy": t["warn"],
+                 "ok": t["ok"], "err": t["err"]}[state]
+        self.status_dot.setStyleSheet(
+            f"color: {color}; font-size: 12px; background: transparent; border: none;")
+        if text is not None:
+            self.status_text.setText(text)
 
     # ============================================================
-    #  TASK EXECUTION (thread-safe)
+    #  NAVIGATION (cascade on category open, fade on home)
     # ============================================================
-    def run_task(self, task_name: str):
+    def go_home(self):
+        self._select_nav(None)
+        if self.stack.currentIndex() != 0:
+            self.cascade.stop()
+            self.stack.setCurrentIndex(0)
+            self.fader.fade_in(self.welcome)
+
+    def open_category(self, index: int):
+        self._select_nav(index)
+        page = self.pages[index]
+        if self.stack.currentWidget() is page:
+            return
+        self.cascade.stop()
+        self.stack.setCurrentIndex(index + 1)
+        # let the layout place the cards, then run the staggered entrance
+        QTimer.singleShot(0, lambda p=page: self.cascade.play(p.cards))
+
+    def _select_nav(self, index: int | None):
+        for i, btn in enumerate(self._nav_buttons):
+            btn.set_selected(i == index)
+
+    # ============================================================
+    #  TASK PIPELINE
+    # ============================================================
+    def request_task(self, item: dict, card: GlassCard):
+        task = item["task"]
+
+        if task.startswith("@"):
+            self._run_local_action(task)
+            return
         if self._thread is not None and self._thread.isRunning():
-            self.toasts.show("info", "A task is already running - please wait.", 3000)
+            self.toasts.show("info", "A task is already running — please wait.", 3000)
             return
         if not self.ps1_path:
-            self.toasts.show("error", f"{PS1_FILENAME} not found.", 4000)
+            self.toasts.show("error", f"{PS1_FILENAME} not found — engine unavailable.", 5000)
             return
 
-        self._set_selected(task_name)
-        self._set_all_tasks_enabled(False)
+        app_ids: list[str] | None = None
+        if item.get("apps"):
+            selector = AppSelectorDialog(self, item, self.theme.t)
+            if selector.exec() != QDialog.DialogCode.Accepted:
+                return
+            if not selector.selected_ids:
+                self.toasts.show("info", "No apps were selected — nothing to deploy.", 3500)
+                return
+            app_ids = selector.selected_ids
+        elif item.get("confirm"):
+            dialog = ConfirmDialog(self, item, self.theme.t)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
 
-        self.status_dot.setStyleSheet("color: #ffd700; font-size: 18px;")
-        self.status_text.setText(f"Executing: {task_name} ...")
-        self.big_icon.setText("⚡")
-        self.big_text.setText(f"Running {task_name}...")
-        self.big_sub.setText("Please wait, this may take a moment.")
-        self.pulse.start()
+        self._start_task(item, card, app_ids)
 
-        self.progress.setVisible(True)
-        self._shimmer_timer.start()
-
-        self.toasts.show("info", f"Starting {task_name}...", 3000)
+    def _start_task(self, item: dict, card: GlassCard, app_ids: list[str] | None = None):
+        self._running_card = card
+        card.set_running(True)
+        self._set_status("busy", f"Executing: {item['title']} …")
+        self.shimmer.start()
+        self.console.clear_console()
+        self.toasts.show("info", f"Starting: {item['title']}", 2500)
 
         thread = QThread(self)
-        worker = PowerShellTask(self.ps1_path, task_name, timeout=TASK_TIMEOUT_SECONDS)
+        worker = PowerShellTask(
+            self.ps1_path, item["task"], timeout=item.get("timeout", DEFAULT_TIMEOUT),
+            app_ids=app_ids)
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run)
+        worker.output.connect(self.console.append_line)
         worker.finished.connect(self._on_task_finished)
         worker.failed.connect(self._on_task_failed)
         worker.finished.connect(thread.quit)
@@ -340,37 +571,30 @@ class HumamApp(QMainWindow):
     def _on_task_finished(self, result: TaskResult):
         if result.success:
             self.toasts.show("success", result.message, 5000)
-            self.big_icon.setText("✅")
-            self.big_text.setText("Completed Successfully!")
-            self.big_sub.setText(result.message)
-            self.status_dot.setStyleSheet("color: #00ff88; font-size: 18px;")
+            self._set_status("ok", "System Ready")
         else:
-            self.toasts.show("error", result.message, 6000)
-            self.big_icon.setText("❌")
-            self.big_text.setText("Task Failed!")
-            self.big_sub.setText(result.message)
-            self.status_dot.setStyleSheet("color: #ff6b6b; font-size: 18px;")
+            message = result.message
+            if message.lower().startswith("unknown task"):
+                message = ("This module needs the updated core.ps1 backend. "
+                           "Update src/backend/core.ps1 to enable it.")
+            self.toasts.show("error", message, 6000)
+            self._set_status("err", "System Ready")
         self._finish_common()
 
     def _on_task_failed(self, message: str):
         self.toasts.show("error", message, 6000)
-        self.big_icon.setText("⏰" if "timed out" in message.lower() else "💥")
-        self.big_text.setText("Task Failed!")
-        self.big_sub.setText(message)
-        self.status_dot.setStyleSheet("color: #ff6b6b; font-size: 18px;")
+        self._set_status("err", "System Ready")
         self._finish_common()
 
     def _finish_common(self):
-        self.pulse.stop()
-        self.progress.setVisible(False)
-        self._shimmer_timer.stop()
-        self.status_text.setText("System Ready")
-        self._set_all_tasks_enabled(True)
+        if self._running_card is not None:
+            self._running_card.set_running(False)
+            self._running_card = None
+        self.shimmer.stop()
 
     def _on_thread_finished(self):
-        # Threads/workers are cleaned up here rather than deleteLater'd
-        # immediately in the signal handlers above, so Qt doesn't destroy
-        # them while a queued signal to this same slot is still pending.
+        # Deferred cleanup so Qt never destroys a worker while one of its
+        # queued signals is still in flight.
         if self._worker is not None:
             self._worker.deleteLater()
             self._worker = None
@@ -379,49 +603,75 @@ class HumamApp(QMainWindow):
             self._thread = None
 
     # ============================================================
-    #  SIDEBAR STATE HELPERS
+    #  LOCAL ACTIONS (no PowerShell process)
     # ============================================================
-    def _set_selected(self, task_name: str):
-        if self._selected_task and self._selected_task in self._task_buttons:
-            prev = self._task_buttons[self._selected_task]
-            prev.setProperty("selected", False)
-            prev.style().unpolish(prev)
-            prev.style().polish(prev)
-
-        self._selected_task = task_name
-        btn = self._task_buttons.get(task_name)
-        if btn:
-            btn.setProperty("selected", True)
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
-
-    def _set_all_tasks_enabled(self, enabled: bool):
-        for btn in self._task_buttons.values():
-            btn.setEnabled(enabled)
-
-    # ============================================================
-    #  PROGRESS BAR SHIMMER
-    # ============================================================
-    def _tick_shimmer(self):
-        self._shimmer_phase = (self._shimmer_phase + 0.015) % 1.0
-        stop1 = self._shimmer_phase
-        stop2 = min(1.0, stop1 + 0.45)
-        self.progress.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: rgba(255, 255, 255, 0.05);
-                border: none;
-                border-radius: 4px;
-            }}
-            QProgressBar::chunk {{
-                background: qlineargradient(x1:{stop1:.3f}, y1:0, x2:{stop2:.3f}, y2:0,
-                    stop:0 #00d4ff, stop:1 #7b61ff);
-                border-radius: 4px;
-            }}
-        """)
+    def _run_local_action(self, task: str):
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        targets = {
+            "@open_log": os.path.join(desktop, "HTCoreArchitecture_Log.txt"),
+            "@open_onedrive_backup": os.path.join(desktop, "HTCore_OneDriveBackup"),
+        }
+        path = targets.get(task)
+        if path is None:
+            self.toasts.show("error", f"Unknown local action: {task}", 4000)
+            return
+        if not os.path.exists(path):
+            self.toasts.show("info", "Nothing there yet — run an operation first.", 4000)
+            return
+        try:
+            os.startfile(path)  # noqa: S606 - opening a local file/folder for the user
+            self.toasts.show("success", f"Opened {os.path.basename(path)}", 3000)
+        except OSError as exc:
+            self.toasts.show("error", f"Could not open: {exc}", 5000)
 
     # ============================================================
-    #  KEEP TOASTS DOCKED TO THE TOP-RIGHT ON RESIZE
+    #  ENGINE / ENVIRONMENT
     # ============================================================
+    def _locate_ps1(self) -> str | None:
+        candidates = [
+            os.path.join(_SRC_DIR, "backend", PS1_FILENAME),
+            os.path.join(_FRONTEND_DIR, PS1_FILENAME),
+            os.path.join(os.path.dirname(_SRC_DIR), PS1_FILENAME),
+        ]
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:  # PyInstaller onefile extraction dir
+            candidates.insert(0, os.path.join(meipass, "src", "backend", PS1_FILENAME))
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        return None
+
+    @staticmethod
+    def _check_admin() -> bool:
+        if sys.platform != "win32":
+            return False
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except OSError:
+            return False
+
+    def _startup_toasts(self):
+        if not self.ps1_path:
+            self.toasts.show("error", f"{PS1_FILENAME} not found next to the app.", 8000)
+        else:
+            self.toasts.show("success", "Engine loaded successfully.", 3000)
+        if not self.is_admin:
+            self.toasts.show(
+                "info",
+                "Not running as Administrator — system tasks may fail. "
+                "Right-click → Run as administrator.", 8000)
+
+    # ============================================================
+    #  WINDOW EVENTS — native glass on first show
+    # ============================================================
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._glass_applied:
+            self._glass_applied = True
+            hwnd = int(self.winId())
+            TH.apply_blur_behind(hwnd)      # real DWM blur behind the shell
+            TH.apply_native_rounding(hwnd)  # Win11: clip blur to rounded corners
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.toasts.reposition()
@@ -430,9 +680,14 @@ class HumamApp(QMainWindow):
 # ============================================================
 #  ENTRY POINT
 # ============================================================
-if __name__ == "__main__":
+def main() -> int:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setFont(QFont("Segoe UI", 10))
     window = HumamApp()
     window.show()
-    sys.exit(app.exec())
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

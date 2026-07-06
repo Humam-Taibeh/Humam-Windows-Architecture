@@ -1,9 +1,3 @@
-معلش يا خوي، آسف على التعجيق. هسا بالضبط:
-
-**افتح ملف `README.md` الموجود في مجلد المشروع الرئيسي، واحذف كل الكلام القديم الموجود فيه، وانسخ النص التالي كاملاً والصقه مكانه، ثم احفظ الملف.**
-
----
-
 ```markdown
 # Humam Windows Architecture
 
@@ -130,5 +124,3 @@ This tool modifies system registry keys, services, and installed software. While
 
 **Humam Taibeh**
 ```
-
----

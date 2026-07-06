@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 
 from PySide6.QtCore import (
@@ -54,21 +55,31 @@ class PowerShellTask(QObject):
 
     finished = Signal(TaskResult)   # backend returned a SUCCESS|... or ERROR|... line
     failed = Signal(str)            # timeout, missing powershell.exe, or other exception
+    output = Signal(str)            # one line of raw stdout, emitted as core.ps1 prints it
 
-    def __init__(self, ps1_path: str, task_name: str, timeout: int = 120):
+    def __init__(self, ps1_path: str, task_name: str, timeout: int = 120,
+                 app_ids: list[str] | None = None):
         super().__init__()
         self.ps1_path = ps1_path
         self.task_name = task_name
         self.timeout = timeout
+        self.app_ids = app_ids or []
 
     def run(self):
+        process = None
+        timeout_timer = None
+        timed_out = threading.Event()
         try:
             cmd = f"& '{self.ps1_path}' -Task '{self.task_name}'"
+            if self.app_ids:
+                ids_csv = ",".join(self.app_ids)
+                cmd += f" -AppIds '{ids_csv}'"
 
             popen_kwargs = dict(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
             )
 
             # STARTUPINFO / CREATE_NO_WINDOW only exist on Windows. Guard so the
@@ -86,8 +97,35 @@ class PowerShellTask(QObject):
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
                 **popen_kwargs,
             )
-            output, _ = process.communicate(timeout=self.timeout)
-            output = (output or "").strip()
+
+            # Blocking line reads can't be interrupted by a wall-clock check
+            # between iterations if the child goes silent mid-line, so the
+            # timeout is enforced independently by a watchdog that kills the
+            # process outright - the read loop below then just unblocks.
+            def _on_timeout():
+                timed_out.set()
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+            timeout_timer = threading.Timer(self.timeout, _on_timeout)
+            timeout_timer.start()
+
+            lines: list[str] = []
+            for raw_line in process.stdout:
+                line = raw_line.rstrip("\r\n")
+                lines.append(line)
+                if line:
+                    self.output.emit(line)
+            process.wait()
+            timeout_timer.cancel()
+
+            if timed_out.is_set():
+                self.failed.emit(f"Task timed out after {self.timeout}s.")
+                return
+
+            output = "\n".join(lines).strip()
 
             # Contract with core.ps1: the LAST line of output is either
             #   SUCCESS|Human readable message
@@ -106,12 +144,13 @@ class PowerShellTask(QObject):
                 # short, safe fallback message.
                 self.finished.emit(TaskResult(False, "Script finished without a recognized status line."))
 
-        except subprocess.TimeoutExpired:
-            self.failed.emit(f"Task timed out after {self.timeout}s.")
         except FileNotFoundError:
             self.failed.emit("powershell.exe was not found on this system.")
         except Exception as exc:  # noqa: BLE001 - surfaced to the user, never swallowed
             self.failed.emit(str(exc))
+        finally:
+            if timeout_timer is not None:
+                timeout_timer.cancel()
 
 
 # ============================================================
