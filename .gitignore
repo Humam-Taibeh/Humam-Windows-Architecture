@@ -1,0 +1,4 @@
+*.log
+*.tmp
+HTCore_*_Backup/
+Drivers_Backup_Humam/
