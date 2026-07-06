@@ -111,7 +111,7 @@ Tweaks, dev-tool dependencies, and app catalogs are designed to move toward a **
 
 ## Roadmap
 
-- [ ] Data-driven tweak engine (`Invoke-Tweak`)
+- [x] Data-driven tweak engine (`Invoke-Tweak`)
 - [ ] `Verify-Environment`: automatic PATH / env-var management for dev tools (Python, Java, NetBeans, Cursor)
 - [ ] Non-blocking, parallel app installs
 - [ ] `-WhatIf` dry-run mode
