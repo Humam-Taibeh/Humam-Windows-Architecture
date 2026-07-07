@@ -1,0 +1,9 @@
+# ==============================================================
+#  Humam Windows Architecture — development & build dependencies
+#  Install:  pip install -r requirements-dev.txt
+# ==============================================================
+
+-r requirements.txt
+
+# One-file .exe packaging (pyinstaller main.spec)
+pyinstaller>=6.0

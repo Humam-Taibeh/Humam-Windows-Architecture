@@ -1,0 +1,64 @@
+name: ✨ Feature Request
+description: Suggest a new tweak, catalog entry, module, or improvement
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before suggesting a new tweak or app, note the project's design:
+        **features are data** — new tweaks go into the tweak catalog and new
+        apps into the winget catalogs, processed by the existing engine.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What are you trying to accomplish that the tool can't do today?
+      placeholder: After a fresh install I always have to manually…
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: |
+        Describe the feature. For tweaks, include the registry path(s) and
+        on/off values if you know them. For apps, include the exact winget ID.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Which module does this belong to?
+      options:
+        - Software Management
+        - System Optimization
+        - Maintenance & Repair
+        - Privacy & Security
+        - Information & Utilities
+        - Safety & Recovery
+        - GUI / theming / UX
+        - Other / new module
+    validations:
+      required: true
+
+  - type: textarea
+    id: reversibility
+    attributes:
+      label: Reversibility
+      description: |
+        Every system change must be snapshot-able and reversible. How would
+        this feature be undone via "Reset All Tweaks" / "Restore Services"?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true

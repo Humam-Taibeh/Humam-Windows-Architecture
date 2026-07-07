@@ -1,10 +1,109 @@
+# ==============================================================
+#  Humam Windows Architecture — .gitignore
+#  Stack: Python 3 / PySide6 / PyInstaller / PowerShell / Windows
+#  NOTE: main.spec is intentionally tracked — it is the build recipe.
+# ==============================================================
+
+# ----------------------------------------------------------
+#  Python — bytecode & interpreter artifacts
+# ----------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ----------------------------------------------------------
+#  Virtual environments
+# ----------------------------------------------------------
 .venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ----------------------------------------------------------
+#  Packaging & distribution (PyInstaller output)
+# ----------------------------------------------------------
 build/
 dist/
-*.pyc
-__pycache__/
-*.spec
+*.manifest
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# ----------------------------------------------------------
+#  Testing, coverage & type-checker caches
+# ----------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# ----------------------------------------------------------
+#  IDEs & editors
+# ----------------------------------------------------------
+.idea/
+.vscode/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# ----------------------------------------------------------
+#  Windows OS junk
+# ----------------------------------------------------------
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+*.stackdump
+
+# macOS / Linux (for contributors on other platforms)
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+*.directory
+.Trash-*
+
+# ----------------------------------------------------------
+#  Logs, temp & runtime artifacts
+# ----------------------------------------------------------
 *.log
 *.tmp
-Thumbs.db
-desktop.ini
+*.temp
+*.bak
+*.orig
+
+# ----------------------------------------------------------
+#  Secrets & local environment — never commit these
+# ----------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+secrets.json
+credentials.json
+
+# ----------------------------------------------------------
+#  Project-specific local output
+# ----------------------------------------------------------
+# Session logs / backups the tool writes are user-local, but guard
+# against accidental copies into the repo:
+HTCoreArchitecture_Log.txt
+HTCore_OneDriveBackup/
+HTCore_EdgeBackup/

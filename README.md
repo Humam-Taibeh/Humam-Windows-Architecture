@@ -1,126 +1,223 @@
-```markdown
-# Humam Windows Architecture
+<div align="center">
 
-**A modular, data-driven Windows deployment and optimization framework built in PowerShell.**
+# 🏛️ Humam Windows Architecture
 
-Designed for power users, IT technicians, and developers who need a repeatable, safe, and portable way to configure a fresh Windows install from a single USB drive.
+**A dual-layer Windows deployment & optimization framework — a data-driven PowerShell core wrapped in a modern, glass-morphism PySide6 desktop app.**
+
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?logo=windows&logoColor=white)](#-requirements)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](#-requirements)
+[![PowerShell](https://img.shields.io/badge/powershell-5.1%2B-5391FE?logo=powershell&logoColor=white)](#-requirements)
+[![GUI](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/app-v5.1-blueviolet)](CHANGELOG.md)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+*Built for power users, IT technicians, and developers who need a repeatable, safe, and portable way to configure a fresh Windows install — from a single launcher.*
+
+[Features](#-features) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Safety Model](#-safety-model) · [Building](#-building-a-standalone-executable) · [Contributing](#-contributing)
+
+</div>
 
 ---
 
-## Overview
+## 📖 Overview
 
-Humam Windows Architecture is a single-launch PowerShell engine with a luxury terminal UI, driven by:
+**Humam Windows Architecture** pairs two layers that share a single strict contract:
 
-- A `.bat` launcher with self-elevation and pre-flight validation
-- A modular `.ps1` core covering deployment, optimization, repair, and privacy
-- A **snapshot-before-modify** safety model — every reversible change is backed up before it's applied
+| Layer | Technology | Role |
+|---|---|---|
+| 🖥️ **Frontend** | Python · PySide6 (Qt 6) | Frameless glass UI, dual themes, 60 fps animations, live console, toast notifications |
+| ⚙️ **Backend** | PowerShell 5.1+ | Data-driven engine for deployment, tweaks, repair, privacy, and recovery |
 
-Every module follows the same contract: **preview → confirm → snapshot → apply → log**.
+The GUI never touches the system itself. Every card in the interface dispatches a named task to `core.ps1` on a background `QThread`; the backend executes it and reports back over stdout with a machine-parseable `SUCCESS|…` or `ERROR|…` verdict. The core also runs **fully standalone** as a self-elevating terminal application with a hierarchical menu — no Python required.
+
+Every module follows the same lifecycle:
+
+> **preview → confirm → snapshot → apply → log**
 
 ---
 
-## Features
+## ✨ Features
 
-| Module | Description |
+### 📦 Software Management
+- **Curated winget catalogs** — essential apps, developer & AI toolchain, gaming launchers, hardware diagnostics — with a per-app checkbox selector before anything installs
+- **Core API runtimes** deployment (Visual C++, .NET, DirectX)
+- **Startup report** — audit what launches with Windows
+
+### ⚡ System Optimization
+- **Data-driven tweak engine** — every tweak (Dark Mode, Mouse Acceleration, Minimalist Taskbar, Classic Context Menu, Game Mode) is a declarative catalog entry processed by one generic function, not bespoke code
+- **Network & ping optimizer** and **Ultimate Power Plan** activation
+- **Edge & OneDrive removal** with automatic pre-removal backups and one-click reinstall/restore
+
+### 🔧 Maintenance & Repair
+- **SFC + DISM automation** with in-place retry logic
+- **Aggressive cache clean**, drive optimization, `Windows.old` removal
+- Hibernation toggle and per-drive space reporting
+
+### 🛡️ Privacy & Security
+- Bloatware removal, telemetry shutdown, Advertising ID and Activity History disablement
+- **One-click "Apply ALL Privacy Settings"** composite action
+
+### 📊 Information & Utilities
+- Live system dashboard (OS build, CPU, RAM — read via registry/kernel32, zero dependencies)
+- **Driver backup** and missing-driver scan
+- Full session operation log, viewable in-app
+
+### 🛟 Safety & Recovery
+- **Reset All Tweaks** — restores your *actual* prior values, not factory defaults
+- **Restore All Services** — puts every touched service back exactly as found
+- Restore-point creation and Edge/OneDrive backup recovery
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+| Requirement | Notes |
 |---|---|
-| 📦 **Software Management** | Winget-driven app deployment with GitHub API bootstrap and manual-download fallback |
-| ⚡ **System Optimization** | Data-driven registry tweaks (Dark Mode, Game Mode, Taskbar, Mouse, Context Menu) |
-| 🔧 **Maintenance & Repair** | SFC/DISM automation with retry logic |
-| 🛡️ **Privacy & Security** | Telemetry, Advertising ID, Activity History, bloatware removal |
-| 📊 **Information & Utilities** | System dashboard, driver backup, missing-driver scan, session log |
-| 🛟 **Safety & Recovery** | One-click rollback, full tweak reset, service restoration, restore points |
+| Windows 10 / 11 | 64-bit |
+| PowerShell 5.1+ | Ships with Windows |
+| Python 3.10+ | GUI mode only |
+| Administrator rights | Requested automatically at launch |
 
----
-
-## Safety Model
-
-- **System Restore Point** created automatically before the first system change of any session
-- **Registry snapshots**: every tweak captures its original value before modification, restorable via *Reset All Tweaks*
-- **Service snapshots**: startup type + running state captured before any service is disabled, restorable via *Restore All Services*
-- **Session log**: every action is written to `Desktop\Humam Windows Architecture_Log.txt`
-
----
-
-## Requirements
-
-- Windows 10 or Windows 11
-- PowerShell 5.1+
-- Administrator privileges (handled automatically by the launcher)
-- Python 3.8+ (for GUI mode)
-
----
-
-## Usage
-
-### Terminal Mode (Pure PowerShell)
-1. Clone or download this repository.
-2. Run `start.bat` — it will self-elevate if needed.
-3. Navigate the menu to deploy software or optimize the system.
-
-### GUI Mode (Graphical Interface)
-1. Ensure Python 3.8+ and `customtkinter` are installed.
-2. Run `start.bat` — it activates the virtual environment and launches the GUI.
-3. Use the left panel buttons to access all modules.
+### 1 · Clone
 
 ```bash
 git clone https://github.com/Humam-Taibeh/Humam-Windows-Architecture.git
 cd Humam-Windows-Architecture
+```
+
+### 2 · Set up the environment (GUI mode)
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 3 · Launch
+
+```bash
 start.bat
 ```
 
+`start.bat` validates the project layout, activates the virtual environment, and opens the GUI. Pick a category in the sidebar, click a card, confirm — progress streams into the live console and finishes with a toast notification.
+
+### Terminal mode (no Python)
+
+The PowerShell core is a complete application on its own:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File src\backend\core.ps1
+```
+
+It self-elevates if needed and presents the full hierarchical menu directly in the terminal.
+
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 ```
 Humam-Windows-Architecture/
-├── start.bat                  # Elevation + launcher wrapper
-├── requirements.txt           # Python dependencies
-├── .gitignore                 # Ignored files and folders
-├── README.md                  # Project documentation
 │
-├── src/                       # Source code
-│   ├── backend/
-│   │   └── HT_Core_Architecture.ps1   # Core PowerShell engine
-│   ├── frontend/
-│   │   └── main.py                    # GUI application (CustomTkinter)
-│   └── utils/
-│       └── helpers.py                 # Shared utilities (reserved for future)
+├── 📄 start.bat                 # Launcher — venv activation + GUI startup
+├── 📄 requirements.txt          # Python dependencies (pinned)
+├── 📄 main.spec                 # PyInstaller build recipe (one-file .exe)
 │
-├── assets/                    # Icons, images, fonts
-│   └── icon.ico
+├── 📁 src/
+│   ├── 📁 backend/
+│   │   └── core.ps1             # The engine — tweak catalog, task dispatcher,
+│   │                            #   snapshot/restore subsystem, winget deployment
+│   ├── 📁 frontend/
+│   │   ├── main.py              # Orchestration only — pages, navigation, task pipeline
+│   │   ├── menu_structure.py    # SINGLE SOURCE OF TRUTH for the menu hierarchy
+│   │   ├── theme.py             # Dual-theme design tokens, QSS factories, DWM glass
+│   │   ├── animations.py        # Glow, shimmer, cascade, page fade (60 fps doctrine)
+│   │   └── widgets.py           # TitleBar, NavButton, GlassCard, ConfirmDialog, …
+│   └── 📁 utils/
+│       └── helpers.py           # PowerShellTask (QThread worker), ToastManager
 │
-├── .venv/                     # Python virtual environment (local, not in repo)
-├── build/                     # Temporary build files (auto-generated)
-└── dist/                      # Final .exe output (auto-generated)
+├── 📁 assets/                   # Icons, images (packaged into the .exe)
+│
+├── 📄 README.md                 # You are here
+├── 📄 CHANGELOG.md              # Release history (Keep a Changelog)
+├── 📄 CONTRIBUTING.md           # Development workflow & standards
+├── 📄 SECURITY.md               # Vulnerability reporting policy
+└── 📄 LICENSE                   # MIT
 ```
 
-The backend (`HT_Core_Architecture.ps1`) contains the entire PowerShell logic.  
-The frontend (`main.py`) provides a graphical interface using `customtkinter`.  
-The launcher (`start.bat`) activates the virtual environment and runs the GUI.
+### Design contracts
 
-Tweaks, dev-tool dependencies, and app catalogs are designed to move toward a **data-driven model**: each item is defined as a single object (path, registry name, on/off values, description) processed by one generic engine function — instead of one function per tweak.
+- **`menu_structure.py` is the single source of truth.** Adding a button to the app means adding *one dict* — `main.py` renders whatever is defined there, with zero UI code changes.
+- **Every GUI task maps 1:1** to a `switch ($TaskName)` case in `core.ps1`'s `Invoke-GuiTask` dispatcher, which must emit exactly one final `SUCCESS|message` or `ERROR|message` line.
+- **Thread safety is non-negotiable.** Qt widgets are touched only from the GUI thread; PowerShell runs on a `QThread` and reports back exclusively through Qt signals.
+- **Tweaks are data, not code.** Each tweak declares its registry paths, on/off values, and description; one generic engine function applies, snapshots, and reverses all of them.
 
 ---
 
-## Roadmap
+## 🔐 Safety Model
+
+Every destructive path in this tool is guarded by four independent layers:
+
+1. **🛟 System Restore Point** — created automatically before the first system change of any session, across *all* modules.
+2. **📸 Registry snapshots** — every tweak captures its original value before modification. *Reset All Tweaks* restores your real prior settings, not Microsoft's defaults.
+3. **⚙️ Service snapshots** — startup type + running state are captured before any service is disabled, restorable via *Restore All Services*.
+4. **📜 Session log** — every action is appended to `Desktop\HTCoreArchitecture_Log.txt`, viewable from inside the app.
+
+Additionally, removing Edge backs up its Preferences/Bookmarks/Favicons first, and removing OneDrive offers to back up your local OneDrive folder to the Desktop.
+
+---
+
+## 📦 Building a Standalone Executable
+
+The repository ships a maintained PyInstaller spec that bundles the GUI *and* the PowerShell core into a single elevated, windowed `.exe`:
+
+```bash
+.venv\Scripts\activate
+pip install pyinstaller
+pyinstaller main.spec
+```
+
+The output lands in `dist\HumamArchitecture.exe` — portable, no Python required on the target machine, UAC elevation built in.
+
+---
+
+## 🗺️ Roadmap
 
 - [x] Data-driven tweak engine (`Invoke-Tweak`)
-- [ ] `Verify-Environment`: automatic PATH / env-var management for dev tools (Python, Java, NetBeans, Cursor)
+- [x] PySide6 frontend with dual themes and live task console
+- [x] One-file PyInstaller distribution
+- [ ] `Verify-Environment`: automatic PATH / env-var management for dev tools
 - [ ] Non-blocking, parallel app installs
-- [ ] `-WhatIf` dry-run mode
+- [ ] `-WhatIf` dry-run mode across all modules
 - [ ] JSON session report export
 - [ ] Pester test coverage for the backup/restore subsystem
 
 ---
 
-## Disclaimer
+## 🤝 Contributing
 
-This tool modifies system registry keys, services, and installed software. While every reversible action is snapshotted, always ensure you have an independent backup or restore point before running on a production machine.
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, commit conventions, and the architectural contracts you must preserve. Security issues should go through [SECURITY.md](SECURITY.md) instead of the public tracker.
 
 ---
 
-## Author
+## ⚠️ Disclaimer
 
-**Humam Taibeh**
-```
+This tool modifies registry keys, services, and installed software. While every reversible action is snapshotted and a restore point is created automatically, **always ensure you have an independent backup before running on a production machine.** The software is provided *as is*, without warranty of any kind — see [LICENSE](LICENSE).
+
+---
+
+## 📄 License
+
+Distributed under the **MIT License**. See [LICENSE](LICENSE) for full text.
+
+---
+
+<div align="center">
+
+**Crafted with precision by [Humam Taibeh](https://github.com/Humam-Taibeh)**
+
+*If this project saved you an afternoon of Windows setup, consider giving it a ⭐*
+
+</div>

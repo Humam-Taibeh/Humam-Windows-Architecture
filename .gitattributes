@@ -1,0 +1,49 @@
+# ==============================================================
+#  .gitattributes — deterministic line endings & diff behavior
+# ==============================================================
+
+# Auto-normalize text files to LF in the repository by default
+* text=auto eol=lf
+
+# ----------------------------------------------------------
+#  Windows scripts MUST check out with CRLF
+#  (cmd.exe misparses LF batch files; PS 5.1 expects CRLF)
+# ----------------------------------------------------------
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+*.reg  text eol=crlf
+
+# ----------------------------------------------------------
+#  Source & docs — LF
+# ----------------------------------------------------------
+*.py   text eol=lf diff=python
+*.spec text eol=lf diff=python
+*.md   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.txt  text eol=lf
+
+# ----------------------------------------------------------
+#  Binary assets — never diff or normalize
+# ----------------------------------------------------------
+*.ico  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ttf  binary
+*.otf  binary
+*.exe  binary
+*.dll  binary
+*.zip  binary
+
+# ----------------------------------------------------------
+#  GitHub Linguist — keep language stats honest
+# ----------------------------------------------------------
+*.spec linguist-language=Python
