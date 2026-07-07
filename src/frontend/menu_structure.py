@@ -6,10 +6,12 @@ SINGLE SOURCE OF TRUTH for the entire GUI menu hierarchy.
 Adding a new button to the app = adding ONE dict to an `items` list below.
 main.py renders whatever is defined here — no UI code changes needed.
 
-Contract with the backend (src/backend/core.ps1):
-    Every `task` value maps 1:1 to a `switch ($TaskName)` case inside
-    core.ps1's Invoke-GuiTask dispatcher, which must emit exactly one
-    final `SUCCESS|message` or `ERROR|message` line on stdout.
+Contract with the backend (src/backend/core.ps1 + src/backend/modules/):
+    Every `task` value maps 1:1 to a `switch ($TaskName)` case inside the
+    Invoke-GuiTask dispatcher (src/backend/modules/30-GuiDispatcher.ps1,
+    loaded by core.ps1), which must emit exactly one final
+    `SUCCESS|message` or `ERROR|message` line on stdout. The GUI always
+    invokes core.ps1 itself - never a module file directly.
 
     Tasks starting with "@" are LOCAL actions handled by the GUI itself
     (no PowerShell process is spawned):
@@ -29,9 +31,10 @@ Item schema:
              the GUI opens the checkbox multi-selector overlay instead of a
              plain confirm dialog, and only the ticked AppIds are sent to
              core.ps1 via -AppIds. MUST mirror the corresponding $Apps_* /
-             $Runtimes array in src/backend/core.ps1 exactly (same IDs, same
-             order) - the backend is the source of truth for what winget ID
-             each entry installs; this list is only the GUI's mirror of it.
+             $Runtimes array in src/backend/modules/01-Catalogs.ps1 exactly
+             (same IDs, same order) - the backend is the source of truth for
+             what winget ID each entry installs; this list is only the GUI's
+             mirror of it.
 """
 
 # ============================================================
@@ -106,6 +109,9 @@ CATEGORIES = [
             {"icon": "🚀", "title": "Startup Report",
              "desc": "Audit everything that launches at boot (Run keys + Startup folders).",
              "task": "StartupReport", "timeout": 300},
+            {"icon": "🧭", "title": "Verify Dev Environment",
+             "desc": "PATH doctor — audit Git, Python, Java, VS Code, GCC, Node & Ollama and auto-repair missing PATH/JAVA_HOME entries.",
+             "task": "VerifyEnvironment", "timeout": 300},
         ],
     },
     # --------------------------------------------------------

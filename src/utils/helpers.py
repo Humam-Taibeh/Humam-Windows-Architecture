@@ -58,12 +58,16 @@ class PowerShellTask(QObject):
     output = Signal(str)            # one line of raw stdout, emitted as core.ps1 prints it
 
     def __init__(self, ps1_path: str, task_name: str, timeout: int = 120,
-                 app_ids: list[str] | None = None):
+                 app_ids: list[str] | None = None, dry_run: bool = False):
         super().__init__()
         self.ps1_path = ps1_path
         self.task_name = task_name
         self.timeout = timeout
         self.app_ids = app_ids or []
+        # dry_run=True appends -WhatIf: the backend simulates the task and
+        # reports "[WHATIF] ..." lines / a "[DRY-RUN]" result instead of
+        # mutating the system. Same SUCCESS|/ERROR| contract either way.
+        self.dry_run = dry_run
 
     def run(self):
         process = None
@@ -74,6 +78,8 @@ class PowerShellTask(QObject):
             if self.app_ids:
                 ids_csv = ",".join(self.app_ids)
                 cmd += f" -AppIds '{ids_csv}'"
+            if self.dry_run:
+                cmd += " -WhatIf"
 
             popen_kwargs = dict(
                 stdout=subprocess.PIPE,
