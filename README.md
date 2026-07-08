@@ -1,3 +1,5 @@
+[🏛️ Back to Main Profile](https://github.com/Humam-Taibeh)
+
 <div align="center">
 
 # 🏛️ Humam Windows Architecture
@@ -34,6 +36,8 @@ The GUI never touches the system itself. Every card in the interface dispatches 
 Every module follows the same lifecycle:
 
 > **preview → confirm → snapshot → apply → log**
+
+This project is built through **Advanced GenAI System Orchestration**: every module boundary, thread-safety contract, and rendering rule below was specified through detailed architectural prompting, then implemented, audited, and iterated on with AI coding assistants (Claude, Roo, Cline) inside VS Code. The architecture discipline — module decomposition, concurrency contracts, event-loop boundaries — is mine; the code generation is delegated and rigorously reviewed. The strict orchestration contract between the PySide6 (Qt 6) UI event loop and the 13 isolated PowerShell core modules — one dispatch call in, one `SUCCESS`/`ERROR` verdict out, no shared state — is what keeps the two layers decoupled and independently testable.
 
 ---
 
@@ -154,6 +158,8 @@ Humam-Windows-Architecture/
 - **Thread safety is non-negotiable.** Qt widgets are touched only from the GUI thread; PowerShell runs on a `QThread` and reports back exclusively through Qt signals.
 - **Tweaks are data, not code.** Each tweak declares its registry paths, on/off values, and description; one generic engine function applies, snapshots, and reverses all of them.
 
+The backend is organized as 13 single-responsibility PowerShell modules spanning foundational setup, catalog data, safety/snapshotting, environment checks, the software deployment engine, startup auditing, the tweak engine, maintenance/repair, privacy, system info, menu presentation, and the GUI task dispatcher — each one owning exactly one concern.
+
 ---
 
 ## 🔐 Safety Model
@@ -221,3 +227,7 @@ Distributed under the **MIT License**. See [LICENSE](LICENSE) for full text.
 *If this project saved you an afternoon of Windows setup, consider giving it a ⭐*
 
 </div>
+
+---
+
+[🏛️ Back to Main Profile](https://github.com/Humam-Taibeh)
