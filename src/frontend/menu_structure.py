@@ -272,15 +272,6 @@ CATEGORIES = [
     },
 ]
 
-# Tasks already implemented by core.ps1 v3.3's Invoke-GuiTask dispatcher.
-# Everything else requires the Phase 2 backend update; until it lands, the
-# GUI shows a clear "requires backend update" toast instead of a raw error.
-BACKEND_V33_TASKS = frozenset({
-    "DisableTelemetry", "CleanCache", "RunSFC",
-    "RemoveBloatware", "OptimizeDrives", "ResetTweaks",
-})
-
-
 def total_operations() -> int:
     """Number of operations exposed across all categories."""
     return sum(len(c["items"]) for c in CATEGORIES)

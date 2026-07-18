@@ -4,7 +4,13 @@ a = Analysis(
     ['src/frontend/main.py'],
     pathex=['src'],
     binaries=[],
-    datas=[('src/backend/core.ps1', 'src/backend')],
+    datas=[
+        ('src/backend/core.ps1', 'src/backend'),
+        # core.ps1 is only a thin orchestrator: it dot-sources every module
+        # in src/backend/modules/ at startup. Without this entry the bundled
+        # exe ships an engine that fails to load on every task.
+        ('src/backend/modules', 'src/backend/modules'),
+    ],
     hiddenimports=[
         'utils.helpers',
         'frontend.theme',

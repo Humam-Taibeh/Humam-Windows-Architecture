@@ -216,11 +216,13 @@ function Reset-WindowsDefaultSettings {
 function Invoke-NetworkOptimization {
     Write-SectionHeader "Network & Ping Optimizer"
     New-SystemRestorePoint
-    if (Test-DryRun "Flush DNS, release/renew IP, reset Winsock and the IP stack") { return }
+    if (Test-DryRun "Flush DNS, reset Winsock and the IP stack") { return }
     Write-Info "Flushing DNS cache and resetting network stack..."
+    # Deliberately NO ipconfig /release + /renew: dropping the DHCP lease
+    # mid-task can leave the machine offline if the renew fails (VPNs,
+    # static configs, flaky Wi-Fi drivers), and the Winsock/IP-stack reset
+    # below requires a reboot to apply anyway.
     ipconfig /flushdns
-    ipconfig /release
-    ipconfig /renew
     netsh winsock reset
     netsh int ip reset
     Write-Success "Network stack reset and DNS flushed. Ping latency should improve."
@@ -242,7 +244,9 @@ function Enable-UltimatePerformancePowerPlan {
     if (Test-DryRun "Duplicate the hidden Ultimate Performance scheme, rename it 'Humam Ultimate Power Plan' and set it active") { return }
     try {
         $sourceGuid = "e9a42b02-d5df-448d-aa00-03f14749eb61"
-        $dupOutput = powercfg /duplicatescheme $sourceGuid 2>&1
+        # Out-String flattens the line array: -match on an array filters
+        # elements WITHOUT populating $matches, which broke GUID extraction.
+        $dupOutput = powercfg /duplicatescheme $sourceGuid 2>&1 | Out-String
         $newGuid = $null
         if ($dupOutput -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
             $newGuid = $matches[1]

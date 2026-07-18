@@ -69,22 +69,48 @@ class PowerShellTask(QObject):
         # mutating the system. Same SUCCESS|/ERROR| contract either way.
         self.dry_run = dry_run
 
+    @staticmethod
+    def _ps_quote(value: str) -> str:
+        """Escape a value for a single-quoted PowerShell string literal."""
+        return value.replace("'", "''")
+
+    @staticmethod
+    def _kill_process_tree(process: subprocess.Popen):
+        """Terminate powershell.exe AND its children (winget, sfc, DISM...).
+        A bare process.kill() would orphan the actual worker processes."""
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            if process.poll() is None:
+                process.kill()
+        except OSError:
+            pass
+
     def run(self):
         process = None
         timeout_timer = None
         timed_out = threading.Event()
         try:
-            cmd = f"& '{self.ps1_path}' -Task '{self.task_name}'"
+            # Force UTF-8 on the pipe: PowerShell 5.1 otherwise emits the OEM
+            # code page for redirected stdout, which mangles the backend's
+            # unicode glyphs (✓ ✗ — ·) and can abort the read loop entirely.
+            cmd = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                   f"& '{self._ps_quote(self.ps1_path)}' -Task '{self._ps_quote(self.task_name)}'")
             if self.app_ids:
                 ids_csv = ",".join(self.app_ids)
-                cmd += f" -AppIds '{ids_csv}'"
+                cmd += f" -AppIds '{self._ps_quote(ids_csv)}'"
             if self.dry_run:
                 cmd += " -WhatIf"
 
             popen_kwargs = dict(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
 
@@ -109,11 +135,10 @@ class PowerShellTask(QObject):
             # timeout is enforced independently by a watchdog that kills the
             # process outright - the read loop below then just unblocks.
             def _on_timeout():
+                if process.poll() is not None:
+                    return  # finished right at the deadline — not a timeout
                 timed_out.set()
-                try:
-                    process.kill()
-                except OSError:
-                    pass
+                self._kill_process_tree(process)
 
             timeout_timer = threading.Timer(self.timeout, _on_timeout)
             timeout_timer.start()
@@ -157,6 +182,10 @@ class PowerShellTask(QObject):
         finally:
             if timeout_timer is not None:
                 timeout_timer.cancel()
+            # If an exception aborted the read loop, don't leave a live
+            # PowerShell (and its winget/sfc children) running headless.
+            if process is not None and process.poll() is None:
+                self._kill_process_tree(process)
 
 
 # ============================================================
