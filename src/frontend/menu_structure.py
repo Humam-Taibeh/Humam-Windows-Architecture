@@ -15,8 +15,8 @@ Contract with the backend (src/backend/core.ps1 + src/backend/modules/):
 
     Tasks starting with "@" are LOCAL actions handled by the GUI itself
     (no PowerShell process is spawned):
-        @open_log              -> opens Desktop\\HTCoreArchitecture_Log.txt
-        @open_onedrive_backup  -> opens Desktop\\HTCore_OneDriveBackup
+        @open_log              -> opens Desktop\\Pulse_Log.txt
+        @open_onedrive_backup  -> opens Desktop\\Pulse_OneDriveBackup
 
 Item schema:
     icon     str   emoji shown on the card
@@ -239,7 +239,7 @@ CATEGORIES = [
              "desc": "Manual System Restore checkpoint before big changes.",
              "task": "CreateRestorePoint", "timeout": 600},
             {"icon": "📜", "title": "View Operation Log",
-             "desc": "Open the full HTCore Architecture operation log.",
+             "desc": "Open the full Pulse operation log.",
              "task": "@open_log"},
         ],
     },

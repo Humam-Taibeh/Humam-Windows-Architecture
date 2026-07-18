@@ -14,7 +14,7 @@ Import graph: theme.py <- animations.py <- widgets.py <- main.py
 from __future__ import annotations
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPointF, Qt, QVariantAnimation, Signal,
+    QEasingCurve, QEvent, QPoint, QPointF, Qt, QTimer, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QRadialGradient, QTextCursor
 from PySide6.QtWidgets import (
@@ -222,6 +222,21 @@ class GlassCard(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
 
+    def flash(self, kind: str, duration_ms: int = 1400):
+        """Transient 'ok' / 'err' verdict tint after a task ends. Same
+        dynamic-property mechanic as the running state; the clearing
+        timer is bound to this widget as receiver, so a card destroyed
+        mid-flash is never touched."""
+        self.setProperty("flash", kind)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        QTimer.singleShot(duration_ms, self, self._clear_flash)
+
+    def _clear_flash(self):
+        self.setProperty("flash", "")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
     # -- interaction / painting --------------------------------
     def mouseReleaseEvent(self, e):
         if (e.button() == Qt.MouseButton.LeftButton
@@ -399,9 +414,10 @@ class ConfirmDialog(QDialog):
 #  LIVE CONSOLE — streams raw PowerShell stdout in real time
 # ============================================================
 class LiveConsole(QPlainTextEdit):
-    """Read-only micro-terminal. `append_line()` is called once per stdout
-    line as PowerShellTask.output fires, auto-scrolling to the newest line
-    so winget percentages / SFC progress read exactly like a real console."""
+    """Read-only micro-terminal. `put_line()` is the slot for
+    PowerShellTask.output: it appends a line, or — when the backend used a
+    bare carriage return — rewrites the newest line in place, so winget
+    percentages / SFC progress read exactly like a real console."""
 
     MAX_LINES = 2000  # bound memory on very long-running tasks (SFC/DISM)
 
@@ -417,6 +433,13 @@ class LiveConsole(QPlainTextEdit):
     def apply_theme(self, t: dict):
         self.setStyleSheet(TH.console_qss(t))
 
+    def put_line(self, text: str, replace_last: bool = False):
+        """Slot for PowerShellTask.output(text, replace_last)."""
+        if replace_last and not self.document().isEmpty():
+            self._replace_last_line(text)
+        else:
+            self.append_line(text)
+
     def append_line(self, text: str):
         self.appendPlainText(text)
         if self.blockCount() > self.MAX_LINES:
@@ -431,8 +454,56 @@ class LiveConsole(QPlainTextEdit):
         bar = self.verticalScrollBar()
         bar.setValue(bar.maximum())
 
+    def _replace_last_line(self, text: str):
+        """In-place rewrite of the newest block — carriage-return progress.
+        Never grows blockCount(), so the MAX_LINES trim in append_line()
+        is unaffected."""
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock,
+                            QTextCursor.MoveMode.KeepAnchor)
+        cursor.insertText(text)
+        bar = self.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
     def clear_console(self):
         self.clear()
+
+
+# ============================================================
+#  STATE PILL — compact execution-state chip (console header)
+# ============================================================
+class StatePill(QLabel):
+    """IDLE / RUNNING / SUCCESS / ERROR / STOPPED indicator.
+
+    Styled entirely by theme.state_pill_qss through the dynamic `state`
+    property — the same repolish mechanic NavButton uses for `selected`,
+    so state flips never rebuild QSS."""
+
+    TEXTS = {
+        "idle": "IDLE",
+        "running": "RUNNING",
+        "ok": "SUCCESS",
+        "err": "ERROR",
+        "stopped": "STOPPED",
+    }
+
+    def __init__(self, t: dict, parent: QWidget | None = None):
+        super().__init__(self.TEXTS["idle"], parent)
+        self.setObjectName("statePill")
+        self.setProperty("state", "idle")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedHeight(22)
+        self.apply_theme(t)
+
+    def apply_theme(self, t: dict):
+        self.setStyleSheet(TH.state_pill_qss(t))
+
+    def set_state(self, state: str):
+        self.setText(self.TEXTS.get(state, state.upper()))
+        self.setProperty("state", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 # ============================================================

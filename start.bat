@@ -1,5 +1,5 @@
 @echo off
-title Humam Windows Architecture Launcher
+title Pulse Launcher
 
 rem Anchor to this script's own folder so shortcuts / "Run as admin"
 rem launches (which start in System32) still find the project files.

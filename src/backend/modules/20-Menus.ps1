@@ -16,24 +16,24 @@
 # ============================================================
 function Show-TimeGreeting {
     $Hour = (Get-Date).Hour
-    if ($Hour -lt 12) { return "Good Morning, Humam" }
-    elseif ($Hour -lt 18) { return "Good Afternoon, Humam" }
-    else { return "Good Evening, Humam" }
+    if ($Hour -lt 12) { return "Good Morning" }
+    elseif ($Hour -lt 18) { return "Good Afternoon" }
+    else { return "Good Evening" }
 }
 
 function Show-EpicIntro {
     Clear-Host
     $greeting = Show-TimeGreeting
     Write-Host ""
-    Write-Host "       ██╗  ██╗   ████████╗     ██████╗ ██████╗ ██████╗ ███████╗" -ForegroundColor Cyan
-    Write-Host "       ██║  ██║   ╚══██╔══╝    ██╔════╝██╔═══██╗██╔══██╗██╔════╝" -ForegroundColor Cyan
-    Write-Host "       ███████║█████╗██║       ██║     ██║   ██║██████╔╝█████╗  " -ForegroundColor Cyan
-    Write-Host "       ██╔══██║╚════╝██║       ██║     ██║   ██║██╔══██╗██╔══╝  " -ForegroundColor Cyan
-    Write-Host "       ██║  ██║      ██║       ╚██████╗╚██████╔╝██║  ██║███████╗" -ForegroundColor Cyan
-    Write-Host "       ╚═╝  ╚═╝      ╚═╝        ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝" -ForegroundColor Cyan
+    Write-Host "       ██████╗ ██╗   ██╗██╗     ███████╗███████╗" -ForegroundColor Cyan
+    Write-Host "       ██╔══██╗██║   ██║██║     ██╔════╝██╔════╝" -ForegroundColor Cyan
+    Write-Host "       ██████╔╝██║   ██║██║     ███████╗█████╗  " -ForegroundColor Cyan
+    Write-Host "       ██╔═══╝ ██║   ██║██║     ╚════██║██╔══╝  " -ForegroundColor Cyan
+    Write-Host "       ██║     ╚██████╔╝███████╗███████║███████╗" -ForegroundColor Cyan
+    Write-Host "       ╚═╝      ╚═════╝ ╚══════╝╚══════╝╚══════╝" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "        $greeting" -ForegroundColor Yellow
-    Write-Host "        Humam Taibeh's Ultimate Deployment & Optimization Suite" -ForegroundColor DarkGray
+    Write-Host "        Pulse · Ultimate Deployment & Optimization Suite — by Humam Taibeh" -ForegroundColor DarkGray
     Write-Host "        v$Script:ScriptVersion  |  $Script:OSCaption (Build $Script:OSBuild)" -ForegroundColor DarkGray
     if ($Script:DryRun) {
         Write-Host "        DRY-RUN MODE (-WhatIf): changes will be simulated, not applied." -ForegroundColor DarkYellow
@@ -249,7 +249,7 @@ function Show-SystemOptimizationMenu {
         Write-Banner "⚡ SYSTEM OPTIMIZATION"
         Write-ModulePreview -Items @(
             "Smart System Tweaks: Dark mode, mouse, taskbar, OneDrive, Edge, reset defaults",
-            "Performance & Gaming: Network optimizer, Humam Ultimate Power Plan, Game Mode, Classic context menu"
+            "Performance & Gaming: Network optimizer, Pulse Power Plan, Game Mode, Classic context menu"
         )
         Write-Host "   [1]  Smart System Tweaks" -ForegroundColor White
         Write-Host "   [2]  Performance & Gaming Optimization" -ForegroundColor White
@@ -301,14 +301,14 @@ function Show-SystemOptimizationMenu {
                 Write-Banner "PERFORMANCE & GAMING OPTIMIZATION"
                 Write-ModulePreview -Items @(
                     "Network & Ping Optimizer - flushes DNS, resets Winsock/IP stack",
-                    "Humam Ultimate Power Plan - unlocks hidden High-Performance scheme",
+                    "Pulse Power Plan - unlocks hidden High-Performance scheme",
                     "Game Mode & Game Bar - enables Game Mode, disables background recording",
                     "Classic Right-Click Menu - restores the full Windows 10 context menu (Win11 only)"
                 )
                 New-SystemRestorePoint
 
                 if (Ask-User "Network & Ping Optimizer" "Flushes DNS, resets Winsock and IP stack for lowest latency.") { Invoke-NetworkOptimization }
-                if (Ask-User "Activate Humam Ultimate Power Plan" "Unlocks hidden High-Performance plan renamed to your name.") { Enable-UltimatePerformancePowerPlan }
+                if (Ask-User "Activate Pulse Power Plan" "Unlocks the hidden High-Performance scheme as the Pulse Power Plan.") { Enable-UltimatePerformancePowerPlan }
                 if (Ask-User "Enable Game Mode & Disable Game Bar" "Optimizes Windows for gaming, kills background recording.") {
                     Invoke-Tweak -Tweak ($Script:TweakCatalog | Where-Object { $_.Key -eq "GameMode" }) -State "On"
                 }
@@ -429,12 +429,12 @@ function Show-InformationUtilitiesMenu {
             }
             '2' {
                 if (Ask-User "Driver Backup" "Exports drivers.") {
-                    if (-not (Test-DryRun "Export all third-party drivers to Desktop\Drivers_Backup_Humam")) {
+                    if (-not (Test-DryRun "Export all third-party drivers to Desktop\Pulse_DriverBackup")) {
                         try {
-                            $BackupPath = "$env:USERPROFILE\Desktop\Drivers_Backup_Humam"
+                            $BackupPath = "$env:USERPROFILE\Desktop\Pulse_DriverBackup"
                             New-Item -Path $BackupPath -ItemType Directory -Force | Out-Null
                             Export-WindowsDriver -Online -Destination $BackupPath -ErrorAction Stop | Out-Null
-                            Write-Success "Backup saved to Desktop\Drivers_Backup_Humam"
+                            Write-Success "Backup saved to Desktop\Pulse_DriverBackup"
                         } catch {
                             Write-Warn "Driver Backup halted."
                         }
@@ -484,7 +484,7 @@ function Show-InformationUtilitiesMenu {
 #  MAIN MENU & RESTART REMINDER
 # ============================================================
 function Show-MainMenu {
-    Write-Banner "HUMAM TAIBEH'S CORE ARCHITECTURE" "Ultimate Windows Optimization  |  v$Script:ScriptVersion"
+    Write-Banner "PULSE" "Ultimate Windows Optimization  |  v$Script:ScriptVersion  |  by Humam Taibeh"
     Write-Host "   [1] 📦 Software Management" -ForegroundColor White
     Write-Host "   [2] ⚡ System Optimization" -ForegroundColor White
     Write-Host "   [3] 🔧 Maintenance & Repair" -ForegroundColor White

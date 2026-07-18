@@ -2,7 +2,7 @@
 
 ## 🛡️ Scope
 
-**Humam Windows Architecture** runs with administrator privileges and modifies
+**Pulse** runs with administrator privileges and modifies
 registry keys, services, and installed software. Security issues in this
 project can therefore have real impact on end-user machines. We take reports
 seriously and appreciate responsible disclosure.
@@ -11,8 +11,8 @@ seriously and appreciate responsible disclosure.
 
 | Version | Supported |
 |---|---|
-| 5.x (current) | ✅ |
-| < 5.0 | ❌ |
+| 6.x (current) | ✅ |
+| < 6.0 | ❌ |
 
 Only the latest release on `master` receives security fixes.
 
@@ -23,9 +23,9 @@ Only the latest release on `master` receives security fixes.
 Instead, report privately via one of:
 
 1. **GitHub Security Advisories** (preferred):
-   [Report a vulnerability](https://github.com/Humam-Taibeh/Humam-Windows-Architecture/security/advisories/new)
+   [Report a vulnerability](https://github.com/Humam-Taibeh/Pulse/security/advisories/new)
 2. **Email**: humamtaibehh@gmail.com — use the subject line
-   `[SECURITY] Humam Windows Architecture`
+   `[SECURITY] Pulse`
 
 Include as much of the following as you can:
 

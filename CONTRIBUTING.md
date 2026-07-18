@@ -1,4 +1,4 @@
-# Contributing to Humam Windows Architecture
+# Contributing to Pulse
 
 Thank you for considering a contribution! This document explains the development workflow, the coding standards, and — most importantly — the **architectural contracts** that every change must preserve.
 
@@ -21,8 +21,8 @@ Thank you for considering a contribution! This document explains the development
 1. **Fork** the repository and clone your fork:
 
    ```bash
-   git clone https://github.com/<your-username>/Humam-Windows-Architecture.git
-   cd Humam-Windows-Architecture
+   git clone https://github.com/<your-username>/Pulse.git
+   cd Pulse
    ```
 
 2. **Create the environment:**
@@ -152,7 +152,7 @@ Open an issue using the **Bug Report** template. Always include:
 
 - Windows version and build number (`winver`)
 - Whether you ran **GUI mode** or **terminal mode**
-- The relevant portion of `Desktop\HTCoreArchitecture_Log.txt`
+- The relevant portion of `Desktop\Pulse_Log.txt`
 - Steps to reproduce
 
 **Security vulnerabilities must not be reported publicly** — see [SECURITY.md](SECURITY.md).

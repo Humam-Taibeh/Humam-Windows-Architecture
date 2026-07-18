@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to **Humam Windows Architecture** are documented in this file.
+All notable changes to **Pulse** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -14,6 +14,42 @@ GUI version, with core changes called out explicitly.
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [6.0.0] — 2026-07-19
+
+### Changed — Rebrand to Pulse
+- The project, application, window branding, terminal banners, and executable
+  are now **Pulse** (`dist\Pulse.exe`).
+- Runtime artifacts renamed: session log `Desktop\Pulse_Log.txt`, snapshot
+  registry root `HKCU:\Software\Pulse`, Desktop backups
+  `Pulse_{Edge,OneDrive,Startup,Driver}Backup`, power scheme
+  **Pulse Power Plan**, restore point **Pulse Restore Point**.
+- **Migration shims** keep v5.x machines whole: the legacy
+  `HKCU:\Software\HTCoreArchitecture` snapshot root is copied once to the
+  Pulse root; Edge/startup restores and the in-app log/backup openers fall
+  back to the old `HTCore_*` Desktop artifacts; an old-named power plan is
+  renamed in place instead of duplicated.
+
+### Added
+- **Global kill switch** — a danger-styled *■ Stop Task* button in the console
+  header hard-terminates the running task's entire process tree
+  (`taskkill /T /F`: PowerShell plus its winget/sfc/DISM children). The engine
+  reports a distinct `cancelled` outcome — never a fake error — and the UI
+  resets immediately. One terminal signal per task, guaranteed:
+  cancel > timeout > contract verdict.
+- **True real-time console** — the worker reads the pipe in binary chunks with
+  an incremental UTF-8 decoder and understands bare carriage-return rewrites,
+  so `sfc` / `DISM` / `winget` progress updates a single console line live;
+  per-chunk coalescing keeps the GUI event queue bounded on chatty tools.
+- **Execution state pill** (IDLE / RUNNING / SUCCESS / ERROR / STOPPED) beside
+  the console header, plus a transient green/red **verdict flash** on the card
+  that launched the task.
+- Refined frosted-glass theme tokens (stronger borders, card sheen gradient)
+  in both dark and light modes.
+
 ### Changed
 - Complete repository meta-file overhaul: rewritten `README.md`, comprehensive
   `.gitignore`, added `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`,
@@ -21,6 +57,11 @@ GUI version, with core changes called out explicitly.
 - `requirements.txt` cleaned up: removed the unused `customtkinter` dependency
   (the GUI is pure PySide6); build tooling moved to `requirements-dev.txt`.
 - `main.spec` (PyInstaller build recipe) is now version-controlled.
+
+### Core (PowerShell v4.0 → v6.0)
+- Version aligned with the GUI. Every GUI task now opens with a timestamped
+  start banner in the live console, and SFC output streams line-by-line while
+  it scans (previously buffered until the scan finished).
 
 ---
 
@@ -71,4 +112,4 @@ GUI version, with core changes called out explicitly.
   winget-based software deployment, registry tweak engine, SFC/DISM repair
   automation, privacy hardening, and session logging.
 
-[Unreleased]: https://github.com/Humam-Taibeh/Humam-Windows-Architecture/compare/master...HEAD
+[Unreleased]: https://github.com/Humam-Taibeh/Pulse/compare/master...HEAD

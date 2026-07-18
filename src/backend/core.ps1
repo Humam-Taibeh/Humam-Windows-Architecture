@@ -1,8 +1,8 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    H.T. CORE ARCHITECTURE - Modular Enterprise Edition (v4.0)
-    Humam Taibeh's Windows Deployment & Optimization Framework
+    PULSE - Modular Enterprise Edition (v6.0)
+    Windows Deployment & Optimization Framework - by Humam Taibeh
     -----------------------------------------------------------
     THIS FILE IS A THIN ORCHESTRATOR. All logic lives in the cohesive
     modules under .\modules\, dot-sourced below into ONE shared script
@@ -88,7 +88,7 @@ if (-not $Task) {
 }
 $ErrorActionPreference = "Stop"
 
-$Script:ScriptVersion = "4.0"
+$Script:ScriptVersion = "6.0"
 
 # When invoked with -Task (i.e. from the GUI), there is no console attached
 # for Read-Host to block on. Ask-User, Invoke-WithRetry, Smart-Deploy and
@@ -176,11 +176,11 @@ if ($MyInvocation.InvocationName -ne '.') {
             "5" { Show-InformationUtilitiesMenu }
             "6" { Show-SafetyRecoveryMenu }
             "0" {
-                if (Ask-User "Exit H.T. Core Architecture" "Closes the tool. Any pending restart will still be offered first.") {
+                if (Ask-User "Exit Pulse" "Closes the tool. Any pending restart will still be offered first.") {
                     Write-Host ""
                     Write-Host "   📊 Session Summary: $($Script:SessionSuccessCount) successes, $($Script:SessionFailCount) failures." -ForegroundColor Cyan
                     Show-RestartReminder
-                    Write-Host "   Thank you for using H.T. CORE ARCHITECTURE, Humam!" -ForegroundColor Yellow
+                    Write-Host "   Thank you for using PULSE!" -ForegroundColor Yellow
                     Write-Host "   Exiting in 3 seconds..." -ForegroundColor DarkGray
                     Start-Sleep -Seconds 3
                     Exit

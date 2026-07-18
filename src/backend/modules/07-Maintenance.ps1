@@ -27,12 +27,17 @@ function Invoke-SystemRepair {
         # sfc.exe emits UTF-16: read through a redirected pipe, every other
         # byte is a NUL, which breaks both the display and — critically —
         # the "unable to fix" text match below. Strip NULs before use.
-        $RawLines = & sfc /scannow
-        $SfcExit = $LASTEXITCODE
-        $OutputText = (($RawLines -join [Environment]::NewLine) -replace "`0", "")
-        foreach ($Line in ($OutputText -split "\r?\n")) {
-            if ($Line.Trim()) { Write-Host $Line }
+        # Stream-while-accumulating (v6): each line is echoed the moment
+        # sfc produces it, so "Verification x% complete." rewrites reach
+        # the GUI live instead of arriving in one block after the scan.
+        $OutputLines = New-Object System.Collections.Generic.List[string]
+        & sfc /scannow 2>&1 | ForEach-Object {
+            $Clean = ([string]$_ -replace "`0", "")
+            [void]$OutputLines.Add($Clean)
+            if ($Clean.Trim()) { Write-Host $Clean }
         }
+        $SfcExit = $LASTEXITCODE
+        $OutputText = $OutputLines -join [Environment]::NewLine
 
         if ($SfcExit -ne 0) {
             throw "sfc /scannow exited with code $SfcExit."

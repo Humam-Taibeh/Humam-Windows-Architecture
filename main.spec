@@ -33,7 +33,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='HumamArchitecture',
+    name='Pulse',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

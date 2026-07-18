@@ -28,7 +28,7 @@
 function Invoke-WingetBootstrap {
     Write-Host ""
     Write-Host "   [*] Winget not found - launching silent bootstrap from Microsoft CDN..." -ForegroundColor DarkGray
-    $tempDir = Join-Path $env:TEMP "WingetBootstrap_HTCore"
+    $tempDir = Join-Path $env:TEMP "WingetBootstrap_Pulse"
     New-Item -ItemType Directory -Path $tempDir -Force -ErrorAction SilentlyContinue | Out-Null
 
     $deps = @(

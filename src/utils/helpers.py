@@ -1,7 +1,7 @@
 """
 src/utils/helpers.py
 
-Shared utilities for the Humam Architecture GUI:
+Shared utilities for the Pulse GUI:
 
   - PowerShellTask / TaskResult : runs core.ps1 in a background QThread and
     reports back to the GUI thread ONLY through Qt signals. This is the fix
@@ -22,6 +22,7 @@ Shared utilities for the Humam Architecture GUI:
 """
 from __future__ import annotations
 
+import codecs
 import subprocess
 import sys
 import threading
@@ -48,14 +49,19 @@ class TaskResult:
 # ============================================================
 class PowerShellTask(QObject):
     """
-    Executes `core.ps1 -Task <name>` in a hidden, non-blocking subprocess
+    Executes `core.ps1 -Task <name>` in a hidden, non-blocking subprocess,
+    streams its stdout live (including in-place carriage-return progress),
     and reports the outcome via signals. Must be moved to a QThread by the
-    caller - never call `run()` directly on the GUI thread.
+    caller - never call `run()` directly on the GUI thread. `cancel()` is
+    the one method that is safe (and intended) to call from the GUI thread.
     """
 
     finished = Signal(TaskResult)   # backend returned a SUCCESS|... or ERROR|... line
     failed = Signal(str)            # timeout, missing powershell.exe, or other exception
-    output = Signal(str)            # one line of raw stdout, emitted as core.ps1 prints it
+    cancelled = Signal()            # user-initiated hard stop (global kill switch)
+    output = Signal(str, bool)      # (text, replace_last): replace_last=True rewrites
+                                    # the console's newest line in place — the CR
+                                    # progress semantics of sfc / DISM / winget
 
     def __init__(self, ps1_path: str, task_name: str, timeout: int = 120,
                  app_ids: list[str] | None = None, dry_run: bool = False):
@@ -68,6 +74,12 @@ class PowerShellTask(QObject):
         # reports "[WHATIF] ..." lines / a "[DRY-RUN]" result instead of
         # mutating the system. Same SUCCESS|/ERROR| contract either way.
         self.dry_run = dry_run
+        # Kill-switch state. cancel() runs on the GUI thread while run()
+        # blocks reading stdout on the worker thread, so the Popen handle
+        # is shared under a lock and the request travels as an Event.
+        self._process: subprocess.Popen | None = None
+        self._proc_lock = threading.Lock()
+        self._cancel_evt = threading.Event()
 
     @staticmethod
     def _ps_quote(value: str) -> str:
@@ -90,6 +102,75 @@ class PowerShellTask(QObject):
         except OSError:
             pass
 
+    def cancel(self):
+        """Hard-stop the running task: kill the entire process tree now.
+
+        Thread-safe by design — called directly from the GUI thread while
+        run() blocks on the pipe in the worker thread. It never emits a
+        signal itself: run() owns every terminal emission and reports
+        `cancelled` once the pipe drains, so exactly one of finished /
+        failed / cancelled fires per task.
+        """
+        self._cancel_evt.set()
+        with self._proc_lock:
+            process = self._process
+        if process is not None and process.poll() is None:
+            self._kill_process_tree(process)
+
+    @staticmethod
+    def _split_events(buf: str, replace_next: bool) -> tuple[str, list[tuple[str, bool]], bool]:
+        """Cut `buf` into (text, replace_last) line events.
+
+        LF and CRLF close a line normally. A bare CR closes the line AND
+        marks the next segment as an in-place rewrite — the console
+        semantics sfc / DISM / winget use for progress percentages. A lone
+        CR at the end of the buffer is held back: it may be the first half
+        of a CRLF pair split across two chunks.
+        Returns (unconsumed remainder, events, pending replace flag).
+        """
+        events: list[tuple[str, bool]] = []
+        start = i = 0
+        n = len(buf)
+        while i < n:
+            ch = buf[i]
+            if ch == "\n":
+                events.append((buf[start:i], replace_next))
+                replace_next = False
+                i += 1
+                start = i
+            elif ch == "\r":
+                if i + 1 == n:
+                    break                    # undecidable until the next chunk
+                events.append((buf[start:i], replace_next))
+                if buf[i + 1] == "\n":
+                    replace_next = False     # CRLF — an ordinary newline
+                    i += 2
+                else:
+                    replace_next = True      # bare CR — the next write overwrites
+                    i += 1
+                start = i
+            else:
+                i += 1
+        return buf[start:], events, replace_next
+
+    @staticmethod
+    def _coalesce(events: list[tuple[str, bool]]) -> list[tuple[str, bool]]:
+        """Collapse rewrite bursts inside one chunk.
+
+        A replace event supersedes the event right before it (that is
+        literally what a carriage-return rewrite means on a console), so a
+        burst of progress frames arriving in a single chunk collapses to
+        one UI event — the flood control that keeps the GUI event queue
+        bounded on chatty tools.
+        """
+        out: list[tuple[str, bool]] = []
+        for text, replace in events:
+            if replace and out:
+                out[-1] = (text, out[-1][1])
+            else:
+                out.append((text, replace))
+        return out
+
     def run(self):
         process = None
         timeout_timer = None
@@ -106,12 +187,14 @@ class PowerShellTask(QObject):
             if self.dry_run:
                 cmd += " -WhatIf"
 
+            # Binary pipe + incremental UTF-8 decoder (below): chunk-level
+            # reads deliver carriage-return progress the instant it is
+            # written, and a multi-byte glyph split across two chunks still
+            # decodes intact — same net effect as the old encoding="utf-8",
+            # errors="replace" text mode, without line buffering latency.
             popen_kwargs = dict(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
             )
 
             # STARTUPINFO / CREATE_NO_WINDOW only exist on Windows. Guard so the
@@ -130,7 +213,14 @@ class PowerShellTask(QObject):
                 **popen_kwargs,
             )
 
-            # Blocking line reads can't be interrupted by a wall-clock check
+            with self._proc_lock:
+                self._process = process
+            # cancel() may have fired between Popen and the store above -
+            # honor it now, or the kill would race the first pipe read.
+            if self._cancel_evt.is_set():
+                self._kill_process_tree(process)
+
+            # Blocking pipe reads can't be interrupted by a wall-clock check
             # between iterations if the child goes silent mid-line, so the
             # timeout is enforced independently by a watchdog that kills the
             # process outright - the read loop below then just unblocks.
@@ -143,25 +233,52 @@ class PowerShellTask(QObject):
             timeout_timer = threading.Timer(self.timeout, _on_timeout)
             timeout_timer.start()
 
-            lines: list[str] = []
-            for raw_line in process.stdout:
-                line = raw_line.rstrip("\r\n")
-                lines.append(line)
-                if line:
-                    self.output.emit(line)
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            lines: list[str] = []       # logical console mirror - the final
+                                        # SUCCESS|/ERROR| parse reads this
+            buf = ""
+            replace_next = False        # a bare CR marks the NEXT segment as
+                                        # an in-place rewrite of the last line
+
+            def _apply(text: str, replace: bool):
+                if replace and lines:
+                    lines[-1] = text
+                else:
+                    lines.append(text)
+                if text:
+                    self.output.emit(text, replace)
+
+            while True:
+                chunk = process.stdout.read1(4096)   # blocks until data or EOF
+                if not chunk:
+                    break
+                buf += decoder.decode(chunk)
+                buf, events, replace_next = self._split_events(buf, replace_next)
+                for text, replace in self._coalesce(events):
+                    _apply(text, replace)
+
+            tail = buf + decoder.decode(b"", final=True)
+            if tail:
+                if tail.endswith("\r"):
+                    tail = tail[:-1]    # dangling CR at EOF just ends the line
+                _apply(tail, replace_next)
+
             process.wait()
             timeout_timer.cancel()
 
+            # Terminal verdict - exactly one signal per task, in priority
+            # order: user cancel > watchdog timeout > backend contract line.
+            if self._cancel_evt.is_set():
+                self.cancelled.emit()
+                return
             if timed_out.is_set():
                 self.failed.emit(f"Task timed out after {self.timeout}s.")
                 return
 
-            output = "\n".join(lines).strip()
-
             # Contract with core.ps1: the LAST line of output is either
             #   SUCCESS|Human readable message
             #   ERROR|Human readable message
-            last_line = output.splitlines()[-1] if output else ""
+            last_line = next((ln for ln in reversed(lines) if ln.strip()), "")
 
             if last_line.startswith("SUCCESS"):
                 msg = last_line.split("|", 1)[1].strip() if "|" in last_line else "Task completed."

@@ -1,5 +1,5 @@
 # ==============================================================
-#  Humam Windows Architecture — .gitignore
+#  Pulse — .gitignore
 #  Stack: Python 3 / PySide6 / PyInstaller / PowerShell / Windows
 #  NOTE: main.spec is intentionally tracked — it is the build recipe.
 # ==============================================================
@@ -104,6 +104,13 @@ credentials.json
 # ----------------------------------------------------------
 # Session logs / backups the tool writes are user-local, but guard
 # against accidental copies into the repo:
+Pulse_Log.txt
+Pulse_OneDriveBackup/
+Pulse_EdgeBackup/
+Pulse_StartupBackup/
+Pulse_DriverBackup/
+# Pre-rebrand (v5.x) artifact names — still present on older dev machines:
 HTCoreArchitecture_Log.txt
 HTCore_OneDriveBackup/
 HTCore_EdgeBackup/
+HTCore_StartupBackup/
