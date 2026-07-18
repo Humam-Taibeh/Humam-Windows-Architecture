@@ -8,7 +8,7 @@
       - New-SystemRestorePoint: one restore point per session, created before
         the first registry/service/system change in ANY module.
       - Backup/Restore-OriginalRegValue: every reversible tweak snapshots its
-        ORIGINAL value to HKCU:\Software\HTCoreArchitecture\TweakBackups so
+        ORIGINAL value to HKCU:\Software\Pulse\TweakBackups so
         "Reset All Tweaks" restores the user's real prior settings, not just
         Microsoft factory defaults.
       - Backup-ServiceState / Restore-AllServicesToPreviousState: every
@@ -27,7 +27,7 @@
 # ============================================================
 function New-SystemRestorePoint {
     if ($Script:RestorePointCreated) { return }
-    if (Test-DryRun "Create System Restore point 'Pre-Humam Setup Blueprint' (once per session)") { return }
+    if (Test-DryRun "Create System Restore point 'Pulse Restore Point' (once per session)") { return }
     Write-Info "Preparing System Restore checkpoint..."
     try {
         $SystemDrive = $env:SystemDrive
@@ -37,17 +37,17 @@ function New-SystemRestorePoint {
         if (-not (Test-Path $ThrottlePath)) { New-Item -Path $ThrottlePath -Force | Out-Null }
         Set-ItemProperty -Path $ThrottlePath -Name "SystemRestorePointCreationFrequency" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 
-        Checkpoint-Computer -Description "Pre-Humam Setup Blueprint" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
+        Checkpoint-Computer -Description "Pulse Restore Point" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
         $Script:RestorePointCreated = $true
 
         try {
             $RP = Get-ComputerRestorePoint -ErrorAction Stop |
-                  Where-Object { $_.Description -eq "Pre-Humam Setup Blueprint" } |
+                  Where-Object { $_.Description -eq "Pulse Restore Point" } |
                   Sort-Object SequenceNumber -Descending | Select-Object -First 1
             if ($RP) { $Script:ScriptRestorePointSeq = $RP.SequenceNumber }
         } catch {}
 
-        Write-Success "System Restore Point 'Pre-Humam Setup Blueprint' created successfully."
+        Write-Success "System Restore Point 'Pulse Restore Point' created successfully."
     } catch {
         Write-Warn "Restore Point creation skipped (System Restore may be disabled, throttled, or unsupported on this edition). Tweaks will still proceed, but consider enabling System Restore first: Control Panel > System > System Protection."
     }
@@ -245,7 +245,7 @@ function Restore-AllServicesToPreviousState {
 #  MICROSOFT EDGE BACKUP / RESTORE
 # ============================================================
 function Backup-EdgeState {
-    if (Test-DryRun "Back up Edge version + Preferences/Bookmarks/Favicons to Desktop\HTCore_EdgeBackup") { return }
+    if (Test-DryRun "Back up Edge version + Preferences/Bookmarks/Favicons to Desktop\Pulse_EdgeBackup") { return }
     Write-Info "Backing up current Edge version and settings before removal..."
     try {
         New-Item -Path $Script:EdgeBackupFolder -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
@@ -273,7 +273,7 @@ function Backup-EdgeState {
                 }
             }
         }
-        Write-Success "Edge version ($Version) and settings backed up to Desktop\HTCore_EdgeBackup."
+        Write-Success "Edge version ($Version) and settings backed up to Desktop\Pulse_EdgeBackup."
     } catch {
         Write-Warn "Edge backup encountered an issue (continuing with removal anyway): $($_.Exception.Message)"
     }
@@ -282,8 +282,16 @@ function Backup-EdgeState {
 function Restore-EdgeState {
     $ManifestPath = Join-Path $Script:EdgeBackupFolder "EdgeManifest.json"
     if (-not (Test-Path $ManifestPath)) {
-        Write-Info "No previous Edge backup found - a clean install of the latest stable Edge was performed."
-        return
+        # Pre-rebrand fallback: a backup taken under v5.x lives in the old
+        # HTCore folder. Read-side only - fresh backups use the Pulse name.
+        $LegacyEdgeBackup = "$env:USERPROFILE\Desktop\HTCore_EdgeBackup"
+        if (Test-Path (Join-Path $LegacyEdgeBackup "EdgeManifest.json")) {
+            $Script:EdgeBackupFolder = $LegacyEdgeBackup
+            $ManifestPath = Join-Path $LegacyEdgeBackup "EdgeManifest.json"
+        } else {
+            Write-Info "No previous Edge backup found - a clean install of the latest stable Edge was performed."
+            return
+        }
     }
     try {
         $Manifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
@@ -321,16 +329,16 @@ function Backup-OneDriveFiles {
         $SizeGB = [math]::Round(((Get-ChildItem -Path $OneDrivePath -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum) / 1GB, 2)
     } catch {}
 
-    if (-not (Ask-User "Back Up Local OneDrive Files First" "Copies your local OneDrive folder (approx. $SizeGB GB) to Desktop\HTCore_OneDriveBackup before removing OneDrive. Recommended, but can take a while for large folders.")) {
+    if (-not (Ask-User "Back Up Local OneDrive Files First" "Copies your local OneDrive folder (approx. $SizeGB GB) to Desktop\Pulse_OneDriveBackup before removing OneDrive. Recommended, but can take a while for large folders.")) {
         Write-Warn "Skipping backup at your request - proceeding to remove OneDrive without one."
         return
     }
-    if (Test-DryRun "Copy local OneDrive folder (~$SizeGB GB) to Desktop\HTCore_OneDriveBackup via robocopy") { return }
+    if (Test-DryRun "Copy local OneDrive folder (~$SizeGB GB) to Desktop\Pulse_OneDriveBackup via robocopy") { return }
     try {
         New-Item -Path $Script:OneDriveBackupFolder -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
         Write-Info "Copying files - this may take a while depending on folder size..."
         robocopy $OneDrivePath $Script:OneDriveBackupFolder /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
-        Write-Success "OneDrive files backed up to Desktop\HTCore_OneDriveBackup."
+        Write-Success "OneDrive files backed up to Desktop\Pulse_OneDriveBackup."
     } catch {
         Write-ErrorX "OneDrive backup failed: $($_.Exception.Message)"
     }
@@ -347,7 +355,7 @@ function Invoke-ScriptRollback {
         Read-Host "   Press Enter to continue"
         return
     }
-    Write-Warn "This restores your ENTIRE system to the 'Pre-Humam Setup Blueprint' checkpoint. This affects the whole system, not only this tool's changes, and requires a restart."
+    Write-Warn "This restores your ENTIRE system to the 'Pulse Restore Point' checkpoint. This affects the whole system, not only this tool's changes, and requires a restart."
     if (-not (Ask-User "Rollback Now" "Restores Windows to the state it was in before this tool made any changes this session, then restarts the PC automatically.")) {
         return
     }

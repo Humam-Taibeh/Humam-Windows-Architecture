@@ -24,12 +24,23 @@ function Invoke-SystemRepair {
     Write-SectionHeader "System File Checker (SFC)"
     Write-Info "Running sfc /scannow -- live output below. This can take several minutes."
     $SfcOk = Invoke-WithRetry -OperationName "SFC Scan" -Action {
-        $RawLines = & sfc /scannow 2>&1
-        $RawLines | ForEach-Object { Write-Host $_ }
-        $OutputText = ($RawLines -join [Environment]::NewLine)
+        # sfc.exe emits UTF-16: read through a redirected pipe, every other
+        # byte is a NUL, which breaks both the display and — critically —
+        # the "unable to fix" text match below. Strip NULs before use.
+        # Stream-while-accumulating (v6): each line is echoed the moment
+        # sfc produces it, so "Verification x% complete." rewrites reach
+        # the GUI live instead of arriving in one block after the scan.
+        $OutputLines = New-Object System.Collections.Generic.List[string]
+        & sfc /scannow 2>&1 | ForEach-Object {
+            $Clean = ([string]$_ -replace "`0", "")
+            [void]$OutputLines.Add($Clean)
+            if ($Clean.Trim()) { Write-Host $Clean }
+        }
+        $SfcExit = $LASTEXITCODE
+        $OutputText = $OutputLines -join [Environment]::NewLine
 
-        if ($LASTEXITCODE -ne 0) {
-            throw "sfc /scannow exited with code $LASTEXITCODE."
+        if ($SfcExit -ne 0) {
+            throw "sfc /scannow exited with code $SfcExit."
         }
 
         # sfc's exit code alone is not trustworthy: on several Windows builds
@@ -47,7 +58,10 @@ function Invoke-SystemRepair {
     Write-SectionHeader "DISM Image Health Restore"
     Write-Info "Running DISM /Online /Cleanup-Image /RestoreHealth -- live output below."
     $DismOk = Invoke-WithRetry -OperationName "DISM RestoreHealth" -Action {
-        DISM /Online /Cleanup-Image /RestoreHealth
+        # Pipe through Write-Host so the progress streams to the caller
+        # instead of being captured into Invoke-WithRetry's return value
+        # (which silently hid all DISM output and polluted $DismOk).
+        & DISM /Online /Cleanup-Image /RestoreHealth | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { throw "DISM exited with code $LASTEXITCODE." }
     }
 

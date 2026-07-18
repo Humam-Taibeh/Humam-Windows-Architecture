@@ -175,7 +175,7 @@ function Remove-MicrosoftEdge {
             Start-Process -FilePath $UninstallPath.FullName -ArgumentList "--uninstall --force-uninstall --system-level" -Wait -NoNewWindow -ErrorAction Stop
         }
         if ($Removed) {
-            Write-Success "Microsoft Edge has been uninstalled (a system restart is recommended). A version/settings backup was saved to Desktop\HTCore_EdgeBackup."
+            Write-Success "Microsoft Edge has been uninstalled (a system restart is recommended). A version/settings backup was saved to Desktop\Pulse_EdgeBackup."
             $Script:PendingRestart = $true
         }
     } else {
@@ -216,11 +216,13 @@ function Reset-WindowsDefaultSettings {
 function Invoke-NetworkOptimization {
     Write-SectionHeader "Network & Ping Optimizer"
     New-SystemRestorePoint
-    if (Test-DryRun "Flush DNS, release/renew IP, reset Winsock and the IP stack") { return }
+    if (Test-DryRun "Flush DNS, reset Winsock and the IP stack") { return }
     Write-Info "Flushing DNS cache and resetting network stack..."
+    # Deliberately NO ipconfig /release + /renew: dropping the DHCP lease
+    # mid-task can leave the machine offline if the renew fails (VPNs,
+    # static configs, flaky Wi-Fi drivers), and the Winsock/IP-stack reset
+    # below requires a reboot to apply anyway.
     ipconfig /flushdns
-    ipconfig /release
-    ipconfig /renew
     netsh winsock reset
     netsh int ip reset
     Write-Success "Network stack reset and DNS flushed. Ping latency should improve."
@@ -229,43 +231,52 @@ function Invoke-NetworkOptimization {
 }
 
 function Enable-UltimatePerformancePowerPlan {
-    Write-SectionHeader "Humam Ultimate Power Plan"
+    Write-SectionHeader "Pulse Power Plan"
     New-SystemRestorePoint
+    $PlanName   = "Pulse Power Plan"
+    $LegacyName = "Humam Ultimate Power Plan"   # pre-rebrand (v5.x) scheme name
+    $GuidRegex  = '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'
     $Existing = powercfg /list | Out-String
-    if ($Existing -match "Humam Ultimate Power Plan" -and $Existing -match '\*') {
-        $ActiveLine = ($Existing -split "`n") | Where-Object { $_ -match "Humam Ultimate Power Plan" -and $_ -match '\*' }
+    if ($Existing -match [regex]::Escape($PlanName) -and $Existing -match '\*') {
+        $ActiveLine = ($Existing -split "`n") | Where-Object { $_ -match [regex]::Escape($PlanName) -and $_ -match '\*' }
         if ($ActiveLine) {
-            Write-AlreadyOK "Humam Ultimate Power Plan is already active."
+            Write-AlreadyOK "$PlanName is already active."
             return
         }
     }
-    if (Test-DryRun "Duplicate the hidden Ultimate Performance scheme, rename it 'Humam Ultimate Power Plan' and set it active") { return }
+    if (Test-DryRun "Duplicate the hidden Ultimate Performance scheme, rename it '$PlanName' and set it active") { return }
     try {
+        # A plan created under either name gets reused (the legacy one is
+        # renamed in place) - duplicating again would leave two identical
+        # schemes cluttering powercfg /list.
+        foreach ($Name in @($PlanName, $LegacyName)) {
+            $pattern = $GuidRegex + '.*' + [regex]::Escape($Name)
+            if ($Existing -match $pattern) {
+                $guid = $matches[1]
+                if ($Name -ne $PlanName) { powercfg /changename $guid $PlanName > $null }
+                powercfg /setactive $guid > $null
+                Write-Success "$PlanName activated (existing profile)."
+                return
+            }
+        }
+
         $sourceGuid = "e9a42b02-d5df-448d-aa00-03f14749eb61"
-        $dupOutput = powercfg /duplicatescheme $sourceGuid 2>&1
+        # Out-String flattens the line array: -match on an array filters
+        # elements WITHOUT populating $matches, which broke GUID extraction.
+        $dupOutput = powercfg /duplicatescheme $sourceGuid 2>&1 | Out-String
         $newGuid = $null
-        if ($dupOutput -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
+        if ($dupOutput -match $GuidRegex) {
             $newGuid = $matches[1]
         }
 
         if ($newGuid) {
-            powercfg /changename $newGuid "Humam Ultimate Power Plan" > $null
+            powercfg /changename $newGuid $PlanName > $null
             powercfg /setactive $newGuid > $null
-            Write-Success "Humam Ultimate Power Plan activated successfully."
+            Write-Success "$PlanName activated successfully."
         } else {
-            if ($Existing -match "Humam Ultimate Power Plan") {
-                $pattern = '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}).*Humam Ultimate Power Plan'
-                if ($Existing -match $pattern) {
-                    powercfg /setactive $matches[1] > $null
-                    Write-Success "Humam Ultimate Power Plan activated (existing profile)."
-                } else {
-                    Write-Warn "Custom plan found but GUID could not be extracted. Please activate manually."
-                }
-            } else {
-                Write-ErrorX "Could not create or activate Humam Ultimate Power Plan."
-            }
+            Write-ErrorX "Could not create or activate $PlanName."
         }
     } catch {
-        Write-ErrorX "Could not activate Humam Ultimate Power Plan: $($_.Exception.Message)"
+        Write-ErrorX "Could not activate ${PlanName}: $($_.Exception.Message)"
     }
 }

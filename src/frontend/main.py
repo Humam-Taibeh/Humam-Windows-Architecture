@@ -1,9 +1,9 @@
 """
 src/frontend/main.py
 
-Humam Windows Architecture — GUI orchestrator (PySide6).
+Pulse — GUI orchestrator (PySide6).
 
-MODULAR BLUEPRINT (v5)
+MODULAR BLUEPRINT (v6)
 ======================
     menu_structure.py   data      — categories, cards, task IDs, timeouts
     theme.py            design    — dual-theme tokens, QSS factories, DWM glass
@@ -48,14 +48,14 @@ from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: 
 from frontend.menu_structure import CATEGORIES, total_operations  # noqa: E402
 from frontend.widgets import (  # noqa: E402
     AppSelectorDialog, BreathingIcon, ConfirmDialog, GlassCard, LiveConsole,
-    NavButton, NavPill, TitleBar,
+    NavButton, NavPill, StatePill, TitleBar,
 )
 
 # ============================================================
 #  APP CONSTANTS
 # ============================================================
-APP_NAME = "HUMAM ARCHITECTURE"
-APP_VERSION = "5.1"
+APP_NAME = "PULSE"
+APP_VERSION = "6.0"
 PS1_FILENAME = "core.ps1"
 DEFAULT_TIMEOUT = 900
 
@@ -162,7 +162,7 @@ class WelcomePage(QWidget):
         lay.addWidget(self._name)
         lay.addSpacing(6)
 
-        self._tag = QLabel("Ultimate Windows Optimization & Deployment Framework")
+        self._tag = QLabel("Enterprise-Grade Windows Orchestration")
         self._tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._tag)
         lay.addSpacing(32)
@@ -330,10 +330,10 @@ class CategoryPage(QWidget):
 # ============================================================
 #  MAIN WINDOW
 # ============================================================
-class HumamApp(QMainWindow):
+class PulseApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Humam Architecture")
+        self.setWindowTitle("Pulse")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setGeometry(140, 80, 1180, 740)
@@ -430,8 +430,24 @@ class HumamApp(QMainWindow):
             self.stack.addWidget(page)
         content.addWidget(self.stack, 1)
 
+        # -- console header: label · state pill · kill switch --
+        console_head = QHBoxLayout()
+        console_head.setSpacing(10)
         self._console_label = QLabel("LIVE OUTPUT")
-        content.addWidget(self._console_label)
+        console_head.addWidget(self._console_label)
+        self.state_pill = StatePill(t)
+        console_head.addWidget(self.state_pill)
+        console_head.addStretch()
+        self.stop_btn = QPushButton("■  Stop Task")
+        self.stop_btn.setFixedSize(112, 26)
+        self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stop_btn.setToolTip(
+            "Hard-stop the running task (kills the whole process tree)")
+        self.stop_btn.clicked.connect(self._cancel_running_task)
+        self.stop_btn.hide()   # visible only while a task runs
+        console_head.addWidget(self.stop_btn)
+        content.addLayout(console_head)
+
         self.console = LiveConsole(t)
         self.console.setFixedHeight(170)
         content.addWidget(self.console)
@@ -471,6 +487,8 @@ class HumamApp(QMainWindow):
             page.apply_theme(t)
         self.shimmer.set_theme(t)
         self._console_label.setStyleSheet(TH.console_header_qss(t))
+        self.state_pill.apply_theme(t)
+        self.stop_btn.setStyleSheet(TH.stop_button_qss(t))
         self.console.apply_theme(t)
         self.status_text.setStyleSheet(TH.label_qss(t, "status"))
         self._set_status(self._status_state, self.status_text.text())
@@ -546,6 +564,10 @@ class HumamApp(QMainWindow):
         self._running_card = card
         card.set_running(True)
         self._set_status("busy", f"Executing: {item['title']} …")
+        self.state_pill.set_state("running")
+        self.stop_btn.setText("■  Stop Task")
+        self.stop_btn.setEnabled(True)
+        self.stop_btn.show()
         self.shimmer.start()
         self.console.clear_console()
         self.toasts.show("info", f"Starting: {item['title']}", 2500)
@@ -557,11 +579,13 @@ class HumamApp(QMainWindow):
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run)
-        worker.output.connect(self.console.append_line)
+        worker.output.connect(self.console.put_line)
         worker.finished.connect(self._on_task_finished)
         worker.failed.connect(self._on_task_failed)
+        worker.cancelled.connect(self._on_task_cancelled)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
         thread.finished.connect(self._on_thread_finished)
 
         self._thread = thread
@@ -572,6 +596,7 @@ class HumamApp(QMainWindow):
         if result.success:
             self.toasts.show("success", result.message, 5000)
             self._set_status("ok", "System Ready")
+            self.state_pill.set_state("ok")
         else:
             message = result.message
             if message.lower().startswith("unknown task"):
@@ -579,18 +604,41 @@ class HumamApp(QMainWindow):
                            "Update src/backend/core.ps1 to enable it.")
             self.toasts.show("error", message, 6000)
             self._set_status("err", "System Ready")
-        self._finish_common()
+            self.state_pill.set_state("err")
+        self._finish_common("ok" if result.success else "err")
 
     def _on_task_failed(self, message: str):
         self.toasts.show("error", message, 6000)
         self._set_status("err", "System Ready")
+        self.state_pill.set_state("err")
+        self._finish_common("err")
+
+    def _cancel_running_task(self):
+        """Global kill switch. Disabling the button makes it one-shot; the
+        worker's cancel() only sets an Event and taskkills by PID, so the
+        direct cross-thread call is safe (see helpers.PowerShellTask)."""
+        if self._worker is None:
+            return
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setText("Stopping…")
+        self._set_status("busy", "Stopping task…")
+        self._worker.cancel()
+
+    def _on_task_cancelled(self):
+        self.toasts.show(
+            "info", "Task stopped. Re-run it later to complete the operation.", 5000)
+        self._set_status("ready", "System Ready")
+        self.state_pill.set_state("stopped")
         self._finish_common()
 
-    def _finish_common(self):
+    def _finish_common(self, flash: str | None = None):
         if self._running_card is not None:
             self._running_card.set_running(False)
+            if flash:
+                self._running_card.flash(flash)
             self._running_card = None
         self.shimmer.stop()
+        self.stop_btn.hide()
 
     def _on_thread_finished(self):
         # Deferred cleanup so Qt never destroys a worker while one of its
@@ -607,15 +655,19 @@ class HumamApp(QMainWindow):
     # ============================================================
     def _run_local_action(self, task: str):
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        # (Pulse name, pre-rebrand v5.x fallback) — upgraded machines still
+        # have their log/backups under the old HTCore artifact names.
         targets = {
-            "@open_log": os.path.join(desktop, "HTCoreArchitecture_Log.txt"),
-            "@open_onedrive_backup": os.path.join(desktop, "HTCore_OneDriveBackup"),
+            "@open_log": ("Pulse_Log.txt", "HTCoreArchitecture_Log.txt"),
+            "@open_onedrive_backup": ("Pulse_OneDriveBackup", "HTCore_OneDriveBackup"),
         }
-        path = targets.get(task)
-        if path is None:
+        names = targets.get(task)
+        if names is None:
             self.toasts.show("error", f"Unknown local action: {task}", 4000)
             return
-        if not os.path.exists(path):
+        path = next((p for p in (os.path.join(desktop, n) for n in names)
+                     if os.path.exists(p)), None)
+        if path is None:
             self.toasts.show("info", "Nothing there yet — run an operation first.", 4000)
             return
         try:
@@ -684,7 +736,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setFont(QFont("Segoe UI", 10))
-    window = HumamApp()
+    window = PulseApp()
     window.show()
     return app.exec()
 

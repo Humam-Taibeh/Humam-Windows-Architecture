@@ -50,7 +50,7 @@ function Complete-GuiTask {
     $failsBefore = $Script:SessionFailCount
     & $Action | Out-Null
     if ($Script:SessionFailCount -gt $failsBefore) {
-        Write-Output "ERROR|$FailureMessage See Desktop\HTCoreArchitecture_Log.txt for details."
+        Write-Output "ERROR|$FailureMessage See Desktop\Pulse_Log.txt for details."
     } elseif ($Script:DryRun) {
         Write-Output "SUCCESS|[DRY-RUN] $SuccessMessage (simulated - no changes were made)"
     } else {
@@ -98,7 +98,7 @@ function Invoke-GuiBulkDeploy {
     if ($failed -eq 0) {
         Write-Output "SUCCESS|$Prefix$CategoryName — $ok installed or already current, $skipped skipped."
     } else {
-        Write-Output "ERROR|$CategoryName — $failed failed, $ok succeeded, $skipped skipped. See Desktop\HTCoreArchitecture_Log.txt."
+        Write-Output "ERROR|$CategoryName — $failed failed, $ok succeeded, $skipped skipped. See Desktop\Pulse_Log.txt."
     }
 }
 
@@ -118,6 +118,13 @@ function Invoke-GuiTask {
             Write-Output "ERROR|'$TaskName' needs Administrator rights. Close the app and choose 'Run as administrator'."
             return
         }
+
+        # Start banner - placed here (not in Complete-GuiTask) so EVERY task,
+        # including bulk deploys and hand-rolled cases, shows life in the
+        # GUI's live console within the first second.
+        Write-Host ""
+        Write-Host ("   " + [string][char]0x25B6 + "  Task '$TaskName' started at $(Get-Date -Format 'HH:mm:ss') - live output follows.")
+        Write-Log "GUI-TASK START: $TaskName"
 
         switch ($TaskName) {
 
@@ -206,13 +213,13 @@ function Invoke-GuiTask {
             }
             "UltimatePowerPlan" {
                 Complete-GuiTask -Action { Enable-UltimatePerformancePowerPlan } `
-                    -SuccessMessage "Humam Ultimate Power Plan is now the active power scheme." `
+                    -SuccessMessage "Pulse Power Plan is now the active power scheme." `
                     -FailureMessage "The Ultimate Power Plan could not be activated."
                 break
             }
             "RemoveOneDrive" {
                 Complete-GuiTask -Action { Remove-OneDrivePackage } `
-                    -SuccessMessage "OneDrive removed. Local files were backed up to Desktop\HTCore_OneDriveBackup first." `
+                    -SuccessMessage "OneDrive removed. Local files were backed up to Desktop\Pulse_OneDriveBackup first." `
                     -FailureMessage "OneDrive removal encountered errors."
                 break
             }
@@ -227,7 +234,7 @@ function Invoke-GuiTask {
                 if ($EdgeStillThere) {
                     Write-Output "ERROR|Windows protected Edge from removal on this build (it is an OS component here). A backup of its settings was still saved."
                 } else {
-                    Write-Output "SUCCESS|Microsoft Edge uninstalled. Settings backup saved to Desktop\HTCore_EdgeBackup. Restart recommended."
+                    Write-Output "SUCCESS|Microsoft Edge uninstalled. Settings backup saved to Desktop\Pulse_EdgeBackup. Restart recommended."
                 }
                 break
             }
@@ -243,7 +250,7 @@ function Invoke-GuiTask {
             "RunSFC" {
                 $RepairOk = Invoke-SystemRepair
                 if (-not $RepairOk) {
-                    Write-Output "ERROR|SFC/DISM finished with errors. See Desktop\HTCoreArchitecture_Log.txt and C:\Windows\Logs\CBS\CBS.log."
+                    Write-Output "ERROR|SFC/DISM finished with errors. See Desktop\Pulse_Log.txt and C:\Windows\Logs\CBS\CBS.log."
                 } elseif ($Script:DryRun) {
                     Write-Output "SUCCESS|[DRY-RUN] SFC and DISM repair simulated (nothing was scanned or repaired)."
                 } else {
@@ -350,13 +357,13 @@ function Invoke-GuiTask {
             }
             "DriverBackup" {
                 if ($Script:DryRun) {
-                    Write-Output "SUCCESS|[DRY-RUN] Would export all third-party driver packages to Desktop\Drivers_Backup_Humam."
+                    Write-Output "SUCCESS|[DRY-RUN] Would export all third-party driver packages to Desktop\Pulse_DriverBackup."
                     break
                 }
-                $BackupPath = "$env:USERPROFILE\Desktop\Drivers_Backup_Humam"
+                $BackupPath = "$env:USERPROFILE\Desktop\Pulse_DriverBackup"
                 New-Item -Path $BackupPath -ItemType Directory -Force | Out-Null
                 $Exported = Export-WindowsDriver -Online -Destination $BackupPath -ErrorAction Stop
-                Write-Output "SUCCESS|$(@($Exported).Count) driver package(s) exported to Desktop\Drivers_Backup_Humam."
+                Write-Output "SUCCESS|$(@($Exported).Count) driver package(s) exported to Desktop\Pulse_DriverBackup."
                 break
             }
             "DriverScan" {
@@ -379,7 +386,7 @@ function Invoke-GuiTask {
                 }
                 New-SystemRestorePoint
                 if ($Script:RestorePointCreated) {
-                    Write-Output "SUCCESS|Restore point 'Pre-Humam Setup Blueprint' created."
+                    Write-Output "SUCCESS|Restore point 'Pulse Restore Point' created."
                 } else {
                     Write-Output "ERROR|Restore point could not be created — System Restore may be disabled or throttled on this machine."
                 }

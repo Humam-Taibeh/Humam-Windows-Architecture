@@ -1,5 +1,5 @@
 # ==============================================================
-#  Humam Windows Architecture — development & build dependencies
+#  Pulse — development & build dependencies
 #  Install:  pip install -r requirements-dev.txt
 # ==============================================================
 

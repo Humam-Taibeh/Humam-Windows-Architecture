@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    00-Foundation.ps1 - shared runtime foundation for H.T. CORE ARCHITECTURE.
+    00-Foundation.ps1 - shared runtime foundation for PULSE.
 
 .DESCRIPTION
     Dot-sourced FIRST by src/backend/core.ps1. Everything here lands in the
@@ -40,7 +40,7 @@ $LogDir = "$env:USERPROFILE\Desktop"
 if (-not (Test-Path $LogDir)) {
     New-Item -Path $LogDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 }
-$Script:LogPath = Join-Path $LogDir "HTCoreArchitecture_Log.txt"
+$Script:LogPath = Join-Path $LogDir "Pulse_Log.txt"
 
 # ============================================================
 #  GLOBAL STATE
@@ -55,12 +55,21 @@ $Script:LastBulkChoice      = $null
 
 # ---- SAFETY NET STATE (v3.3+) ---------------------------------------------
 $Script:ScriptRestorePointSeq        = $null
-$Script:TweaksBackupRegPath          = "HKCU:\Software\HTCoreArchitecture\TweakBackups"
-$Script:ServicesBackupRegPath        = "HKCU:\Software\HTCoreArchitecture\ServiceBackups"
+$Script:TweaksBackupRegPath          = "HKCU:\Software\Pulse\TweakBackups"
+$Script:ServicesBackupRegPath        = "HKCU:\Software\Pulse\ServiceBackups"
 $Script:ServicesDisabledThisSession  = New-Object System.Collections.ArrayList
 $Script:SessionLogEntries            = New-Object System.Collections.ArrayList
-$Script:EdgeBackupFolder             = "$env:USERPROFILE\Desktop\HTCore_EdgeBackup"
-$Script:OneDriveBackupFolder         = "$env:USERPROFILE\Desktop\HTCore_OneDriveBackup"
+$Script:EdgeBackupFolder             = "$env:USERPROFILE\Desktop\Pulse_EdgeBackup"
+$Script:OneDriveBackupFolder         = "$env:USERPROFILE\Desktop\Pulse_OneDriveBackup"
+
+# ---- ONE-TIME MIGRATION FROM THE PRE-REBRAND IDENTITY (v5.x) --------------
+# Machines upgrading from "HTCoreArchitecture" keep their tweak/service
+# snapshots and disabled-startup records: the whole legacy registry root is
+# copied to HKCU:\Software\Pulse once, then the old root is left untouched.
+$LegacyRegRoot = "HKCU:\Software\HTCoreArchitecture"
+if ((Test-Path $LegacyRegRoot) -and -not (Test-Path "HKCU:\Software\Pulse")) {
+    try { Copy-Item -Path $LegacyRegRoot -Destination "HKCU:\Software\Pulse" -Recurse -ErrorAction Stop } catch {}
+}
 
 $Script:BoxTL = [string][char]0x2554
 $Script:BoxTR = [string][char]0x2557

@@ -50,15 +50,18 @@ _DARK = {
     "name":        "dark",
     "font":        "Segoe UI",
 
-    # surfaces (opacities raised vs v4 — readability override)
+    # surfaces (opacities raised vs v4 — readability override; the v6
+    # frost upgrade strengthens borders + adds a sheen gradient instead
+    # of lowering fill opacity further)
     "bg":          "rgba(12, 15, 25, 0.96)",
     "bg_solid":    "#0c0f19",
     "overlay":     "rgba(5, 8, 16, 0.55)",     # blur-backing layer behind card grids
-    "panel":       "rgba(255, 255, 255, 0.035)",
-    "panel_line":  "rgba(255, 255, 255, 0.06)",
-    "card":        "rgba(22, 27, 42, 0.72)",
+    "panel":       "rgba(255, 255, 255, 0.05)",
+    "panel_line":  "rgba(255, 255, 255, 0.09)",
+    "card":        "rgba(24, 30, 48, 0.66)",
     "card_hover":  "rgba(0, 212, 255, 0.08)",
-    "card_line":   "rgba(255, 255, 255, 0.09)",
+    "card_line":   "rgba(255, 255, 255, 0.13)",
+    "card_sheen":  "rgba(255, 255, 255, 0.055)",  # top stop of the glass gradient
     "dialog_bg":   "rgba(16, 20, 32, 0.98)",
 
     # brand
@@ -96,10 +99,11 @@ _LIGHT = {
     "bg_solid":    "#f2f6fc",
     "overlay":     "rgba(255, 255, 255, 0.45)",
     "panel":       "rgba(255, 255, 255, 0.55)",
-    "panel_line":  "rgba(15, 23, 42, 0.09)",
-    "card":        "rgba(255, 255, 255, 0.78)",
+    "panel_line":  "rgba(15, 23, 42, 0.11)",
+    "card":        "rgba(255, 255, 255, 0.84)",
     "card_hover":  "rgba(0, 140, 190, 0.09)",
-    "card_line":   "rgba(15, 23, 42, 0.12)",
+    "card_line":   "rgba(15, 23, 42, 0.15)",
+    "card_sheen":  "rgba(255, 255, 255, 0.90)",   # top stop of the glass gradient
     "dialog_bg":   "rgba(250, 252, 255, 0.99)",
 
     "accent":      "#0090c8",
@@ -221,9 +225,14 @@ def nav_button_qss(t: dict) -> str:
 def card_qss(t: dict, accent: str, danger: bool = False) -> str:
     line = t["danger_line"] if danger else t["card_line"]
     hover_line = alpha(t["err"], 0.55) if danger else alpha(accent, 0.55)
+    # Frosted-glass base: a subtle top sheen via qlineargradient (QSS-native,
+    # cached, radius-safe — per-side highlight borders artifact on rounded
+    # corners). State rules AFTER base/hover: QSS is last-match-wins at
+    # equal specificity, and a verdict flash must outrank a stale hover.
     return f"""
         GlassCard {{
-            background-color: {t['card']};
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 {t['card_sheen']}, stop:0.12 {t['card']}, stop:1 {t['card']});
             border: 1px solid {line};
             border-radius: 16px;
         }}
@@ -234,6 +243,14 @@ def card_qss(t: dict, accent: str, danger: bool = False) -> str:
         GlassCard[running="true"] {{
             background-color: {alpha(t['accent'], 0.10)};
             border: 1px solid {t['accent']};
+        }}
+        GlassCard[flash="ok"] {{
+            background-color: {alpha(t['ok'], 0.10)};
+            border: 1px solid {alpha(t['ok'], 0.85)};
+        }}
+        GlassCard[flash="err"] {{
+            background-color: {alpha(t['err'], 0.10)};
+            border: 1px solid {alpha(t['err'], 0.85)};
         }}
     """
 
@@ -355,6 +372,54 @@ def console_qss(t: dict) -> str:
 def console_header_qss(t: dict) -> str:
     return (f"color: {t['text_faint']}; font-size: 10px; font-weight: 700;"
             "background: transparent; border: none; letter-spacing: 2px;")
+
+
+def stop_button_qss(t: dict) -> str:
+    """Global kill switch — danger ghost button in the console header row."""
+    return f"""
+        QPushButton {{
+            background: {alpha(t['err'], 0.10)};
+            border: 1px solid {alpha(t['err'], 0.45)};
+            border-radius: 8px;
+            color: {t['err']};
+            font-size: 11px; font-weight: 600;
+        }}
+        QPushButton:hover {{ background: {alpha(t['err'], 0.25)}; color: {t['text']}; }}
+        QPushButton:disabled {{
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']};
+            color: {t['text_faint']};
+        }}
+    """
+
+
+def state_pill_qss(t: dict) -> str:
+    """Execution-state chip: IDLE / RUNNING / SUCCESS / ERROR / STOPPED.
+    One string per theme switch — states are dynamic-property flips."""
+    base = ("font-size: 9px; font-weight: 700; letter-spacing: 2px;"
+            "border-radius: 10px; padding: 3px 12px;")
+    return f"""
+        QLabel#statePill {{ {base}
+            color: {t['text_faint']};
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']}; }}
+        QLabel#statePill[state="running"] {{ {base}
+            color: {t['accent']};
+            background: {alpha(t['accent'], 0.10)};
+            border: 1px solid {alpha(t['accent'], 0.45)}; }}
+        QLabel#statePill[state="ok"] {{ {base}
+            color: {t['ok']};
+            background: {alpha(t['ok'], 0.10)};
+            border: 1px solid {alpha(t['ok'], 0.45)}; }}
+        QLabel#statePill[state="err"] {{ {base}
+            color: {t['err']};
+            background: {alpha(t['err'], 0.10)};
+            border: 1px solid {alpha(t['err'], 0.45)}; }}
+        QLabel#statePill[state="stopped"] {{ {base}
+            color: {t['warn']};
+            background: {alpha(t['warn'], 0.10)};
+            border: 1px solid {alpha(t['warn'], 0.45)}; }}
+    """
 
 
 def checkbox_qss(t: dict, accent: str) -> str:

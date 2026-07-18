@@ -209,8 +209,13 @@ $Script:TelemetryTasks = @(
 # ============================================================
 #  STARTUP MANAGER LOCATIONS
 # ============================================================
-$Script:StartupDisabledRegPath = "HKCU:\Software\HTCoreArchitecture\DisabledStartup"
-$Script:StartupBackupFolder    = "$env:USERPROFILE\Desktop\HTCore_StartupBackup"
+$Script:StartupDisabledRegPath = "HKCU:\Software\Pulse\DisabledStartup"
+$Script:StartupBackupFolder    = "$env:USERPROFILE\Desktop\Pulse_StartupBackup"
+# Pre-rebrand fallback: shortcuts disabled under v5.x were moved into the old
+# HTCore folder - keep them restorable after the rename to Pulse.
+if (-not (Test-Path $Script:StartupBackupFolder) -and (Test-Path "$env:USERPROFILE\Desktop\HTCore_StartupBackup")) {
+    $Script:StartupBackupFolder = "$env:USERPROFILE\Desktop\HTCore_StartupBackup"
+}
 
 # ============================================================
 #  GUI TASKS THAT REQUIRE ADMINISTRATOR RIGHTS

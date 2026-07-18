@@ -1,5 +1,5 @@
 # ==============================================================
-#  Humam Windows Architecture — runtime dependencies
+#  Pulse — runtime dependencies
 #  Install:  pip install -r requirements.txt
 #  Build-time tooling (PyInstaller) lives in requirements-dev.txt
 # ==============================================================
