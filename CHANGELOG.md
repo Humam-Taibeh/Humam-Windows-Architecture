@@ -14,6 +14,12 @@ GUI version, with core changes called out explicitly.
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [6.1.0] — 2026-07-19
+
 ### Added
 - **Official application icon** (`assets/pulse.ico`, seven sizes 16–256px):
   the Pulse four-pointed star on a deep-navy plate, shown in the title bar
@@ -35,12 +41,6 @@ GUI version, with core changes called out explicitly.
   the neon green/gold/coral, matching category accents and toast colors,
   and the sheen-gradient glass treatment extended to the Welcome insight
   cards for one consistent material.
-
----
-
-## [6.1.0] — 2026-07-19
-
-### Changed
 - **Hardened verdict contract**: the backend's final line is now sentinel-
   prefixed (`##PULSE##SUCCESS|…` / `##PULSE##ERROR|…`) and the GUI scans
   backwards for it, so stray trailing output from a module or external tool
