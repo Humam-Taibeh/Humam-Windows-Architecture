@@ -33,7 +33,8 @@
     INVOCATION MODES:
       core.ps1                      interactive luxury console menu (elevates)
       core.ps1 -Task <name>         GUI task mode: non-interactive, emits one
-                                    final SUCCESS|... or ERROR|... line
+                                    final ##PULSE##SUCCESS|... or
+                                    ##PULSE##ERROR|... verdict line
       core.ps1 -Task <n> -AppIds a,b   narrows a bulk deploy to ticked apps
       core.ps1 [...] -WhatIf        DRY-RUN: full simulation, zero mutations
 
@@ -88,7 +89,7 @@ if (-not $Task) {
 }
 $ErrorActionPreference = "Stop"
 
-$Script:ScriptVersion = "6.0"
+$Script:ScriptVersion = "6.1"
 
 # When invoked with -Task (i.e. from the GUI), there is no console attached
 # for Read-Host to block on. Ask-User, Invoke-WithRetry, Smart-Deploy and
@@ -121,7 +122,7 @@ try {
     # even when the backend itself cannot come up.
     $LoadError = "Backend module '$LoadingModule' failed to load: $($_.Exception.Message)"
     if ($Task) {
-        Write-Output "ERROR|$LoadError"
+        Write-Output "##PULSE##ERROR|$LoadError"
     } else {
         Write-Host ""
         Write-Host "   FATAL: $LoadError" -ForegroundColor Red

@@ -18,7 +18,7 @@
 <!-- See CONTRIBUTING.md — PRs violating these will be asked to revise -->
 
 - [ ] System-touching logic lives **only** in `src/backend/core.ps1`
-- [ ] Any new GUI task has a matching `Invoke-GuiTask` case emitting exactly one `SUCCESS|…` / `ERROR|…` line
+- [ ] Any new GUI task has a matching `Invoke-GuiTask` case emitting exactly one `##PULSE##SUCCESS|…` / `##PULSE##ERROR|…` verdict line
 - [ ] New tweaks are **catalog entries**, not bespoke functions, and snapshot their original values
 - [ ] `apps` lists in `menu_structure.py` mirror the backend `$Apps_*` arrays exactly
 - [ ] Qt widgets are touched only from the GUI thread (signals for everything else)

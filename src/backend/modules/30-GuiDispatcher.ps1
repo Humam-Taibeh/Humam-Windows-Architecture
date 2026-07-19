@@ -9,11 +9,15 @@
       - The frontend runs `core.ps1 -Task <name> [-AppIds a,b,c] [-WhatIf]`.
       - Every `task` in src/frontend/menu_structure.py maps 1:1 to one
         `switch ($TaskName)` case in Invoke-GuiTask below.
-      - Invoke-GuiTask emits EXACTLY ONE final line on stdout:
-            SUCCESS|Human readable message
-            ERROR|Human readable message
+      - Invoke-GuiTask emits EXACTLY ONE final verdict line on stdout,
+        prefixed with the ##PULSE## sentinel (v6.1) so no external tool's
+        stray output can ever be mistaken for the verdict:
+            ##PULSE##SUCCESS|Human readable message
+            ##PULSE##ERROR|Human readable message
         Silence is the one failure mode we never allow: any unanticipated
-        exception is converted to an ERROR| line by the safety net.
+        exception is converted to an ERROR verdict by the safety net.
+        (The GUI scans backwards for the sentinel and still accepts bare
+        SUCCESS|/ERROR| lines from pre-6.1 backends as a fallback.)
       - $Script:NonInteractive is $true for the whole run, so nothing below
         this layer ever blocks on Read-Host or pops UI.
 
@@ -50,11 +54,11 @@ function Complete-GuiTask {
     $failsBefore = $Script:SessionFailCount
     & $Action | Out-Null
     if ($Script:SessionFailCount -gt $failsBefore) {
-        Write-Output "ERROR|$FailureMessage See Desktop\Pulse_Log.txt for details."
+        Write-Output "##PULSE##ERROR|$FailureMessage See the Pulse log (Information > View Operation Log)."
     } elseif ($Script:DryRun) {
-        Write-Output "SUCCESS|[DRY-RUN] $SuccessMessage (simulated - no changes were made)"
+        Write-Output "##PULSE##SUCCESS|[DRY-RUN] $SuccessMessage (simulated - no changes were made)"
     } else {
-        Write-Output "SUCCESS|$SuccessMessage"
+        Write-Output "##PULSE##SUCCESS|$SuccessMessage"
     }
 }
 
@@ -69,7 +73,7 @@ function Invoke-GuiBulkDeploy {
     param($AppList, [string]$CategoryName, [string]$ExtraAppId = "", [string]$ExtraAppName = "", [string[]]$SelectedIds = @())
     if (-not $Script:DryRun) {
         if (-not (Ensure-Winget)) {
-            Write-Output "ERROR|winget is unavailable and could not be bootstrapped. Install 'App Installer' from the Microsoft Store, then retry."
+            Write-Output "##PULSE##ERROR|winget is unavailable and could not be bootstrapped. Install 'App Installer' from the Microsoft Store, then retry."
             return
         }
     }
@@ -82,7 +86,7 @@ function Invoke-GuiBulkDeploy {
     if ($ExtraAppId) { $Queue += ,@($ExtraAppId, $ExtraAppName) }
 
     if ($Queue.Count -eq 0) {
-        Write-Output "ERROR|No applications were selected for $CategoryName."
+        Write-Output "##PULSE##ERROR|No applications were selected for $CategoryName."
         return
     }
 
@@ -96,9 +100,9 @@ function Invoke-GuiBulkDeploy {
     }
     $Prefix = if ($Script:DryRun) { "[DRY-RUN] " } else { "" }
     if ($failed -eq 0) {
-        Write-Output "SUCCESS|$Prefix$CategoryName — $ok installed or already current, $skipped skipped."
+        Write-Output "##PULSE##SUCCESS|$Prefix$CategoryName — $ok installed or already current, $skipped skipped."
     } else {
-        Write-Output "ERROR|$CategoryName — $failed failed, $ok succeeded, $skipped skipped. See Desktop\Pulse_Log.txt."
+        Write-Output "##PULSE##ERROR|$CategoryName — $failed failed, $ok succeeded, $skipped skipped. See the Pulse log (Information > View Operation Log)."
     }
 }
 
@@ -109,13 +113,14 @@ function Get-TweakByKey {
 
 # --------------------------------------------------------
 #  TASK DISPATCHER — one case per menu_structure.py task ID.
-#  CONTRACT: exactly one final "SUCCESS|..." or "ERROR|..." line.
+#  CONTRACT: exactly one final "##PULSE##SUCCESS|..." or
+#  "##PULSE##ERROR|..." verdict line.
 # --------------------------------------------------------
 function Invoke-GuiTask {
     param([string]$TaskName)
     try {
         if (($Script:AdminRequiredTasks -contains $TaskName) -and -not $Script:IsAdminSession) {
-            Write-Output "ERROR|'$TaskName' needs Administrator rights. Close the app and choose 'Run as administrator'."
+            Write-Output "##PULSE##ERROR|'$TaskName' needs Administrator rights. Close the app and choose 'Run as administrator'."
             return
         }
 
@@ -158,7 +163,7 @@ function Invoke-GuiTask {
                     $State = if ($It.Enabled) { "ENABLED " } else { "DISABLED" }
                     Write-Log ("STARTUP [{0}] ({1}) {2} -> {3}" -f $State, $It.Type, $It.Name, $It.Command)
                 }
-                Write-Output "SUCCESS|Startup audit: $Enabled enabled, $Disabled disabled item(s). Full list saved to the operation log."
+                Write-Output "##PULSE##SUCCESS|Startup audit: $Enabled enabled, $Disabled disabled item(s). Full list saved to the operation log."
                 break
             }
             "VerifyEnvironment" {
@@ -168,7 +173,7 @@ function Invoke-GuiTask {
                     $MissingTxt = " Missing: $($Report.MissingNames -join ', ') (winget ids are in the log)."
                 }
                 $Prefix = if ($Script:DryRun) { "[DRY-RUN] " } else { "" }
-                Write-Output "SUCCESS|${Prefix}Dev environment verified: $($Report.OkCount) tool(s) OK, $($Report.RepairedCount) PATH/env repair(s), $($Report.MissingCount) missing.$MissingTxt"
+                Write-Output "##PULSE##SUCCESS|${Prefix}Dev environment verified: $($Report.OkCount) tool(s) OK, $($Report.RepairedCount) PATH/env repair(s), $($Report.MissingCount) missing.$MissingTxt"
                 break
             }
 
@@ -186,14 +191,14 @@ function Invoke-GuiTask {
                 break
             }
             "MinimalistTaskbar" {
-                if (-not $Script:IsWin11) { Write-Output "ERROR|Minimalist Taskbar requires Windows 11 (detected build $Script:OSBuild)."; break }
+                if (-not $Script:IsWin11) { Write-Output "##PULSE##ERROR|Minimalist Taskbar requires Windows 11 (detected build $Script:OSBuild)."; break }
                 Complete-GuiTask -Action { Enable-MinimalistTaskbar } `
                     -SuccessMessage "Minimalist taskbar applied: left-aligned, widgets and chat removed." `
                     -FailureMessage "Taskbar layout could not be changed."
                 break
             }
             "ClassicContextMenu" {
-                if (-not $Script:IsWin11) { Write-Output "ERROR|Classic Context Menu requires Windows 11 (detected build $Script:OSBuild)."; break }
+                if (-not $Script:IsWin11) { Write-Output "##PULSE##ERROR|Classic Context Menu requires Windows 11 (detected build $Script:OSBuild)."; break }
                 Complete-GuiTask -Action { Enable-ClassicContextMenu } `
                     -SuccessMessage "Classic right-click menu restored (Explorer was restarted to apply it)." `
                     -FailureMessage "Classic context menu could not be restored."
@@ -226,20 +231,20 @@ function Invoke-GuiTask {
             "RemoveEdge" {
                 if ($Script:DryRun) {
                     Remove-MicrosoftEdge
-                    Write-Output "SUCCESS|[DRY-RUN] Edge removal simulated (backup + uninstall were reported, not executed)."
+                    Write-Output "##PULSE##SUCCESS|[DRY-RUN] Edge removal simulated (backup + uninstall were reported, not executed)."
                     break
                 }
                 Remove-MicrosoftEdge
                 $EdgeStillThere = @(Get-ChildItem -Path "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe" -ErrorAction SilentlyContinue).Count -gt 0
                 if ($EdgeStillThere) {
-                    Write-Output "ERROR|Windows protected Edge from removal on this build (it is an OS component here). A backup of its settings was still saved."
+                    Write-Output "##PULSE##ERROR|Windows protected Edge from removal on this build (it is an OS component here). A backup of its settings was still saved."
                 } else {
-                    Write-Output "SUCCESS|Microsoft Edge uninstalled. Settings backup saved to Desktop\Pulse_EdgeBackup. Restart recommended."
+                    Write-Output "##PULSE##SUCCESS|Microsoft Edge uninstalled. Settings backup saved to Desktop\Pulse_EdgeBackup. Restart recommended."
                 }
                 break
             }
             "ReinstallEdge" {
-                if (-not $Script:DryRun -and -not (Ensure-Winget)) { Write-Output "ERROR|winget is unavailable, so Edge cannot be reinstalled automatically. Install 'App Installer' from the Microsoft Store first."; break }
+                if (-not $Script:DryRun -and -not (Ensure-Winget)) { Write-Output "##PULSE##ERROR|winget is unavailable, so Edge cannot be reinstalled automatically. Install 'App Installer' from the Microsoft Store first."; break }
                 Complete-GuiTask -Action { Install-MicrosoftEdge } `
                     -SuccessMessage "Microsoft Edge reinstalled via winget; backed-up settings restored where available." `
                     -FailureMessage "Edge reinstallation did not complete."
@@ -250,11 +255,11 @@ function Invoke-GuiTask {
             "RunSFC" {
                 $RepairOk = Invoke-SystemRepair
                 if (-not $RepairOk) {
-                    Write-Output "ERROR|SFC/DISM finished with errors. See Desktop\Pulse_Log.txt and C:\Windows\Logs\CBS\CBS.log."
+                    Write-Output "##PULSE##ERROR|SFC/DISM finished with errors. See the Pulse log and C:\Windows\Logs\CBS\CBS.log."
                 } elseif ($Script:DryRun) {
-                    Write-Output "SUCCESS|[DRY-RUN] SFC and DISM repair simulated (nothing was scanned or repaired)."
+                    Write-Output "##PULSE##SUCCESS|[DRY-RUN] SFC and DISM repair simulated (nothing was scanned or repaired)."
                 } else {
-                    Write-Output "SUCCESS|SFC and DISM repair completed — system files verified healthy."
+                    Write-Output "##PULSE##SUCCESS|SFC and DISM repair completed — system files verified healthy."
                 }
                 break
             }
@@ -272,7 +277,7 @@ function Invoke-GuiTask {
             }
             "RemoveWindowsOld" {
                 if (-not (Test-Path "$env:SystemDrive\Windows.old")) {
-                    Write-Output "SUCCESS|No Windows.old folder present — nothing to reclaim."
+                    Write-Output "##PULSE##SUCCESS|No Windows.old folder present — nothing to reclaim."
                     break
                 }
                 Complete-GuiTask -Action { Remove-WindowsOldFolder } `
@@ -303,8 +308,8 @@ function Invoke-GuiTask {
                     $Parts += $Line
                     Write-Log "DRIVE $Line"
                 }
-                if ($Parts.Count -eq 0) { Write-Output "ERROR|No fixed drives could be read." }
-                else { Write-Output "SUCCESS|$($Parts -join '   ·   ')" }
+                if ($Parts.Count -eq 0) { Write-Output "##PULSE##ERROR|No fixed drives could be read." }
+                else { Write-Output "##PULSE##SUCCESS|$($Parts -join '   ·   ')" }
                 break
             }
 
@@ -352,18 +357,18 @@ function Invoke-GuiTask {
                 $Msg = "$($Info.OSCaption) (Build $($Info.OSBuild)) · $($Info.CPUName) · RAM $($Info.FreeRAMGB)/$($Info.TotalRAMGB) GB free · Uptime $Up · Plan: $($Info.PowerPlan)"
                 Write-Log "SYSTEMINFO $Msg"
                 foreach ($GPU in @($Info.GPUs)) { Write-Log "SYSTEMINFO GPU: $GPU" }
-                Write-Output "SUCCESS|$Msg"
+                Write-Output "##PULSE##SUCCESS|$Msg"
                 break
             }
             "DriverBackup" {
                 if ($Script:DryRun) {
-                    Write-Output "SUCCESS|[DRY-RUN] Would export all third-party driver packages to Desktop\Pulse_DriverBackup."
+                    Write-Output "##PULSE##SUCCESS|[DRY-RUN] Would export all third-party driver packages to Desktop\Pulse_DriverBackup."
                     break
                 }
                 $BackupPath = "$env:USERPROFILE\Desktop\Pulse_DriverBackup"
                 New-Item -Path $BackupPath -ItemType Directory -Force | Out-Null
                 $Exported = Export-WindowsDriver -Online -Destination $BackupPath -ErrorAction Stop
-                Write-Output "SUCCESS|$(@($Exported).Count) driver package(s) exported to Desktop\Pulse_DriverBackup."
+                Write-Output "##PULSE##SUCCESS|$(@($Exported).Count) driver package(s) exported to Desktop\Pulse_DriverBackup."
                 break
             }
             "DriverScan" {
@@ -372,23 +377,23 @@ function Invoke-GuiTask {
                 $Missing        = $UpdateSearcher.Search("IsInstalled=0 and Type='Driver'")
                 if ($Missing.Updates.Count -gt 0) {
                     foreach ($U in $Missing.Updates) { Write-Log "MISSING-DRIVER: $($U.Title)" }
-                    Write-Output "SUCCESS|Found $($Missing.Updates.Count) missing driver(s) — install them via Settings > Windows Update > Optional updates. Names are in the log."
+                    Write-Output "##PULSE##SUCCESS|Found $($Missing.Updates.Count) missing driver(s) — install them via Settings > Windows Update > Optional updates. Names are in the log."
                 } else {
-                    Write-Output "SUCCESS|No missing drivers — every device is covered by Windows Update."
+                    Write-Output "##PULSE##SUCCESS|No missing drivers — every device is covered by Windows Update."
                 }
                 break
             }
             "CreateRestorePoint" {
                 if ($Script:DryRun) {
                     New-SystemRestorePoint
-                    Write-Output "SUCCESS|[DRY-RUN] Restore point creation simulated."
+                    Write-Output "##PULSE##SUCCESS|[DRY-RUN] Restore point creation simulated."
                     break
                 }
                 New-SystemRestorePoint
                 if ($Script:RestorePointCreated) {
-                    Write-Output "SUCCESS|Restore point 'Pulse Restore Point' created."
+                    Write-Output "##PULSE##SUCCESS|Restore point 'Pulse Restore Point' created."
                 } else {
-                    Write-Output "ERROR|Restore point could not be created — System Restore may be disabled or throttled on this machine."
+                    Write-Output "##PULSE##ERROR|Restore point could not be created — System Restore may be disabled or throttled on this machine."
                 }
                 break
             }
@@ -411,7 +416,7 @@ function Invoke-GuiTask {
                     }
                 }
                 if ($Count -eq 0) {
-                    Write-Output "SUCCESS|No service changes have been recorded by this tool — nothing to restore."
+                    Write-Output "##PULSE##SUCCESS|No service changes have been recorded by this tool — nothing to restore."
                     break
                 }
                 Complete-GuiTask -Action { Restore-AllServicesToPreviousState } `
@@ -420,7 +425,7 @@ function Invoke-GuiTask {
                 break
             }
             "RestoreEdge" {
-                if (-not $Script:DryRun -and -not (Ensure-Winget)) { Write-Output "ERROR|winget is unavailable, so Edge cannot be reinstalled automatically. Install 'App Installer' from the Microsoft Store first."; break }
+                if (-not $Script:DryRun -and -not (Ensure-Winget)) { Write-Output "##PULSE##ERROR|winget is unavailable, so Edge cannot be reinstalled automatically. Install 'App Installer' from the Microsoft Store first."; break }
                 Complete-GuiTask -Action { Install-MicrosoftEdge } `
                     -SuccessMessage "Microsoft Edge reinstated; backed-up settings restored where available." `
                     -FailureMessage "Edge restoration did not complete."
@@ -428,13 +433,13 @@ function Invoke-GuiTask {
             }
 
             default {
-                Write-Output "ERROR|Unknown task: $TaskName"
+                Write-Output "##PULSE##ERROR|Unknown task: $TaskName"
             }
         }
     } catch {
         # Safety net: any unanticipated exception still produces a clean
         # contract line - silence is the one failure mode we never allow.
         Write-Log "GUI-TASK EXCEPTION in '$TaskName': $($_.Exception.Message)"
-        Write-Output "ERROR|$($_.Exception.Message)"
+        Write-Output "##PULSE##ERROR|$($_.Exception.Message)"
     }
 }

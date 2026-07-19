@@ -14,7 +14,51 @@ GUI version, with core changes called out explicitly.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **Official application icon** (`assets/pulse.ico`, seven sizes 16–256px):
+  the Pulse four-pointed star on a deep-navy plate, shown in the title bar
+  and taskbar (with an explicit `AppUserModelID` so source runs don't group
+  under python.exe) and embedded into `Pulse.exe` via `main.spec`.
+- **Native Windows 11 window behavior**: dragging uses the OS system-move
+  loop (real Aero Snap zones, drag-to-top maximize, native
+  restore-from-maximized), the outer 8px is a native `WM_NCHITTEST` resize
+  border with real cursors, Win+Up/Down work via min/max window hints, and
+  a maximized window drops the floating radius/border so corners sit flush.
+- **Micro-interactions**: 220ms cross-fade on theme switch, weighted press
+  tint on operation cards, `:pressed` states on every button, dialog
+  entrance fade, and a settle-upward fade on returning Home.
+
+### Changed
+- **Enterprise color grading** for both themes: neutral deep charcoal-navy
+  dark mode and cool-gray light mode, calmer Fluent-adjacent accents
+  (`#4cc2ff` dark / `#0067c0` light), GitHub-grade status colors replacing
+  the neon green/gold/coral, matching category accents and toast colors,
+  and the sheen-gradient glass treatment extended to the Welcome insight
+  cards for one consistent material.
+
+---
+
+## [6.1.0] — 2026-07-19
+
+### Changed
+- **Hardened verdict contract**: the backend's final line is now sentinel-
+  prefixed (`##PULSE##SUCCESS|…` / `##PULSE##ERROR|…`) and the GUI scans
+  backwards for it, so stray trailing output from a module or external tool
+  can never shadow the verdict. Bare `SUCCESS|`/`ERROR|` lines from pre-6.1
+  backends still parse via a strict fallback; the console displays the
+  verdict without the machine sentinel.
+- **Log relocated** from the Desktop to `%LOCALAPPDATA%\Pulse\logs\
+  Pulse_Log.txt` with size rotation (5 MB threshold, five archives kept).
+  A OneDrive-synced Desktop no longer pays sync traffic per log line. An
+  existing v6.0 Desktop log is migrated automatically; the in-app log opener
+  falls back to the legacy Desktop locations.
+- **UPX disabled** in `main.spec` — packed executables are a classic
+  antivirus false-positive heuristic; an elevated system tool cannot afford
+  that reputation risk.
+
+### Added
+- `ROADMAP.md` — the three-phase plan (v6.1 Trust & Hardening, v6.5
+  Resilience & Native Feel, v7.0 Orchestration).
 
 ---
 

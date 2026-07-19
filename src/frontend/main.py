@@ -27,12 +27,17 @@ import os
 import platform
 import sys
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont, QKeySequence, QShortcut
+if sys.platform == "win32":
+    import ctypes.wintypes  # MSG / RECT for native window hit-testing
+
+from PySide6.QtCore import (
+    QEasingCurve, QEvent, QPropertyAnimation, Qt, QThread, QTimer, Signal,
+)
+from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QMainWindow, QPushButton, QScrollArea, QSizeGrip, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QApplication, QDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
+    QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea, QSizeGrip,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 
 # Allow "from utils.helpers import ..." / "from frontend import ..." when
@@ -55,9 +60,21 @@ from frontend.widgets import (  # noqa: E402
 #  APP CONSTANTS
 # ============================================================
 APP_NAME = "PULSE"
-APP_VERSION = "6.0"
+APP_VERSION = "6.1"
 PS1_FILENAME = "core.ps1"
 DEFAULT_TIMEOUT = 900
+
+
+def _locate_icon() -> str | None:
+    """assets/pulse.ico — project root in dev, _MEIPASS in the bundle."""
+    candidates = [os.path.join(os.path.dirname(_SRC_DIR), "assets", "pulse.ico")]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.insert(0, os.path.join(meipass, "assets", "pulse.ico"))
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
 
 
 # ============================================================
@@ -334,8 +351,17 @@ class PulseApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Pulse")
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        # Min/Max hints keep the frameless window a first-class citizen to
+        # the OS: taskbar minimize animation and Win+Up/Down work natively.
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        icon_path = _locate_icon()
+        if icon_path:
+            self.setWindowIcon(QIcon(icon_path))
         self.setGeometry(140, 80, 1180, 740)
         self.setMinimumSize(1020, 640)
 
@@ -376,7 +402,7 @@ class PulseApp(QMainWindow):
         root.setSpacing(0)
 
         self.titlebar = TitleBar(self, t, APP_NAME, APP_VERSION)
-        self.titlebar.theme_toggle_requested.connect(self.theme.toggle)
+        self.titlebar.theme_toggle_requested.connect(self._toggle_theme_animated)
         root.addWidget(self.titlebar)
 
         body = QHBoxLayout()
@@ -493,6 +519,31 @@ class PulseApp(QMainWindow):
         self.status_text.setStyleSheet(TH.label_qss(t, "status"))
         self._set_status(self._status_state, self.status_text.text())
 
+    def _toggle_theme_animated(self):
+        """Theme switch with a 220ms cross-fade: a snapshot of the old look
+        sits on top and dissolves into the freshly re-skinned UI. One
+        transient overlay + opacity effect — steady state stays effect-free
+        per the animations.py doctrine."""
+        snap = self._shell.grab()
+        overlay = QLabel(self._shell)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setPixmap(snap)
+        overlay.setGeometry(self._shell.rect())
+        overlay.show()
+        overlay.raise_()
+
+        self.theme.toggle()  # re-skins everything underneath, synchronously
+
+        effect = QGraphicsOpacityEffect(overlay)
+        overlay.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", overlay)
+        anim.setDuration(220)
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        anim.finished.connect(overlay.deleteLater)
+        anim.start()
+
     def _set_status(self, state: str, text: str | None = None):
         """state: ready | busy | ok | err — colors come from live tokens."""
         self._status_state = state
@@ -512,7 +563,7 @@ class PulseApp(QMainWindow):
         if self.stack.currentIndex() != 0:
             self.cascade.stop()
             self.stack.setCurrentIndex(0)
-            self.fader.fade_in(self.welcome)
+            self.fader.fade_in(self.welcome, rise_px=10)
 
     def open_category(self, index: int):
         self._select_nav(index)
@@ -655,18 +706,27 @@ class PulseApp(QMainWindow):
     # ============================================================
     def _run_local_action(self, task: str):
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        # (Pulse name, pre-rebrand v5.x fallback) — upgraded machines still
-        # have their log/backups under the old HTCore artifact names.
+        localappdata = os.environ.get(
+            "LOCALAPPDATA",
+            os.path.join(os.path.expanduser("~"), "AppData", "Local"))
+        # Newest home first, then the pre-6.1 Desktop locations (including
+        # the pre-rebrand v5.x names) — upgraded machines keep working.
         targets = {
-            "@open_log": ("Pulse_Log.txt", "HTCoreArchitecture_Log.txt"),
-            "@open_onedrive_backup": ("Pulse_OneDriveBackup", "HTCore_OneDriveBackup"),
+            "@open_log": (
+                os.path.join(localappdata, "Pulse", "logs", "Pulse_Log.txt"),
+                os.path.join(desktop, "Pulse_Log.txt"),
+                os.path.join(desktop, "HTCoreArchitecture_Log.txt"),
+            ),
+            "@open_onedrive_backup": (
+                os.path.join(desktop, "Pulse_OneDriveBackup"),
+                os.path.join(desktop, "HTCore_OneDriveBackup"),
+            ),
         }
-        names = targets.get(task)
-        if names is None:
+        candidates = targets.get(task)
+        if candidates is None:
             self.toasts.show("error", f"Unknown local action: {task}", 4000)
             return
-        path = next((p for p in (os.path.join(desktop, n) for n in names)
-                     if os.path.exists(p)), None)
+        path = next((p for p in candidates if os.path.exists(p)), None)
         if path is None:
             self.toasts.show("info", "Nothing there yet — run an operation first.", 4000)
             return
@@ -714,7 +774,7 @@ class PulseApp(QMainWindow):
                 "Right-click → Run as administrator.", 8000)
 
     # ============================================================
-    #  WINDOW EVENTS — native glass on first show
+    #  WINDOW EVENTS — native glass, native resize, native corners
     # ============================================================
     def showEvent(self, event):
         super().showEvent(event)
@@ -728,14 +788,81 @@ class PulseApp(QMainWindow):
         super().resizeEvent(event)
         self.toasts.reposition()
 
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            # Maximized = edge-to-edge: the shell drops its floating radius
+            # and border (see shell_qss) so corners sit flush with the
+            # monitor, exactly like a native maximized Win11 window.
+            # (`flush`, not `maximized`: QWidget's built-in read-only
+            # `maximized` property would swallow the write.)
+            self._shell.setProperty("flush", self.isMaximized())
+            self._shell.style().unpolish(self._shell)
+            self._shell.style().polish(self._shell)
+
+    # Win32 hit-test codes for the native resize border (WM_NCHITTEST)
+    _HT = {"L": 10, "R": 11, "T": 12, "TL": 13, "TR": 14,
+           "B": 15, "BL": 16, "BR": 17}
+
+    def nativeEvent(self, eventType, message):
+        """Hand the outer 8px of the window back to Windows so edge and
+        corner resizing is fully native: real cursors, the OS size loop,
+        min-size clamping, and snap-consistent behavior. Everything inside
+        stays HTCLIENT, so Qt widgets are untouched. A maximized window has
+        no resize border, matching native apps."""
+        if (sys.platform == "win32" and eventType == b"windows_generic_MSG"
+                and not self.isMaximized()):
+            msg = ctypes.wintypes.MSG.from_address(int(message))
+            if msg.message == 0x0084:  # WM_NCHITTEST
+                x = ctypes.c_short(msg.lParam & 0xFFFF).value
+                y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                rect = ctypes.wintypes.RECT()
+                if ctypes.windll.user32.GetWindowRect(msg.hWnd, ctypes.byref(rect)):
+                    border = max(4, int(8 * self.devicePixelRatioF()))
+                    left = x < rect.left + border
+                    right = x >= rect.right - border
+                    top = y < rect.top + border
+                    bottom = y >= rect.bottom - border
+                    code = 0
+                    if top and left:
+                        code = self._HT["TL"]
+                    elif top and right:
+                        code = self._HT["TR"]
+                    elif bottom and left:
+                        code = self._HT["BL"]
+                    elif bottom and right:
+                        code = self._HT["BR"]
+                    elif left:
+                        code = self._HT["L"]
+                    elif right:
+                        code = self._HT["R"]
+                    elif top:
+                        code = self._HT["T"]
+                    elif bottom:
+                        code = self._HT["B"]
+                    if code:
+                        return True, code
+        return super().nativeEvent(eventType, message)
+
 
 # ============================================================
 #  ENTRY POINT
 # ============================================================
 def main() -> int:
+    if sys.platform == "win32":
+        # Explicit AppUserModelID: without it, running from source groups
+        # Pulse under python.exe on the taskbar with Python's icon.
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "HumamTaibeh.Pulse")
+        except (OSError, AttributeError):
+            pass
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setFont(QFont("Segoe UI", 10))
+    icon_path = _locate_icon()
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
     window = PulseApp()
     window.show()
     return app.exec()

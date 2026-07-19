@@ -10,6 +10,8 @@ a = Analysis(
         # in src/backend/modules/ at startup. Without this entry the bundled
         # exe ships an engine that fails to load on every task.
         ('src/backend/modules', 'src/backend/modules'),
+        # window/taskbar icon, loaded at runtime via _locate_icon()
+        ('assets/pulse.ico', 'assets'),
     ],
     hiddenimports=[
         'utils.helpers',
@@ -37,10 +39,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX intentionally disabled (v6.1): packed executables are a classic
+    # antivirus false-positive heuristic, and an elevated system tool cannot
+    # afford that reputation hit for a few MB of size.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
+    icon='assets/pulse.ico',
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

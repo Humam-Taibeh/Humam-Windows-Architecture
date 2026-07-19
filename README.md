@@ -11,7 +11,7 @@
 [![PowerShell](https://img.shields.io/badge/powershell-5.1%2B-5391FE?logo=powershell&logoColor=white)](#-requirements)
 [![GUI](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/app-v6.0-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/app-v6.1-blueviolet)](CHANGELOG.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 *Built for power users, IT technicians, and developers who need a repeatable, safe, and portable way to configure a fresh Windows install — from a single launcher.*
@@ -77,7 +77,7 @@ The execution engine is built for **observability and control**, not fire-and-fo
 ### 📊 Information & Utilities
 - Live system dashboard (OS build, CPU, RAM — read via registry/kernel32, zero dependencies)
 - **Driver backup** and missing-driver scan
-- Full session operation log (`Desktop\Pulse_Log.txt`), viewable in-app
+- Full session operation log (`%LOCALAPPDATA%\Pulse\logs`, size-rotated), viewable in-app
 
 ### 🛟 Safety & Recovery
 - **Reset All Tweaks** — restores your *actual* prior values, not factory defaults
@@ -171,7 +171,7 @@ Pulse/
 ### Design contracts
 
 - **`menu_structure.py` is the single source of truth.** Adding a button to the app means adding *one dict* — `main.py` renders whatever is defined there, with zero UI code changes.
-- **Every GUI task maps 1:1** to a `switch ($TaskName)` case in the `Invoke-GuiTask` dispatcher, which must emit exactly one final `SUCCESS|message` or `ERROR|message` line.
+- **Every GUI task maps 1:1** to a `switch ($TaskName)` case in the `Invoke-GuiTask` dispatcher, which must emit exactly one final sentinel-prefixed verdict line — `##PULSE##SUCCESS|message` or `##PULSE##ERROR|message` — that no external tool's stray output can imitate.
 - **Thread safety is non-negotiable.** Qt widgets are touched only from the GUI thread; PowerShell runs on a `QThread` and reports back exclusively through Qt signals.
 - **One terminal signal per task.** The worker emits exactly one of `finished` / `failed` / `cancelled` — the kill switch and the timeout watchdog only terminate the process; the read loop owns the verdict, so the UI can never receive conflicting outcomes.
 - **Tweaks are data, not code.** Each tweak declares its registry paths, on/off values, and description; one generic engine function applies, snapshots, and reverses all of them.
@@ -185,7 +185,7 @@ Every destructive path in this tool is guarded by four independent layers:
 1. **🛟 System Restore Point** — `Pulse Restore Point`, created automatically before the first system change of any session, across *all* modules.
 2. **📸 Registry snapshots** — every tweak captures its original value (under `HKCU:\Software\Pulse`) before modification. *Reset All Tweaks* restores your real prior settings, not Microsoft's defaults.
 3. **⚙️ Service snapshots** — startup type + running state are captured before any service is disabled, restorable via *Restore All Services*.
-4. **📜 Session log** — every action is appended to `Desktop\Pulse_Log.txt`, viewable from inside the app.
+4. **📜 Session log** — every action is appended to `%LOCALAPPDATA%\Pulse\logs\Pulse_Log.txt` (size-rotated at 5 MB, five archives kept), viewable from inside the app.
 
 Additionally, removing Edge backs up its Preferences/Bookmarks/Favicons first, and removing OneDrive offers to back up your local OneDrive folder to the Desktop.
 
@@ -210,6 +210,8 @@ The output lands in `dist\Pulse.exe` — portable, no Python required on the tar
 ---
 
 ## 🗺️ Roadmap
+
+The full phased plan (v6.1 hardening → v6.5 resilience & native feel → v7.0 orchestration) lives in [ROADMAP.md](ROADMAP.md). Highlights:
 
 - [x] Data-driven tweak engine (`Invoke-Tweak`)
 - [x] PySide6 frontend with dual themes and live task console

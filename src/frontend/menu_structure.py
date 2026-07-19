@@ -10,12 +10,13 @@ Contract with the backend (src/backend/core.ps1 + src/backend/modules/):
     Every `task` value maps 1:1 to a `switch ($TaskName)` case inside the
     Invoke-GuiTask dispatcher (src/backend/modules/30-GuiDispatcher.ps1,
     loaded by core.ps1), which must emit exactly one final
-    `SUCCESS|message` or `ERROR|message` line on stdout. The GUI always
-    invokes core.ps1 itself - never a module file directly.
+    `##PULSE##SUCCESS|message` or `##PULSE##ERROR|message` verdict line on
+    stdout. The GUI always invokes core.ps1 itself - never a module file
+    directly.
 
     Tasks starting with "@" are LOCAL actions handled by the GUI itself
     (no PowerShell process is spawned):
-        @open_log              -> opens Desktop\\Pulse_Log.txt
+        @open_log              -> opens %LOCALAPPDATA%\\Pulse\\logs\\Pulse_Log.txt
         @open_onedrive_backup  -> opens Desktop\\Pulse_OneDriveBackup
 
 Item schema:
@@ -49,7 +50,7 @@ CATEGORIES = [
         "icon": "📦",
         "title": "Software Management",
         "tagline": "Deploy apps, runtimes and audit startup programs",
-        "accent": "#00d4ff",
+        "accent": "#4cc2ff",
         "items": [
             {"icon": "🧰", "title": "Essential Apps",
              "desc": "Install the essential daily-driver pack (browsers, archivers, media tools) via winget.",
@@ -122,7 +123,7 @@ CATEGORIES = [
         "icon": "⚡",
         "title": "System Optimization",
         "tagline": "Smart tweaks, performance and gaming optimizations",
-        "accent": "#ffd166",
+        "accent": "#e3b341",
         "items": [
             {"icon": "🌙", "title": "Global Dark Mode",
              "desc": "Force the dark theme across Windows and all apps.",
@@ -164,7 +165,7 @@ CATEGORIES = [
         "icon": "🔧",
         "title": "Maintenance & Repair",
         "tagline": "System file repair, cache cleanup and disk optimization",
-        "accent": "#64ffda",
+        "accent": "#4dd0b1",
         "items": [
             {"icon": "🛠️", "title": "System Repair (SFC + DISM)",
              "desc": "Scan and repair protected system files and the component store.",
@@ -197,7 +198,7 @@ CATEGORIES = [
         "icon": "🛡️",
         "title": "Privacy & Security",
         "tagline": "Debloat, kill telemetry and stop data collection",
-        "accent": "#f38ba8",
+        "accent": "#ec8fa3",
         "items": [
             {"icon": "📦", "title": "Remove Bloatware",
              "desc": "Uninstall the pre-loaded Store apps you never asked for.",
@@ -224,7 +225,7 @@ CATEGORIES = [
         "icon": "📊",
         "title": "Information & Utilities",
         "tagline": "System insight, driver tools and the operation log",
-        "accent": "#89b4fa",
+        "accent": "#8ab4f8",
         "items": [
             {"icon": "📊", "title": "System Info Snapshot",
              "desc": "Hardware summary, uptime and drive space — written to the log.",
@@ -251,7 +252,7 @@ CATEGORIES = [
         "icon": "🛟",
         "title": "Safety & Recovery",
         "tagline": "Undo tweaks, restore services and recover backups",
-        "accent": "#a6e3a1",
+        "accent": "#7ec699",
         "items": [
             {"icon": "↩️", "title": "Reset All Tweaks",
              "desc": "Revert every registry tweak to your original backed-up values.",

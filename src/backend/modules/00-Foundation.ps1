@@ -34,13 +34,36 @@ $Script:OSCaption = try { (Get-CimInstance Win32_OperatingSystem -ErrorAction St
 $Script:WindowsEditionID = try { (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name EditionID -ErrorAction Stop).EditionID } catch { "Unknown" }
 
 # ============================================================
-#  ENSURE LOG DIRECTORY EXISTS
+#  LOG LOCATION (%LOCALAPPDATA%\Pulse\logs) + SIZE ROTATION
 # ============================================================
-$LogDir = "$env:USERPROFILE\Desktop"
+# v6.1: the log moved off the Desktop - on OneDrive-synced Desktops every
+# Add-Content line triggered sync traffic, and the file grew without bound.
+$LogDir = Join-Path $env:LOCALAPPDATA "Pulse\logs"
 if (-not (Test-Path $LogDir)) {
     New-Item -Path $LogDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 }
 $Script:LogPath = Join-Path $LogDir "Pulse_Log.txt"
+
+# One-time migration: pull an existing v6.0 Desktop log into the new home
+# so history is preserved. (v5.x HTCore logs stay where they are.)
+$DesktopLog = "$env:USERPROFILE\Desktop\Pulse_Log.txt"
+if ((Test-Path $DesktopLog) -and -not (Test-Path $Script:LogPath)) {
+    try { Move-Item -Path $DesktopLog -Destination $Script:LogPath -Force -ErrorAction Stop } catch {}
+}
+
+# Rotate at 5 MB, keep the 5 newest archives. Runs once per engine start -
+# one Test-Path plus one Length read, effectively free.
+if (Test-Path $Script:LogPath) {
+    try {
+        if ((Get-Item $Script:LogPath).Length -gt 5MB) {
+            $Archive = Join-Path $LogDir ("Pulse_Log_{0}.txt" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+            Move-Item -Path $Script:LogPath -Destination $Archive -Force
+            Get-ChildItem -Path $LogDir -Filter "Pulse_Log_*.txt" -File |
+                Sort-Object Name -Descending | Select-Object -Skip 5 |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
 
 # ============================================================
 #  GLOBAL STATE

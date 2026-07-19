@@ -14,7 +14,8 @@ Import graph: theme.py <- animations.py <- widgets.py <- main.py
 from __future__ import annotations
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPointF, Qt, QTimer, QVariantAnimation, Signal,
+    QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, Qt, QTimer,
+    QVariantAnimation, Signal,
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QRadialGradient, QTextCursor
 from PySide6.QtWidgets import (
@@ -24,6 +25,20 @@ from PySide6.QtWidgets import (
 
 from frontend.animations import GlowController, paint_glow_frame
 from frontend import theme as TH
+
+
+def _animate_dialog_entrance(dialog: QDialog, duration_ms: int = 150):
+    """Premium dialog entrance: a quick window-level fade. windowOpacity is
+    compositor-side — no QGraphicsEffect, safe on frameless translucent
+    dialogs, and cleaned up implicitly when the dialog closes."""
+    dialog.setWindowOpacity(0.0)
+    anim = QPropertyAnimation(dialog, b"windowOpacity", dialog)
+    anim.setDuration(duration_ms)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    anim.start()
+    dialog._entrance_anim = anim  # keep alive for the run
 
 
 # ============================================================
@@ -44,6 +59,7 @@ class TitleBar(QWidget):
         super().__init__(window)
         self._window = window
         self._drag_offset: QPoint | None = None
+        self._press_gp: QPoint | None = None
         self.setFixedHeight(48)
 
         lay = QHBoxLayout(self)
@@ -104,15 +120,32 @@ class TitleBar(QWidget):
             self._sync_max_glyph()
         return False
 
-    # -- drag to move (with maximized-drag guard) --------------
+    # -- drag to move: NATIVE system move first ----------------
+    # startSystemMove() hands the drag to Windows itself, which is what
+    # makes Aero Snap zones, drag-to-top maximize, shake-to-minimize and
+    # restore-from-maximized behave exactly like a native Win11 app.
+    # The move starts on the first real drag (4px threshold), never on
+    # press, so double-click-to-maximize still gets its events. The old
+    # manual path remains as the fallback for platforms without support.
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            self._press_gp = e.globalPosition().toPoint()
             self._drag_offset = (e.globalPosition().toPoint()
                                  - self._window.frameGeometry().topLeft())
 
     def mouseMoveEvent(self, e):
         if self._drag_offset is None or not (e.buttons() & Qt.MouseButton.LeftButton):
             return
+        gp = e.globalPosition().toPoint()
+        if self._press_gp is not None:
+            if (gp - self._press_gp).manhattanLength() < 4:
+                return
+            self._press_gp = None
+            handle = self._window.windowHandle()
+            if handle is not None and handle.startSystemMove():
+                self._drag_offset = None
+                return
+        # manual fallback
         if self._window.isMaximized():
             # restore, then re-anchor the (now smaller) window under the
             # cursor at the same horizontal ratio — no visual jump
@@ -120,10 +153,11 @@ class TitleBar(QWidget):
             self._window.showNormal()
             self._drag_offset = QPoint(
                 int(self._window.width() * ratio), int(e.position().y()))
-        self._window.move(e.globalPosition().toPoint() - self._drag_offset)
+        self._window.move(gp - self._drag_offset)
 
     def mouseReleaseEvent(self, e):
         self._drag_offset = None
+        self._press_gp = None
 
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
@@ -175,6 +209,15 @@ class GlassCard(QFrame):
 
         glow_color = t["err"] if self._danger else accent
         self._glow = GlowController(self, glow_color)
+
+        # "Weighted" press feedback: a painted dark tint that ramps in fast
+        # and releases softly. Painted in paintEvent — zero QSS churn, zero
+        # QGraphicsEffect, per the animations.py doctrine.
+        self._press_tint = 0.0
+        self._press_anim = QVariantAnimation(self)
+        self._press_anim.setDuration(110)
+        self._press_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._press_anim.valueChanged.connect(self._on_press_frame)
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
@@ -238,7 +281,27 @@ class GlassCard(QFrame):
         self.style().polish(self)
 
     # -- interaction / painting --------------------------------
+    def _on_press_frame(self, value: float):
+        self._press_tint = float(value)
+        self.update()
+
+    def _ramp_press(self, target: float):
+        self._press_anim.stop()
+        self._press_anim.setStartValue(self._press_tint)
+        self._press_anim.setEndValue(target)
+        self._press_anim.start()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._ramp_press(1.0)
+        super().mousePressEvent(e)
+
+    def leaveEvent(self, e):
+        self._ramp_press(0.0)
+        super().leaveEvent(e)
+
     def mouseReleaseEvent(self, e):
+        self._ramp_press(0.0)
         if (e.button() == Qt.MouseButton.LeftButton
                 and self.rect().contains(e.position().toPoint())):
             self.clicked.emit()
@@ -247,6 +310,11 @@ class GlassCard(QFrame):
     def paintEvent(self, e):
         super().paintEvent(e)  # QSS glass background/border first
         p = QPainter(self)
+        if self._press_tint > 0.01:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, int(40 * self._press_tint)))
+            p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 15, 15)
         paint_glow_frame(p, self.rect(), 16, self._glow.color,
                          self._glow.intensity, self._glow.cursor)
         p.end()
@@ -408,6 +476,10 @@ class ConfirmDialog(QDialog):
         go.clicked.connect(self.accept)
         row.addWidget(go)
         lay.addLayout(row)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _animate_dialog_entrance(self)
 
 
 # ============================================================
@@ -639,3 +711,7 @@ class AppSelectorDialog(QDialog):
     def _accept_selection(self):
         self.selected_ids = [row.app_id for row in self._rows if row.is_checked()]
         self.accept()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _animate_dialog_entrance(self)

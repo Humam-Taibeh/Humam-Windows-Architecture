@@ -152,7 +152,7 @@ Open an issue using the **Bug Report** template. Always include:
 
 - Windows version and build number (`winver`)
 - Whether you ran **GUI mode** or **terminal mode**
-- The relevant portion of `Desktop\Pulse_Log.txt`
+- The relevant portion of `%LOCALAPPDATA%\Pulse\logs\Pulse_Log.txt`
 - Steps to reproduce
 
 **Security vulnerabilities must not be reported publicly** — see [SECURITY.md](SECURITY.md).

@@ -69,7 +69,7 @@ class GlowController(QObject):
     Repaints are driven by the animation frames + hover moves only.
     """
 
-    def __init__(self, widget: QWidget, accent: str = "#00d4ff"):
+    def __init__(self, widget: QWidget, accent: str = "#4cc2ff"):
         super().__init__(widget)
         self._widget = widget
         self._intensity = 0.0
@@ -178,8 +178,8 @@ class ShimmerBar(QWidget):
         self.setFixedHeight(height)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._phase = 0.0
-        self._c1 = QColor("#00d4ff")
-        self._c2 = QColor("#7b61ff")
+        self._c1 = QColor("#4cc2ff")
+        self._c2 = QColor("#8a7dff")
         self._track = QColor(255, 255, 255, 14)
 
         self._anim = QVariantAnimation(self)
@@ -318,31 +318,49 @@ class CascadeAnimator(QObject):
 #  PAGE FADE — transient cross-fade for QStackedWidget pages
 # ============================================================
 class PageFader(QObject):
-    """Fade-in for the page a QStackedWidget just switched to. The opacity
-    effect lives only for PAGE_FADE_MS, then is removed."""
+    """Fade-in (with an optional subtle rise) for the page a QStackedWidget
+    just switched to. The opacity effect lives only for PAGE_FADE_MS, then
+    is removed; a transient position offset is always restored."""
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
-        self._anim: QPropertyAnimation | None = None
+        self._anim: QParallelAnimationGroup | None = None
         self._page: QWidget | None = None
+        self._target: QPoint | None = None
 
-    def fade_in(self, page: QWidget, duration_ms: int = PAGE_FADE_MS):
+    def fade_in(self, page: QWidget, duration_ms: int = PAGE_FADE_MS,
+                rise_px: int = 0):
         self._finish()  # settle any in-flight fade first
 
         effect = QGraphicsOpacityEffect(page)
         effect.setOpacity(0.0)
         page.setGraphicsEffect(effect)
 
-        anim = QPropertyAnimation(effect, b"opacity", self)
-        anim.setDuration(duration_ms)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(EASE_OUT)
-        anim.finished.connect(self._finish)
+        group = QParallelAnimationGroup(self)
 
+        fade = QPropertyAnimation(effect, b"opacity")
+        fade.setDuration(duration_ms)
+        fade.setStartValue(0.0)
+        fade.setEndValue(1.0)
+        fade.setEasingCurve(EASE_OUT)
+        group.addAnimation(fade)
+
+        self._target = None
+        if rise_px:
+            # weighted entrance: the page settles upward into place
+            self._target = QPoint(page.pos())
+            page.move(self._target + QPoint(0, rise_px))
+            rise = QPropertyAnimation(page, b"pos")
+            rise.setDuration(duration_ms)
+            rise.setStartValue(self._target + QPoint(0, rise_px))
+            rise.setEndValue(self._target)
+            rise.setEasingCurve(EASE_OUT)
+            group.addAnimation(rise)
+
+        group.finished.connect(self._finish)
         self._page = page
-        self._anim = anim
-        anim.start()
+        self._anim = group
+        group.start()
 
     def _finish(self):
         if self._anim is not None:
@@ -352,6 +370,9 @@ class PageFader(QObject):
         if self._page is not None:
             try:
                 self._page.setGraphicsEffect(None)
+                if self._target is not None:
+                    self._page.move(self._target)
             except RuntimeError:
                 pass
             self._page = None
+        self._target = None

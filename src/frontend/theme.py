@@ -50,42 +50,43 @@ _DARK = {
     "name":        "dark",
     "font":        "Segoe UI",
 
-    # surfaces (opacities raised vs v4 — readability override; the v6
-    # frost upgrade strengthens borders + adds a sheen gradient instead
-    # of lowering fill opacity further)
-    "bg":          "rgba(12, 15, 25, 0.96)",
-    "bg_solid":    "#0c0f19",
-    "overlay":     "rgba(5, 8, 16, 0.55)",     # blur-backing layer behind card grids
-    "panel":       "rgba(255, 255, 255, 0.05)",
-    "panel_line":  "rgba(255, 255, 255, 0.09)",
-    "card":        "rgba(24, 30, 48, 0.66)",
-    "card_hover":  "rgba(0, 212, 255, 0.08)",
-    "card_line":   "rgba(255, 255, 255, 0.13)",
-    "card_sheen":  "rgba(255, 255, 255, 0.055)",  # top stop of the glass gradient
-    "dialog_bg":   "rgba(16, 20, 32, 0.98)",
+    # surfaces — v6.2 enterprise grading: neutral deep charcoal-navy
+    # (VS Code / Slack register) instead of saturated navy; frost comes
+    # from borders + the sheen gradient, never from lower fill opacity
+    "bg":          "rgba(16, 18, 23, 0.96)",
+    "bg_solid":    "#101217",
+    "overlay":     "rgba(8, 10, 14, 0.55)",    # blur-backing layer behind card grids
+    "panel":       "rgba(255, 255, 255, 0.045)",
+    "panel_line":  "rgba(255, 255, 255, 0.08)",
+    "card":        "rgba(26, 29, 37, 0.66)",
+    "card_hover":  "rgba(76, 194, 255, 0.07)",
+    "card_line":   "rgba(255, 255, 255, 0.11)",
+    "card_sheen":  "rgba(255, 255, 255, 0.05)",   # top stop of the glass gradient
+    "dialog_bg":   "rgba(19, 22, 29, 0.98)",
 
-    # brand
-    "accent":      "#00d4ff",
-    "accent2":     "#7b61ff",
+    # brand — calmer, Windows-11-adjacent blue; violet softened to match
+    "accent":      "#4cc2ff",
+    "accent2":     "#8a7dff",
 
-    # text (contrast ≥ WCAG AA on the surfaces above)
-    "text":        "#f2f7ff",
-    "text_soft":   "#ccd6f6",
-    "text_muted":  "#93a1c0",
-    "text_faint":  "#5b6884",
+    # text (contrast ≥ WCAG AA on the surfaces above; slightly desaturated
+    # so long sessions read like an editor, not a neon dashboard)
+    "text":        "#e8eaed",
+    "text_soft":   "#c6ccd8",
+    "text_muted":  "#8b93a5",
+    "text_faint":  "#5c6472",
 
-    # status
-    "ok":          "#00ff88",
-    "warn":        "#ffd700",
-    "err":         "#ff6b6b",
-    "danger_line": "rgba(255, 107, 107, 0.30)",
+    # status — GitHub-dark grade: unmistakable but never neon
+    "ok":          "#3fb950",
+    "warn":        "#d29922",
+    "err":         "#f85149",
+    "danger_line": "rgba(248, 81, 73, 0.30)",
 
     # chrome
-    "scroll":      "rgba(255, 255, 255, 0.16)",
-    "scroll_hov":  "rgba(0, 212, 255, 0.50)",
-    "shimmer_track": (255, 255, 255, 14),      # QColor args for painted widgets
-    "titlebar_hover": "rgba(255, 255, 255, 0.10)",
-    "close_hover":    "rgba(255, 70, 70, 0.30)",
+    "scroll":      "rgba(255, 255, 255, 0.14)",
+    "scroll_hov":  "rgba(76, 194, 255, 0.50)",
+    "shimmer_track": (255, 255, 255, 12),      # QColor args for painted widgets
+    "titlebar_hover": "rgba(255, 255, 255, 0.08)",
+    "close_hover":    "rgba(248, 81, 73, 0.30)",
 }
 
 # ============================================================
@@ -95,35 +96,37 @@ _LIGHT = {
     "name":        "light",
     "font":        "Segoe UI",
 
-    "bg":          "rgba(242, 246, 252, 0.97)",
-    "bg_solid":    "#f2f6fc",
+    # v6.2 enterprise grading: soft white on cool gray, Fluent-style accent
+    "bg":          "rgba(244, 246, 249, 0.97)",
+    "bg_solid":    "#f4f6f9",
     "overlay":     "rgba(255, 255, 255, 0.45)",
-    "panel":       "rgba(255, 255, 255, 0.55)",
-    "panel_line":  "rgba(15, 23, 42, 0.11)",
-    "card":        "rgba(255, 255, 255, 0.84)",
-    "card_hover":  "rgba(0, 140, 190, 0.09)",
-    "card_line":   "rgba(15, 23, 42, 0.15)",
-    "card_sheen":  "rgba(255, 255, 255, 0.90)",   # top stop of the glass gradient
-    "dialog_bg":   "rgba(250, 252, 255, 0.99)",
+    "panel":       "rgba(255, 255, 255, 0.60)",
+    "panel_line":  "rgba(27, 32, 40, 0.10)",
+    "card":        "rgba(255, 255, 255, 0.85)",
+    "card_hover":  "rgba(0, 103, 192, 0.07)",
+    "card_line":   "rgba(27, 32, 40, 0.14)",
+    "card_sheen":  "rgba(255, 255, 255, 0.95)",   # top stop of the glass gradient
+    "dialog_bg":   "rgba(251, 252, 254, 0.99)",
 
-    "accent":      "#0090c8",
-    "accent2":     "#6a5cff",
+    "accent":      "#0067c0",
+    "accent2":     "#6d5ed6",
 
-    "text":        "#0f172a",
-    "text_soft":   "#243247",
-    "text_muted":  "#54627e",
-    "text_faint":  "#8b98ae",
+    "text":        "#1b2028",
+    "text_soft":   "#2c3340",
+    "text_muted":  "#5a6474",
+    "text_faint":  "#8b94a3",
 
-    "ok":          "#0f9d58",
-    "warn":        "#a87b00",
-    "err":         "#d84a4a",
-    "danger_line": "rgba(216, 74, 74, 0.35)",
+    # status — GitHub-light grade
+    "ok":          "#1a7f37",
+    "warn":        "#9a6700",
+    "err":         "#cf222e",
+    "danger_line": "rgba(207, 34, 46, 0.35)",
 
-    "scroll":      "rgba(15, 23, 42, 0.18)",
-    "scroll_hov":  "rgba(0, 144, 200, 0.55)",
-    "shimmer_track": (15, 23, 42, 18),
-    "titlebar_hover": "rgba(15, 23, 42, 0.08)",
-    "close_hover":    "rgba(216, 74, 74, 0.25)",
+    "scroll":      "rgba(27, 32, 40, 0.18)",
+    "scroll_hov":  "rgba(0, 103, 192, 0.55)",
+    "shimmer_track": (27, 32, 40, 16),
+    "titlebar_hover": "rgba(27, 32, 40, 0.07)",
+    "close_hover":    "rgba(207, 34, 46, 0.22)",
 }
 
 _MODES = {"dark": _DARK, "light": _LIGHT}
@@ -169,11 +172,20 @@ class ThemeManager(QObject):
 #  QSS FACTORIES — one call per theme switch, never per frame
 # ============================================================
 def shell_qss(t: dict) -> str:
+    """Maximized = edge-to-edge: the floating radius/border must vanish so
+    the shell meets the monitor edges exactly like a native Win11 app.
+    NOTE: the dynamic property is named `flush` (not `maximized`) because
+    QWidget already exposes a built-in read-only `maximized` property —
+    setProperty() on that name silently fails."""
     return f"""
         #shell {{
             background-color: {t['bg']};
             border: 1px solid {t['panel_line']};
             border-radius: 24px;
+        }}
+        #shell[flush="true"] {{
+            border-radius: 0px;
+            border: none;
         }}
     """
 
@@ -270,6 +282,10 @@ def nav_pill_qss(t: dict) -> str:
             color: {t['text']};
             border: 1px solid {alpha(t['accent'], 0.40)};
         }}
+        QPushButton:pressed {{
+            background: {alpha(t['accent'], 0.16)};
+            border: 1px solid {alpha(t['accent'], 0.55)};
+        }}
     """
 
 
@@ -283,6 +299,7 @@ def exit_button_qss(t: dict) -> str:
             font-size: 13px; font-weight: 500;
         }}
         QPushButton:hover {{ background-color: {alpha(t['err'], 0.22)}; color: {t['text']}; }}
+        QPushButton:pressed {{ background-color: {alpha(t['err'], 0.32)}; }}
     """
 
 
@@ -293,6 +310,7 @@ def titlebar_button_qss(t: dict, hover: str) -> str:
             color: {t['text_muted']}; font-size: 13px;
         }}
         QPushButton:hover {{ background: {hover}; color: {t['text']}; }}
+        QPushButton:pressed {{ background: {alpha(t['accent'], 0.18)}; color: {t['text']}; }}
     """
 
 
@@ -345,6 +363,7 @@ def dialog_cancel_qss(t: dict) -> str:
             border-radius: 10px; color: {t['text_soft']}; font-size: 12px;
         }}
         QPushButton:hover {{ background: {t['card_hover']}; color: {t['text']}; }}
+        QPushButton:pressed {{ background: {alpha(t['accent'], 0.14)}; }}
     """
 
 
@@ -385,6 +404,7 @@ def stop_button_qss(t: dict) -> str:
             font-size: 11px; font-weight: 600;
         }}
         QPushButton:hover {{ background: {alpha(t['err'], 0.25)}; color: {t['text']}; }}
+        QPushButton:pressed {{ background: {alpha(t['err'], 0.38)}; color: {t['text']}; }}
         QPushButton:disabled {{
             background: {t['panel']};
             border: 1px solid {t['panel_line']};
@@ -467,6 +487,7 @@ def dialog_go_qss(t: dict, accent: str) -> str:
             border-radius: 10px; color: {accent}; font-size: 12px; font-weight: 600;
         }}
         QPushButton:hover {{ background: {alpha(accent, 0.28)}; color: {t['text']}; }}
+        QPushButton:pressed {{ background: {alpha(accent, 0.40)}; color: {t['text']}; }}
     """
 
 
@@ -488,10 +509,13 @@ _LABEL_ROLES = {
 
 
 def insight_card_qss(t: dict) -> str:
-    """Mini system-metadata preview card on the Welcome page."""
+    """Mini system-metadata preview card on the Welcome page — same
+    sheen-gradient glass treatment as GlassCard, for one consistent
+    material across the app."""
     return f"""
         QFrame#insight {{
-            background: {t['card']};
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 {t['card_sheen']}, stop:0.15 {t['card']}, stop:1 {t['card']});
             border: 1px solid {t['card_line']};
             border-radius: 14px;
         }}

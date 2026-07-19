@@ -44,6 +44,13 @@ class TaskResult:
     message: str
 
 
+# Verdict sentinel (v6.1): the backend prefixes its final contract line with
+# this marker, so stray trailing output from an external tool can never be
+# mistaken for the verdict. Bare SUCCESS|/ERROR| lines from pre-6.1 backends
+# are still accepted as a fallback.
+VERDICT_SENTINEL = "##PULSE##"
+
+
 # ============================================================
 #  BACKGROUND POWERSHELL WORKER (runs on a QThread)
 # ============================================================
@@ -246,7 +253,11 @@ class PowerShellTask(QObject):
                 else:
                     lines.append(text)
                 if text:
-                    self.output.emit(text, replace)
+                    # The console shows the human-readable verdict, not the
+                    # machine sentinel; `lines` keeps the raw text for parsing.
+                    shown = (text[len(VERDICT_SENTINEL):]
+                             if text.startswith(VERDICT_SENTINEL) else text)
+                    self.output.emit(shown, replace)
 
             while True:
                 chunk = process.stdout.read1(4096)   # blocks until data or EOF
@@ -275,10 +286,21 @@ class PowerShellTask(QObject):
                 self.failed.emit(f"Task timed out after {self.timeout}s.")
                 return
 
-            # Contract with core.ps1: the LAST line of output is either
-            #   SUCCESS|Human readable message
-            #   ERROR|Human readable message
-            last_line = next((ln for ln in reversed(lines) if ln.strip()), "")
+            # Contract with core.ps1 (v6.1): the verdict is the newest line
+            #   ##PULSE##SUCCESS|Human readable message
+            #   ##PULSE##ERROR|Human readable message
+            # scanned backwards, so a module that leaks stray stdout after
+            # the verdict can no longer shadow it. Pre-6.1 backends without
+            # the sentinel are parsed via the strict legacy fallback.
+            last_line = next(
+                (ln[len(VERDICT_SENTINEL):] for ln in reversed(lines)
+                 if ln.startswith(VERDICT_SENTINEL)),
+                None)
+            if last_line is None:
+                last_line = next(
+                    (ln for ln in reversed(lines)
+                     if ln.startswith("SUCCESS|") or ln.startswith("ERROR|")),
+                    "")
 
             if last_line.startswith("SUCCESS"):
                 msg = last_line.split("|", 1)[1].strip() if "|" in last_line else "Task completed."
@@ -311,7 +333,7 @@ class PowerShellTask(QObject):
 class Toast(QWidget):
     """A single glass toast. Positioned by ToastManager; do not use directly."""
 
-    ACCENTS = {"success": "#64ffda", "error": "#ff6b6b", "info": "#00d4ff"}
+    ACCENTS = {"success": "#3fb950", "error": "#f85149", "info": "#4cc2ff"}
     ICONS = {"success": "✅", "error": "❌", "info": "ℹ️"}
 
     def __init__(self, parent: QWidget, kind: str, message: str, duration_ms: int = 5000):
@@ -449,7 +471,7 @@ class HoverGlow(QObject):
     for the lifetime of the widget.
     """
 
-    def __init__(self, widget: QWidget, color: str = "#00d4ff", max_blur: float = 25.0):
+    def __init__(self, widget: QWidget, color: str = "#4cc2ff", max_blur: float = 25.0):
         super().__init__(widget)
         self.widget = widget
         self.effect = QGraphicsDropShadowEffect(widget)

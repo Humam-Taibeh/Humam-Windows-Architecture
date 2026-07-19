@@ -59,7 +59,7 @@ body:
     id: logs
     attributes:
       label: Relevant log output
-      description: Paste the relevant portion of `Desktop\Pulse_Log.txt`. This is auto-formatted as code.
+      description: Paste the relevant portion of `%LOCALAPPDATA%\Pulse\logs\Pulse_Log.txt`. This is auto-formatted as code.
       render: text
 
   - type: checkboxes
