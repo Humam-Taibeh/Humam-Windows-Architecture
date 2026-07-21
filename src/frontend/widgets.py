@@ -14,17 +14,22 @@ Import graph: theme.py <- animations.py <- widgets.py <- main.py
 from __future__ import annotations
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, Qt, QTimer,
-    QVariantAnimation, Signal,
+    QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRectF, Qt,
+    QTimer, QVariantAnimation, Signal,
 )
-from PySide6.QtGui import QColor, QFont, QPainter, QRadialGradient, QTextCursor
+from PySide6.QtGui import (
+    QColor, QFont, QPainter, QPainterPath, QRadialGradient, QTextCursor,
+)
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QPlainTextEdit, QPushButton, QScrollArea,
     QVBoxLayout, QWidget,
 )
 
-from frontend.animations import GlowController, paint_glow_frame
+from frontend.animations import (
+    GlowController, RippleController, paint_bevel_frame, paint_glow_frame,
+    paint_ripple_frame,
+)
 from frontend import theme as TH
 
 
@@ -175,6 +180,7 @@ class NavButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setProperty("selected", False)
         self._glow = GlowController(self, accent)
+        self._ripple = RippleController(self)
         self.apply_theme(t)
 
     def apply_theme(self, t: dict):
@@ -185,9 +191,17 @@ class NavButton(QPushButton):
         self.style().unpolish(self)
         self.style().polish(self)
 
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._ripple.trigger(e.position())
+        super().mousePressEvent(e)
+
     def paintEvent(self, e):
         super().paintEvent(e)  # QSS background/text first
         p = QPainter(self)
+        paint_bevel_frame(p, self.rect(), 13)
+        paint_ripple_frame(p, self.rect(), 13, self._glow.color,
+                           self._ripple.progress, self._ripple.origin)
         paint_glow_frame(p, self.rect(), 13, self._glow.color,
                          self._glow.intensity, self._glow.cursor)
         p.end()
@@ -198,6 +212,9 @@ class NavButton(QPushButton):
 # ============================================================
 class GlassCard(QFrame):
     clicked = Signal()
+
+    _ICON_BASE_PX = 28
+    _ICON_GROW_PX = 3  # subtle hover "pop" — see _sync_icon_scale()
 
     def __init__(self, item: dict, accent: str, t: dict):
         super().__init__()
@@ -210,6 +227,7 @@ class GlassCard(QFrame):
 
         glow_color = t["err"] if self._danger else accent
         self._glow = GlowController(self, glow_color)
+        self._ripple = RippleController(self)
 
         # "Weighted" press feedback: a painted dark tint that ramps in fast
         # and releases softly. Painted in paintEvent — zero QSS churn, zero
@@ -227,10 +245,18 @@ class GlassCard(QFrame):
         self._icon = QLabel(item["icon"])
         self._icon.setFixedWidth(40)
         self._icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        # Font is managed as a QFont object, not inline QSS: hover "pop" is
+        # a handful of setFont() calls per hover-in (one per distinct
+        # integer pixel size), never a per-frame setStyleSheet() rebuild —
+        # the exact anti-pattern the animations.py doctrine forbids.
+        self._icon_font = QFont()
+        self._icon_font.setPixelSize(self._ICON_BASE_PX)
+        self._icon.setFont(self._icon_font)
+        self._icon_px = self._ICON_BASE_PX
         lay.addWidget(self._icon)
 
         col = QVBoxLayout()
-        col.setSpacing(4)
+        col.setSpacing(6)
         head = QHBoxLayout()
         head.setSpacing(8)
         self._title = QLabel(item["title"])
@@ -253,7 +279,9 @@ class GlassCard(QFrame):
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
         self.setStyleSheet(TH.card_qss(t, self._accent, self._danger))
-        self._icon.setStyleSheet("font-size: 28px; background: transparent; border: none;")
+        # No font-size here: the icon's size is a managed QFont (see
+        # _sync_icon_scale) so the hover "pop" never needs a QSS rebuild.
+        self._icon.setStyleSheet("background: transparent; border: none;")
         self._title.setStyleSheet(TH.label_qss(t, "card"))
         self._desc.setStyleSheet(TH.label_qss(t, "desc"))
         if self._badge is not None:
@@ -295,6 +323,7 @@ class GlassCard(QFrame):
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self._ramp_press(1.0)
+            self._ripple.trigger(e.position())
         super().mousePressEvent(e)
 
     def leaveEvent(self, e):
@@ -308,14 +337,29 @@ class GlassCard(QFrame):
             self.clicked.emit()
         super().mouseReleaseEvent(e)
 
+    def _sync_icon_scale(self):
+        """Subtle icon 'pop' tied to the existing hover glow intensity —
+        no new animation, just reads GlowController's already-running one.
+        Guarded so setFont() only fires when the rounded size changes
+        (a handful of times per hover ramp, not every frame)."""
+        grown = round(self._ICON_BASE_PX + self._ICON_GROW_PX * self._glow.intensity)
+        if grown != self._icon_px:
+            self._icon_px = grown
+            self._icon_font.setPixelSize(grown)
+            self._icon.setFont(self._icon_font)
+
     def paintEvent(self, e):
         super().paintEvent(e)  # QSS glass background/border first
+        self._sync_icon_scale()
         p = QPainter(self)
+        paint_bevel_frame(p, self.rect(), 16)
         if self._press_tint > 0.01:
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(0, 0, 0, int(40 * self._press_tint)))
             p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 15, 15)
+        paint_ripple_frame(p, self.rect(), 16, self._glow.color,
+                           self._ripple.progress, self._ripple.origin)
         paint_glow_frame(p, self.rect(), 16, self._glow.color,
                          self._glow.intensity, self._glow.cursor)
         p.end()
@@ -419,6 +463,28 @@ class NavPill(QPushButton):
 
 
 # ============================================================
+#  DEPTH CARD — non-interactive QFrame with the permanent glass bevel
+# ============================================================
+class DepthCard(QFrame):
+    """A plain QFrame plus the painted glass bevel (see
+    animations.paint_bevel_frame) — for surfaces that want the depth cue
+    but aren't clickable, so no glow/press/ripple state is needed. Used by
+    the Welcome page's system-insight tiles and status dock; QSS selectors
+    like `QFrame#insight` still match (Qt resolves by base class + object
+    name, and DepthCard IS a QFrame)."""
+
+    def __init__(self, radius: int = 14, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._radius = radius
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        paint_bevel_frame(p, self.rect(), self._radius)
+        p.end()
+
+
+# ============================================================
 #  CONFIRM DIALOG — frameless glass confirmation
 # ============================================================
 class ConfirmDialog(QDialog):
@@ -493,6 +559,7 @@ class LiveConsole(QPlainTextEdit):
     percentages / SFC progress read exactly like a real console."""
 
     MAX_LINES = 2000  # bound memory on very long-running tasks (SFC/DISM)
+    _EMPTY_MESSAGE = "Idle — output streams here in real time while a task runs."
 
     def __init__(self, t: dict, parent: QWidget | None = None):
         super().__init__(parent)
@@ -500,11 +567,14 @@ class LiveConsole(QPlainTextEdit):
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setFont(QFont("Cascadia Mono", 9))
-        self.setPlaceholderText("Console idle — output streams here while a task runs.")
+        # No native placeholder text: the empty state is a custom-painted
+        # "pulse" waveform motif + message (see paintEvent), not plain text.
         self.apply_theme(t)
 
     def apply_theme(self, t: dict):
         self.setStyleSheet(TH.console_qss(t))
+        self._empty_accent = QColor(t["accent"])
+        self._empty_text = QColor(t["text_faint"])
 
     def put_line(self, text: str, replace_last: bool = False):
         """Slot for PowerShellTask.output(text, replace_last)."""
@@ -542,6 +612,40 @@ class LiveConsole(QPlainTextEdit):
     def clear_console(self):
         self.clear()
 
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self.toPlainText():
+            return
+        # Custom empty state — a small on-brand "pulse" waveform motif in
+        # place of the generic gray placeholder text QPlainTextEdit would
+        # otherwise render natively.
+        p = QPainter(self.viewport())
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = self.viewport().rect()
+        cx, cy = r.center().x(), r.center().y() - 12
+
+        bar_w, gap = 4, 7
+        heights = (8, 16, 26, 16, 8)
+        total_w = len(heights) * bar_w + (len(heights) - 1) * gap
+        x = cx - total_w / 2.0
+        accent = QColor(self._empty_accent)
+        accent.setAlphaF(0.30)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(accent)
+        for h in heights:
+            p.drawRoundedRect(QRectF(x, cy - h / 2.0, bar_w, h), 2, 2)
+            x += bar_w + gap
+
+        p.setPen(self._empty_text)
+        msg_font = QFont(self.font().family(), 9)
+        p.setFont(msg_font)
+        msg_rect = r.adjusted(24, int(cy - r.top()) + 22, -24, 0)
+        p.drawText(msg_rect,
+                   Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+                   | Qt.TextFlag.TextWordWrap,
+                   self._EMPTY_MESSAGE)
+        p.end()
+
 
 # ============================================================
 #  STATE PILL — compact execution-state chip (console header)
@@ -577,6 +681,67 @@ class StatePill(QLabel):
         self.setProperty("state", state)
         self.style().unpolish(self)
         self.style().polish(self)
+
+
+# ============================================================
+#  STATUS DOT — the bottom-bar '●', breathes while busy
+# ============================================================
+class StatusDot(QLabel):
+    """The bottom status-bar glyph. Static color swap for ready/ok/err
+    (cheap — see set_color); a soft breathing pulse ONLY while busy, using
+    BreathingIcon's proven pure-paint technique (no QGraphicsEffect). A
+    literal brand moment: Pulse pulses while it's actually working, and
+    goes still the instant it's done — a custom 'loading state' graphic
+    cue in place of a flat static dot."""
+
+    def __init__(self, glyph: str = "●", parent: QWidget | None = None):
+        super().__init__(glyph, parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._color = QColor("#3fb950")
+        self._breath = 1.0
+        self._pulsing = False
+        self._font = QFont(self.font())
+        self._font.setPixelSize(12)
+
+        # Faster cadence than BreathingIcon's slow 2.6s ambient brand
+        # breath — this one signals active work, not idle presence.
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(1000)
+        self._anim.setStartValue(1.0)
+        self._anim.setKeyValueAt(0.5, 0.35)
+        self._anim.setEndValue(1.0)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._anim.setLoopCount(-1)
+        self._anim.valueChanged.connect(self._on_frame)
+
+    def set_color(self, color: str):
+        self._color = QColor(color)
+        self.update()
+
+    def start_pulse(self):
+        if not self._pulsing:
+            self._pulsing = True
+            self._anim.start()
+
+    def stop_pulse(self):
+        if self._pulsing:
+            self._pulsing = False
+            self._anim.stop()
+            self._breath = 1.0
+            self.update()
+
+    def _on_frame(self, value: float):
+        self._breath = float(value)
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setOpacity(self._breath if self._pulsing else 1.0)
+        p.setPen(self._color)
+        p.setFont(self._font)
+        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
+        p.end()
 
 
 # ============================================================

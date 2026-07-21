@@ -153,7 +153,8 @@ function Show-AppDeploymentHub {
             "Essential Apps: $($Apps_Basic.Count) items - Chrome, Spotify, Discord, WhatsApp, iTunes, 7-Zip, VLC...",
             "Programming & AI Core: $($Apps_Dev.Count) items - Cursor, VS Code, PyCharm, NetBeans, MSYS2, Ollama...",
             "Gaming Launchers: $($Apps_Gaming.Count) items - Steam, Epic, Rockstar, BlueStacks + auto GPU app",
-            "Hardware Diagnostics: $($Apps_Tools.Count) items - CPU-Z, GPU-Z, HWMonitor... + auto motherboard app"
+            "Hardware Diagnostics: $($Apps_Tools.Count) items - CPU-Z, GPU-Z, HWMonitor... + auto motherboard app",
+            "Microsoft Office Suite: $($Apps_Office.Count) items - Word/Excel/PowerPoint/Outlook bundle, Teams, OneDrive"
         )
         do {
             Write-Banner "APP DEPLOYMENT HUB"
@@ -161,12 +162,13 @@ function Show-AppDeploymentHub {
             Write-Host "   [B]  Programming & AI Core" -ForegroundColor White
             Write-Host "   [C]  Gaming Launchers" -ForegroundColor White
             Write-Host "   [D]  Hardware Diagnostics" -ForegroundColor White
-            Write-Host "   [E]  Check & Deploy ALL Categories" -ForegroundColor Magenta
+            Write-Host "   [E]  Microsoft Office Suite" -ForegroundColor White
+            Write-Host "   [F]  Check & Deploy ALL Categories" -ForegroundColor Magenta
             Write-Host "   [X]  Back to Software Management" -ForegroundColor DarkGray
             Write-Divider
 
-            $AppMenu = Read-Choice -Prompt "   Select Category (A/B/C/D/E/X)" -Valid @('a','b','c','d','e','x')
-            $RunAll  = ($AppMenu.ToUpper() -eq 'E')
+            $AppMenu = Read-Choice -Prompt "   Select Category (A/B/C/D/E/F/X)" -Valid @('a','b','c','d','e','f','x')
+            $RunAll  = ($AppMenu.ToUpper() -eq 'F')
 
             if ($AppMenu.ToUpper() -eq 'A' -or $RunAll) {
                 $status = Process-AppCategory $Apps_Basic "Essential Apps"
@@ -197,6 +199,11 @@ function Show-AppDeploymentHub {
                     $status = Smart-Deploy $HW.MoboApp "Official Motherboard App ($($HW.MoboName))"
                     if ($status.Status -eq 'Quit' -and $RunAll) { break }
                 }
+            }
+            if ($AppMenu.ToUpper() -eq 'E' -or $RunAll) {
+                $status = Process-AppCategory $Apps_Office "Microsoft Office Suite"
+                if ($status -eq "QUIT" -and $RunAll) { break }
+                if ($status -eq "BACK" -and $RunAll) { break }
             }
 
             if (-not $RunAll -and $AppMenu.ToUpper() -ne 'X') {

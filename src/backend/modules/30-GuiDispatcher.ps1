@@ -155,6 +155,7 @@ function Invoke-GuiTask {
                 break
             }
             "InstallRuntimes"        { Invoke-GuiBulkDeploy $Runtimes "Core API Runtimes" -SelectedIds $Script:SelectedAppIds; break }
+            "InstallOfficeApps"      { Invoke-GuiBulkDeploy $Apps_Office "Microsoft Office Suite" -SelectedIds $Script:SelectedAppIds; break }
             "StartupReport" {
                 $Items = @(Get-AllStartupItems)
                 $Enabled  = @($Items | Where-Object { $_.Enabled }).Count

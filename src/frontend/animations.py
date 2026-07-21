@@ -26,10 +26,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import (
     QEasingCurve, QEvent, QObject, QParallelAnimationGroup, QPoint,
-    QPointF, QPropertyAnimation, QSequentialAnimationGroup, QVariantAnimation,
-    Qt,
+    QPointF, QPropertyAnimation, QRectF, QSequentialAnimationGroup,
+    QVariantAnimation, Qt,
 )
-from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPen, QRadialGradient
+from PySide6.QtGui import (
+    QBrush, QColor, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient,
+)
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 # ============================================================
@@ -163,6 +165,101 @@ def paint_glow_frame(painter: QPainter, rect, radius: int,
     edge.setColorAt(1.0, e2)
     painter.setPen(QPen(QBrush(edge), 1.6))
     painter.drawRoundedRect(inner, radius, radius)
+    painter.restore()
+
+
+def paint_bevel_frame(painter: QPainter, rect, radius: int,
+                      light_alpha: float = 0.14, dark_alpha: float = 0.20):
+    """Permanent glass-edge bevel — depth + a sub-pixel highlight in one
+    pass. A single rounded-rect stroke whose pen is a diagonal gradient:
+    a bright top-left highlight sweeping through to a soft bottom-right
+    shadow. This is the alternative to per-side `border-top-color` /
+    `border-bottom-color` QSS rules, which artifact at rounded corners in
+    Qt's software rasterizer (see card_qss's comment on the same finding).
+    One stroke, every repaint, costs microseconds — no offscreen buffer,
+    unlike a real drop shadow.
+    """
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    # inset by half a device pixel so a 1px cosmetic pen lands crisply
+    # instead of anti-aliasing across two rows
+    inner = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
+    grad = QLinearGradient(inner.topLeft(), inner.bottomRight())
+    grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * light_alpha)))
+    grad.setColorAt(1.0, QColor(0, 0, 0, int(255 * dark_alpha)))
+    painter.setPen(QPen(QBrush(grad), 1.0))
+    painter.drawRoundedRect(inner, radius, radius)
+    painter.restore()
+
+
+# ============================================================
+#  RIPPLE — one-shot expanding click feedback, effect-free
+# ============================================================
+class RippleController(QObject):
+    """Drives a click ripple WITHOUT QGraphicsEffect — the same pattern as
+    GlowController: a widget owns one controller, reads `.progress` /
+    `.origin` in its own paintEvent via paint_ripple_frame(), and calls
+    `.trigger(pos)` on mouse press. One QVariantAnimation, no timers."""
+
+    def __init__(self, widget: QWidget, duration_ms: int = 320):
+        super().__init__(widget)
+        self._widget = widget
+        self._progress = 0.0
+        self._origin = QPointF()
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(duration_ms)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setEasingCurve(EASE_OUT)
+        self._anim.valueChanged.connect(self._on_frame)
+
+    @property
+    def progress(self) -> float:
+        return self._progress
+
+    @property
+    def origin(self) -> QPointF:
+        return self._origin
+
+    def trigger(self, origin: QPointF):
+        self._origin = QPointF(origin)
+        self._anim.stop()
+        self._anim.start()
+
+    def _on_frame(self, value: float):
+        self._progress = float(value)
+        self._widget.update()
+
+
+def paint_ripple_frame(painter: QPainter, rect, radius: int, color: QColor,
+                       progress: float, origin: QPointF):
+    """Paint an expanding, fading accent-tinted ripple from a click point.
+
+    Clipped to the widget's own rounded rect so it never bleeds onto
+    neighboring cards; one radial-gradient fill, no offscreen buffer.
+    """
+    if progress <= 0.0 or progress >= 1.0:
+        return
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(rect), radius, radius)
+    painter.setClipPath(path)
+
+    max_r = float(rect.width() + rect.height())  # generous — always covers
+    r = max(max_r * progress, 1.0)
+    grad = QRadialGradient(origin, r)
+    c0 = QColor(color)
+    c0.setAlphaF(0.16 * (1.0 - progress))
+    c1 = QColor(color)
+    c1.setAlphaF(0.0)
+    grad.setColorAt(0.0, c0)
+    grad.setColorAt(1.0, c1)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(grad)
+    painter.drawEllipse(origin, r, r)
     painter.restore()
 
 

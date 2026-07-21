@@ -15,10 +15,45 @@ GUI version, with core changes called out explicitly.
 ## [Unreleased]
 
 ### Added
+- **Microsoft Office Suite catalog entry** (`$Apps_Office` in
+  `01-Catalogs.ps1`, mirrored in `menu_structure.py` as `InstallOfficeApps`)
+  — Word, Excel, PowerPoint, Outlook, OneNote, Access and Publisher via the
+  `Microsoft.Office` winget package (Microsoft 365 Apps for enterprise,
+  silent Click-to-Run default install — no `configuration.xml` needed),
+  plus Microsoft Teams and OneDrive as real standalone winget packages.
+  Reachable from the GUI's Software Management category and the console's
+  App Deployment Hub `[E]`, through the same checkbox multi-selector and
+  `Smart-Deploy` pipeline as every other app category. The advanced,
+  config.xml-driven ODT flow (`Show-OfficeDeployment`, console-only) is
+  unchanged and still covers custom deployments winget's default config
+  can't express.
 - **Command palette (Ctrl+K)** — fuzzy-search quick launcher over every
   task in `menu_structure.py`. Runs picks through the normal
   `request_task()` pipeline (confirmations, the app selector, and the
   single-task-at-a-time guard all apply, exactly as a card click would).
+- **Glass bevel on every surface** (`animations.paint_bevel_frame`) — a
+  permanent diagonal-gradient stroke (bright top-left highlight → soft
+  bottom-right shadow) on operation cards, sidebar nav buttons, and the
+  new `DepthCard` (Welcome insight tiles + status dock). One painted
+  stroke, no offscreen shadow buffer, and no Qt corner artifacts (the
+  failure mode per-side `border-*-color` QSS rules hit on rounded rects).
+- **Click ripple** (`animations.RippleController` /
+  `paint_ripple_frame`) — an expanding, fading accent-tinted ripple from
+  the click point on cards and nav buttons, clipped to the rounded rect.
+- **Icon "pop" on hover** — GlassCard icons grow subtly (28→31px), driven
+  by the existing hover-glow intensity via a managed `QFont` (never a
+  per-frame stylesheet rebuild).
+- **Breathing status dot** — the bottom-bar `●` now pulses softly only
+  while a task is actually running (`widgets.StatusDot`, the same
+  pure-paint technique as `BreathingIcon`), and goes still the instant
+  it's done.
+- **Custom console empty state** — `LiveConsole` paints a small on-brand
+  "pulse" waveform motif + message in place of the generic placeholder
+  text, replaced live the instant real output streams in.
+
+### Changed
+- Card/nav spacing tightened for a cleaner rhythm: card description
+  spacing 4→6px, category grid gutter 14→16px.
 
 ### Fixed
 - **Maximized/fullscreen layout** — the shell's floating margins no longer

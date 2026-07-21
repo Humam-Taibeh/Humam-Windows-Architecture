@@ -52,8 +52,8 @@ from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
 from frontend.menu_structure import CATEGORIES, total_operations  # noqa: E402
 from frontend.widgets import (  # noqa: E402
-    AppSelectorDialog, BreathingIcon, CommandPalette, ConfirmDialog, GlassCard,
-    LiveConsole, NavButton, NavPill, StatePill, TitleBar,
+    AppSelectorDialog, BreathingIcon, CommandPalette, ConfirmDialog, DepthCard,
+    GlassCard, LiveConsole, NavButton, NavPill, StatePill, StatusDot, TitleBar,
 )
 
 # ============================================================
@@ -195,7 +195,7 @@ class WelcomePage(QWidget):
         insights_row.setSpacing(self.INSIGHT_GAP)
         insights_row.addStretch()
         for icon, value, caption in _system_insights():
-            frame = QFrame()
+            frame = DepthCard(radius=14)
             frame.setObjectName("insight")
             frame.setFixedSize(self.INSIGHT_W, self.INSIGHT_H)
             card = QVBoxLayout(frame)
@@ -225,7 +225,7 @@ class WelcomePage(QWidget):
         lay.addSpacing(26)
 
         # -- unified glass dock (status chips) ----------------
-        self._dock = QFrame()
+        self._dock = DepthCard(radius=22)
         self._dock.setObjectName("dock")
         self._dock.setFixedHeight(self.DOCK_H)
         dock_lay = QHBoxLayout(self._dock)
@@ -321,7 +321,7 @@ class CategoryPage(QWidget):
         grid_host.setStyleSheet("background: transparent;")
         grid = QGridLayout(grid_host)
         grid.setContentsMargins(2, 2, 10, 2)
-        grid.setSpacing(14)
+        grid.setSpacing(16)
 
         for i, item in enumerate(category["items"]):
             card = GlassCard(item, category["accent"], t)
@@ -492,7 +492,7 @@ class PulseApp(QMainWindow):
 
         status = QHBoxLayout()
         status.setSpacing(8)
-        self.status_dot = QLabel("●")
+        self.status_dot = StatusDot("●")
         status.addWidget(self.status_dot)
         self.status_text = QLabel("System Ready")
         status.addWidget(self.status_text)
@@ -554,13 +554,17 @@ class PulseApp(QMainWindow):
         anim.start()
 
     def _set_status(self, state: str, text: str | None = None):
-        """state: ready | busy | ok | err — colors come from live tokens."""
+        """state: ready | busy | ok | err — colors come from live tokens.
+        The dot itself breathes only while busy — see widgets.StatusDot."""
         self._status_state = state
         t = self.theme.t
         color = {"ready": t["ok"], "busy": t["warn"],
                  "ok": t["ok"], "err": t["err"]}[state]
-        self.status_dot.setStyleSheet(
-            f"color: {color}; font-size: 12px; background: transparent; border: none;")
+        self.status_dot.set_color(color)
+        if state == "busy":
+            self.status_dot.start_pulse()
+        else:
+            self.status_dot.stop_pulse()
         if text is not None:
             self.status_text.setText(text)
 

@@ -67,6 +67,18 @@ $Apps_Tools = @(
     @("CPUID.HWMonitor", "HWMonitor"), @("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo"),
     @("Guru3D.Afterburner", "MSI Afterburner"), @("Notion.Notion", "Notion")
 )
+# Microsoft ships Word/Excel/PowerPoint/Outlook/OneNote/Access/Publisher as
+# ONE Click-to-Run bundle - there is no per-app winget package for them (only
+# "Microsoft.Office" exists; confirmed via `winget show Microsoft.Office`).
+# It silently runs the same ODT setup.exe the console-only Show-OfficeDeployment
+# flow (10-Office.ps1) drives manually, just with Microsoft's stock default
+# config instead of a user-supplied configuration.xml. Teams and OneDrive
+# DO ship as real standalone winget packages, so they ride along here too.
+$Apps_Office = @(
+    @("Microsoft.Office", "Microsoft 365 Apps (Word, Excel, PowerPoint, Outlook, OneNote, Access, Publisher)"),
+    @("Microsoft.Teams", "Microsoft Teams"),
+    @("Microsoft.OneDrive", "Microsoft OneDrive")
+)
 $Runtimes = @(
     @("Microsoft.DirectX", "DirectX End-User Runtime"),
     @("Microsoft.VCRedist.2015+.x64", "Visual C++ Redistributables"),
@@ -100,6 +112,9 @@ $Script:DownloadUrls = @{
     "Ollama.Ollama"                 = "https://ollama.com/download"
     "7zip.7zip"                     = "https://www.7-zip.org/download.html"
     "VideoLAN.VLC"                  = "https://www.videolan.org/vlc/"
+    "Microsoft.Office"              = "https://www.office.com/"
+    "Microsoft.Teams"               = "https://www.microsoft.com/microsoft-teams/download-app"
+    "Microsoft.OneDrive"            = "https://www.microsoft.com/microsoft-365/onedrive/download"
 }
 
 # ============================================================
@@ -111,6 +126,9 @@ $Script:LockProcessMap = @{
     "Microsoft.VisualStudioCode" = @("Code")
     "Spotify.Spotify"            = @("Spotify")
     "Valve.Steam"                = @("steam", "steamwebhelper")
+    "Microsoft.Office"           = @("WINWORD", "EXCEL", "POWERPNT", "OUTLOOK", "ONENOTE", "MSACCESS", "MSPUB")
+    "Microsoft.Teams"            = @("Teams", "ms-teams")
+    "Microsoft.OneDrive"         = @("OneDrive")
 }
 
 # ============================================================
