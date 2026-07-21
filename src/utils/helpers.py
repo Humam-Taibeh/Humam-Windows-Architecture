@@ -369,13 +369,13 @@ class Toast(QWidget):
         self.setGraphicsEffect(self._opacity_effect)
 
         self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
-        self._fade_anim.setDuration(250)
+        self._fade_anim.setDuration(160)
         self._fade_anim.setStartValue(0.0)
         self._fade_anim.setEndValue(1.0)
         self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         self._slide_anim = QPropertyAnimation(self, b"pos", self)
-        self._slide_anim.setDuration(300)
+        self._slide_anim.setDuration(170)
         self._slide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         self._duration_ms = duration_ms
@@ -403,7 +403,7 @@ class Toast(QWidget):
             return
         self._closing = True
         fade_out = QPropertyAnimation(self._opacity_effect, b"opacity", self)
-        fade_out.setDuration(200)
+        fade_out.setDuration(140)
         fade_out.setStartValue(1.0)
         fade_out.setEndValue(0.0)
         fade_out.setEasingCurve(QEasingCurve.Type.InCubic)

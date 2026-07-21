@@ -52,8 +52,8 @@ from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
 from frontend.menu_structure import CATEGORIES, total_operations  # noqa: E402
 from frontend.widgets import (  # noqa: E402
-    AppSelectorDialog, BreathingIcon, ConfirmDialog, GlassCard, LiveConsole,
-    NavButton, NavPill, StatePill, TitleBar,
+    AppSelectorDialog, BreathingIcon, CommandPalette, ConfirmDialog, GlassCard,
+    LiveConsole, NavButton, NavPill, StatePill, TitleBar,
 )
 
 # ============================================================
@@ -63,6 +63,12 @@ APP_NAME = "PULSE"
 APP_VERSION = "6.1"
 PS1_FILENAME = "core.ps1"
 DEFAULT_TIMEOUT = 900
+
+# Body-layout margins: comfortable while floating, collapsed to a slim
+# comfort gap when maximized/flush so the (now border-less, radius-less)
+# shell doesn't leave a dead-space frame around the sidebar/content.
+_FLOAT_MARGINS = (18, 6, 18, 14)
+_FLUSH_MARGINS = (8, 4, 8, 8)
 
 
 def _locate_icon() -> str | None:
@@ -385,6 +391,7 @@ class PulseApp(QMainWindow):
         self._build_ui()
         self._apply_theme(self.theme.t)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self.go_home)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self._open_command_palette)
         QTimer.singleShot(300, self._startup_toasts)
 
     # ============================================================
@@ -406,9 +413,11 @@ class PulseApp(QMainWindow):
         root.addWidget(self.titlebar)
 
         body = QHBoxLayout()
-        body.setContentsMargins(18, 6, 18, 14)
+        body.setContentsMargins(*_FLOAT_MARGINS)
         body.setSpacing(18)
         root.addLayout(body, 1)
+        self._body = body  # margins flip to _FLUSH_MARGINS in changeEvent
+                           # when maximized (native edge-to-edge fit)
 
         # -- sidebar ------------------------------------------
         self._sidebar = QFrame()
@@ -537,7 +546,7 @@ class PulseApp(QMainWindow):
         effect = QGraphicsOpacityEffect(overlay)
         overlay.setGraphicsEffect(effect)
         anim = QPropertyAnimation(effect, b"opacity", overlay)
-        anim.setDuration(220)
+        anim.setDuration(160)
         anim.setStartValue(1.0)
         anim.setEndValue(0.0)
         anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
@@ -580,6 +589,20 @@ class PulseApp(QMainWindow):
             btn.set_selected(i == index)
 
     # ============================================================
+    #  COMMAND PALETTE (Ctrl+K)
+    # ============================================================
+    def _open_command_palette(self):
+        entries = [(item, cat["title"]) for cat in CATEGORIES for item in cat["items"]]
+        palette = CommandPalette(self, self.theme.t, entries)
+        # Positioned explicitly (not default-centered): near the top of the
+        # window, VS Code / Slack quick-launcher style.
+        x = self.x() + (self.width() - palette.width()) // 2
+        y = self.y() + 110
+        palette.move(x, y)
+        if palette.exec() == QDialog.DialogCode.Accepted and palette.chosen_item is not None:
+            self.request_task(palette.chosen_item, None)
+
+    # ============================================================
     #  TASK PIPELINE
     # ============================================================
     def request_task(self, item: dict, card: GlassCard):
@@ -611,9 +634,11 @@ class PulseApp(QMainWindow):
 
         self._start_task(item, card, app_ids)
 
-    def _start_task(self, item: dict, card: GlassCard, app_ids: list[str] | None = None):
+    def _start_task(self, item: dict, card: GlassCard | None,
+                     app_ids: list[str] | None = None):
         self._running_card = card
-        card.set_running(True)
+        if card is not None:
+            card.set_running(True)
         self._set_status("busy", f"Executing: {item['title']} …")
         self.state_pill.set_state("running")
         self.stop_btn.setText("■  Stop Task")
@@ -796,9 +821,15 @@ class PulseApp(QMainWindow):
             # monitor, exactly like a native maximized Win11 window.
             # (`flush`, not `maximized`: QWidget's built-in read-only
             # `maximized` property would swallow the write.)
-            self._shell.setProperty("flush", self.isMaximized())
+            flush = self.isMaximized()
+            self._shell.setProperty("flush", flush)
             self._shell.style().unpolish(self._shell)
             self._shell.style().polish(self._shell)
+            # Removing the border/radius alone just relocates the dead
+            # space to the body margins instead of the shell edge — they
+            # must collapse too, or "flush" still looks like a floating
+            # window with a big empty frame around it.
+            self._body.setContentsMargins(*(_FLUSH_MARGINS if flush else _FLOAT_MARGINS))
 
     # Win32 hit-test codes for the native resize border (WM_NCHITTEST)
     _HT = {"L": 10, "R": 11, "T": 12, "TL": 13, "TR": 14,

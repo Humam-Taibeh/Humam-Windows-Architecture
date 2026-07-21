@@ -480,6 +480,48 @@ def link_button_qss(t: dict, accent: str) -> str:
     """
 
 
+def command_input_qss(t: dict) -> str:
+    """Ctrl+K command palette search field."""
+    return f"""
+        QLineEdit {{
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']};
+            border-radius: 10px;
+            color: {t['text']};
+            font-size: 15px;
+            padding: 0 14px;
+            selection-background-color: {alpha(t['accent'], 0.35)};
+        }}
+        QLineEdit:focus {{ border: 1px solid {alpha(t['accent'], 0.55)}; }}
+    """
+
+
+def command_list_qss(t: dict) -> str:
+    """Ctrl+K command palette result list."""
+    return f"""
+        QListWidget {{
+            background: transparent;
+            border: none;
+            outline: none;
+            font-size: 13px;
+            color: {t['text_soft']};
+        }}
+        QListWidget::item {{
+            padding: 10px 12px;
+            border-radius: 8px;
+            margin: 1px 2px;
+        }}
+        QListWidget::item:selected {{
+            background: {alpha(t['accent'], 0.16)};
+            color: {t['text']};
+            border: 1px solid {alpha(t['accent'], 0.40)};
+        }}
+        QListWidget::item:hover:!selected {{
+            background: {t['card_hover']};
+        }}
+    """
+
+
 def dialog_go_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{

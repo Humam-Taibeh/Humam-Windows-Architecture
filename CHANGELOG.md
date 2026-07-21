@@ -14,7 +14,25 @@ GUI version, with core changes called out explicitly.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **Command palette (Ctrl+K)** — fuzzy-search quick launcher over every
+  task in `menu_structure.py`. Runs picks through the normal
+  `request_task()` pipeline (confirmations, the app selector, and the
+  single-task-at-a-time guard all apply, exactly as a card click would).
+
+### Fixed
+- **Maximized/fullscreen layout** — the shell's floating margins no longer
+  survive maximize: `body`'s content margins now collapse to a slim
+  comfort gap in lock-step with the existing corner/border flush, so a
+  maximized window sits truly edge-to-edge instead of floating inside a
+  dead-space frame.
+
+### Changed
+- **Faster, snappier motion**: hover glow, page fade, card cascade, dialog
+  entrance, theme cross-fade, and toast animations were all retuned into
+  the 90–190ms band (from up to 300ms) for a lighter, more immediate feel.
+  The shimmer progress sweep (an indeterminate loop, not a transition) is
+  unchanged.
 
 ---
 

@@ -35,12 +35,13 @@ from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 # ============================================================
 #  MOTION CONSTANTS — one place to tune the whole app's feel
 # ============================================================
-HOVER_MS      = 170    # glow ramp in/out
-CASCADE_MS    = 300    # per-card entrance
-CASCADE_GAP   = 45     # stagger between cards
-CASCADE_RISE  = 26     # px slide-up distance
-PAGE_FADE_MS  = 220    # stacked-page cross fade
-SHIMMER_MS    = 1200   # one full progress sweep
+HOVER_MS      = 130    # glow ramp in/out
+CASCADE_MS    = 170    # per-card entrance
+CASCADE_GAP   = 26     # stagger between cards
+CASCADE_RISE  = 18     # px slide-up distance
+PAGE_FADE_MS  = 150    # stacked-page cross fade
+SHIMMER_MS    = 1200   # one full progress sweep (indeterminate loop, not a
+                       # transition — left at its original pace on purpose)
 
 EASE_OUT  = QEasingCurve.Type.OutCubic
 EASE_INOUT = QEasingCurve.Type.InOutQuad

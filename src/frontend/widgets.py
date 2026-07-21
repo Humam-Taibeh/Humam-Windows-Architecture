@@ -19,15 +19,16 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QRadialGradient, QTextCursor
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QPlainTextEdit,
-    QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMainWindow, QPlainTextEdit, QPushButton, QScrollArea,
+    QVBoxLayout, QWidget,
 )
 
 from frontend.animations import GlowController, paint_glow_frame
 from frontend import theme as TH
 
 
-def _animate_dialog_entrance(dialog: QDialog, duration_ms: int = 150):
+def _animate_dialog_entrance(dialog: QDialog, duration_ms: int = 130):
     """Premium dialog entrance: a quick window-level fade. windowOpacity is
     compositor-side — no QGraphicsEffect, safe on frameless translucent
     dialogs, and cleaned up implicitly when the dialog closes."""
@@ -215,7 +216,7 @@ class GlassCard(QFrame):
         # QGraphicsEffect, per the animations.py doctrine.
         self._press_tint = 0.0
         self._press_anim = QVariantAnimation(self)
-        self._press_anim.setDuration(110)
+        self._press_anim.setDuration(90)
         self._press_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._press_anim.valueChanged.connect(self._on_press_frame)
 
@@ -715,3 +716,132 @@ class AppSelectorDialog(QDialog):
     def showEvent(self, e):
         super().showEvent(e)
         _animate_dialog_entrance(self)
+
+
+# ============================================================
+#  COMMAND PALETTE — Ctrl+K fuzzy quick-launcher
+# ============================================================
+def _fuzzy_score(needle: str, haystack: str) -> int | None:
+    """Subsequence fuzzy match: every needle char must appear in haystack
+    in order (case handled by the caller); tighter, earlier matches score
+    higher. Returns None when needle is not a subsequence of haystack."""
+    if not needle:
+        return 0
+    pos = 0
+    score = 0
+    streak = 0
+    for ch in needle:
+        idx = haystack.find(ch, pos)
+        if idx == -1:
+            return None
+        gap = idx - pos
+        streak = streak + 1 if gap == 0 else 1
+        score += (10 - min(gap, 9)) + streak
+        pos = idx + 1
+    return score
+
+
+class CommandPalette(QDialog):
+    """Ctrl+K quick launcher — fuzzy search over every task defined in
+    menu_structure.py. Built fresh on each open (like ConfirmDialog /
+    AppSelectorDialog: transient, no live re-theme needed) and driven
+    through the same accept()/reject() + `chosen_item` pattern, so the
+    caller launches the pick through the app's normal request_task()
+    pipeline — confirmations, the app selector, and the concurrency guard
+    all apply for free, exactly as if a card had been clicked."""
+
+    MAX_RESULTS = 8
+
+    def __init__(self, parent: QWidget, t: dict, entries: list[tuple[dict, str]]):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self.setFixedWidth(560)
+
+        self.chosen_item: dict | None = None
+        self._entries = entries  # (item dict, category title) pairs
+
+        panel = QFrame(self)
+        panel.setStyleSheet(TH.dialog_panel_qss(t, t["accent"]))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(panel)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(14, 14, 14, 10)
+        lay.setSpacing(8)
+
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Type to search Pulse tasks…")
+        self._search.setStyleSheet(TH.command_input_qss(t))
+        self._search.setFixedHeight(46)
+        self._search.textChanged.connect(self._refilter)
+        self._search.installEventFilter(self)
+        lay.addWidget(self._search)
+
+        self._list = QListWidget()
+        self._list.setStyleSheet(TH.command_list_qss(t))
+        self._list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._list.setMaximumHeight(320)
+        self._list.itemActivated.connect(self._activate)
+        lay.addWidget(self._list)
+
+        self._refilter("")
+
+    # -- filtering / selection ----------------------------------
+    def _refilter(self, text: str):
+        self._list.clear()
+        query = text.strip().lower()
+        scored = []
+        for item, category in self._entries:
+            haystack = f"{item['title']} {item.get('desc', '')} {category}".lower()
+            score = _fuzzy_score(query, haystack)
+            if query and score is None:
+                continue
+            scored.append((score or 0, item, category))
+        scored.sort(key=lambda row: -row[0])
+        for _, item, category in scored[: self.MAX_RESULTS]:
+            row = QListWidgetItem(f"{item['icon']}  {item['title']}   ·   {category}")
+            row.setData(Qt.ItemDataRole.UserRole, item)
+            self._list.addItem(row)
+        if self._list.count():
+            self._list.setCurrentRow(0)
+
+    def _move_selection(self, delta: int):
+        n = self._list.count()
+        if n == 0:
+            return
+        row = self._list.currentRow()
+        row = (row + delta) % n if row != -1 else (0 if delta > 0 else n - 1)
+        self._list.setCurrentRow(row)
+
+    def _activate(self, list_item: QListWidgetItem):
+        self.chosen_item = list_item.data(Qt.ItemDataRole.UserRole)
+        self.accept()
+
+    # -- keyboard: the QLineEdit owns focus, so Up/Down/Enter/Escape are
+    # intercepted here and forwarded to the result list -----------------
+    def eventFilter(self, obj, event):
+        if obj is self._search and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key == Qt.Key.Key_Down:
+                self._move_selection(1)
+                return True
+            if key == Qt.Key.Key_Up:
+                self._move_selection(-1)
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                current = self._list.currentItem()
+                if current is not None:
+                    self._activate(current)
+                return True
+            if key == Qt.Key.Key_Escape:
+                self.reject()
+                return True
+        return super().eventFilter(obj, event)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _animate_dialog_entrance(self, duration_ms=130)
+        self._search.setFocus()
