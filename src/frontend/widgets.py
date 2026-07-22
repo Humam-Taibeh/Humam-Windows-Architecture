@@ -13,22 +13,26 @@ Import graph: theme.py <- animations.py <- widgets.py <- main.py
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from PySide6.QtCore import (
     QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRectF, Qt,
-    QTimer, QVariantAnimation, Signal,
+    QTimer, QUrl, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
-    QColor, QFont, QPainter, QPainterPath, QRadialGradient, QTextCursor,
+    QColor, QDesktopServices, QFont, QPainter, QPainterPath, QRadialGradient,
+    QTextCursor,
 )
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QPlainTextEdit, QPushButton, QScrollArea,
-    QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMainWindow, QPlainTextEdit, QPushButton,
+    QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from frontend.animations import (
     GlowController, RippleController, paint_bevel_frame, paint_glow_frame,
-    paint_ripple_frame,
+    paint_nav_indicator, paint_ripple_frame,
 )
 from frontend import theme as TH
 
@@ -181,10 +185,12 @@ class NavButton(QPushButton):
         self.setProperty("selected", False)
         self._glow = GlowController(self, accent)
         self._ripple = RippleController(self)
+        self._accent2 = QColor(t["accent2"])
         self.apply_theme(t)
 
     def apply_theme(self, t: dict):
         self.setStyleSheet(TH.nav_button_qss(t))
+        self._accent2 = QColor(t["accent2"])
 
     def set_selected(self, on: bool):
         self.setProperty("selected", on)
@@ -204,6 +210,8 @@ class NavButton(QPushButton):
                            self._ripple.progress, self._ripple.origin)
         paint_glow_frame(p, self.rect(), 13, self._glow.color,
                          self._glow.intensity, self._glow.cursor)
+        if self.property("selected"):
+            paint_nav_indicator(p, self.rect(), self._glow.color, self._accent2)
         p.end()
 
 
@@ -498,14 +506,14 @@ class ConfirmDialog(QDialog):
         danger = bool(item.get("danger"))
         accent = t["err"] if danger else t["accent"]
 
-        panel = QFrame(self)
+        panel = DepthCard(radius=18, parent=self)
         panel.setStyleSheet(TH.dialog_panel_qss(t, accent))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(panel)
 
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(26, 24, 26, 22)
+        lay.setContentsMargins(24, 22, 24, 20)
         lay.setSpacing(10)
 
         head = QLabel(f"{item['icon']}  {item['title']}")
@@ -796,7 +804,7 @@ class AppSelectorDialog(QDialog):
         apps: list[tuple[str, str]] = item.get("apps", [])
         accent = t["accent"]
 
-        panel = QFrame(self)
+        panel = DepthCard(radius=18, parent=self)
         panel.setStyleSheet(TH.dialog_panel_qss(t, accent))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -927,7 +935,7 @@ class CommandPalette(QDialog):
         self.chosen_item: dict | None = None
         self._entries = entries  # (item dict, category title) pairs
 
-        panel = QFrame(self)
+        panel = DepthCard(radius=18, parent=self)
         panel.setStyleSheet(TH.dialog_panel_qss(t, t["accent"]))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1010,3 +1018,571 @@ class CommandPalette(QDialog):
         super().showEvent(e)
         _animate_dialog_entrance(self, duration_ms=130)
         self._search.setFocus()
+
+
+# ============================================================
+#  OFFICE WIZARD — step-by-step Office Deployment Tool flow
+# ============================================================
+class OfficeWizardDialog(QDialog):
+    """Multi-path Office Deployment Tool (ODT) wizard.
+
+    Office ships as one Click-to-Run bundle with no per-app silent
+    installer, so unlike every other catalog item this can't be a single
+    winget call. Three paths, chosen up front:
+
+      A. Automated Cloud Download — Pulse fetches the Click-to-Run client
+         itself and applies a built-in standard configuration. No files to
+         find, no folders to browse. Sets `task_override` so the caller
+         runs -Task InstallOfficeODTAuto instead of the per-file task.
+      B. "I already have my files" — auto-detects Desktop\\Office (and the
+         OneDrive-redirected / Public Desktop variants), with a folder
+         browser and an individual-file-picker as fallbacks.
+      C. Beginner Guide — a plain-language walkthrough for downloading the
+         ODT and building a configuration.xml by hand via Microsoft's own
+         tools, which then feeds into the same locate flow as B.
+
+    All of this is client-side (file-system checks, QFileDialog, browser
+    links — no PowerShell spawned yet). After Accepted, the caller reads
+    either `task_override` (path A) or `setup_path`/`config_path` (path
+    B/C) and runs it through the normal task pipeline — same live console,
+    Stop button and toast machinery as every other task.
+    """
+
+    ODT_URL = "https://www.microsoft.com/en-us/download/details.aspx?id=49117"
+    OCT_URL = "https://config.office.com/deploymentsettings"
+
+    _SETUP_NAMES = ("setup.exe", "Setup.exe", "setup.exe.exe", "Setup.exe.exe")
+    # Preference order: known Office Customization Tool export names first
+    # (kept in sync with 10-Office.ps1's Find-OfficeConfigFile) — used both
+    # to auto-pick when there's exactly one match and to mark the top pick
+    # "(recommended)" when several configs sit in the same folder.
+    _CONFIG_NAMES = (
+        "configuration.xml", "Configuration.xml",
+        "configuration.xml.xml", "Configuration.xml.xml",
+        "configuration-Office365-x64.xml", "configuration-Office365-x86.xml",
+    )
+
+    _SUBTITLES = {
+        "choice": "Choose how you'd like to proceed",
+        "auto_confirm": "Automated Cloud Download",
+        "guide": "Beginner Guide — get the official tools",
+        "locate": "Locate your Office files",
+        "confirm": "Confirm & Install",
+    }
+
+    def __init__(self, parent: QWidget, t: dict):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self.setFixedWidth(560)
+
+        self._t = t
+        self.setup_path: str | None = None
+        self.config_path: str | None = None
+        self.task_override: str | None = None
+        # Where "Back" from the locate step should return to — "choice" if
+        # Path B was picked directly, "guide" if arriving via Path C.
+        self._locate_origin = "choice"
+
+        panel = DepthCard(radius=18, parent=self)
+        panel.setStyleSheet(TH.dialog_panel_qss(t, t["accent"]))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(panel)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setSpacing(14)
+
+        head = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        title = QLabel("📄  Microsoft Office Deployment")
+        title.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        title_col.addWidget(title)
+        self._step_label = QLabel("")
+        self._step_label.setStyleSheet(TH.label_qss(t, "caption"))
+        title_col.addWidget(self._step_label)
+        head.addLayout(title_col)
+        head.addStretch()
+        lay.addLayout(head)
+
+        self._pages: dict[str, int] = {}
+        self._stack = QStackedWidget()
+        for name, builder in (
+            ("choice", self._build_choice_page),
+            ("auto_confirm", self._build_auto_page),
+            ("guide", self._build_guide_page),
+            ("locate", self._build_locate_page),
+            ("confirm", self._build_confirm_page),
+        ):
+            self._pages[name] = self._stack.count()
+            self._stack.addWidget(builder())
+        lay.addWidget(self._stack)
+
+        self._goto("choice")
+
+    # -- small shared button factories --------------------------
+    def _back_button(self, slot) -> QPushButton:
+        b = QPushButton("‹  Back")
+        b.setFixedSize(90, 34)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setStyleSheet(TH.dialog_cancel_qss(self._t))
+        b.clicked.connect(slot)
+        return b
+
+    def _primary_button(self, text: str, slot, width: int = 130) -> QPushButton:
+        b = QPushButton(text)
+        b.setFixedSize(width, 34)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setStyleSheet(TH.dialog_go_qss(self._t, self._t["accent"]))
+        b.clicked.connect(slot)
+        return b
+
+    def _link_row_button(self, text: str, slot) -> QPushButton:
+        b = QPushButton(text)
+        b.setFixedHeight(50)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setStyleSheet(TH.wizard_link_qss(self._t, self._t["accent"]))
+        b.clicked.connect(slot)
+        return b
+
+    @staticmethod
+    def _clear_layout(lay):
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+                continue
+            sub = item.layout()
+            if sub is not None:
+                OfficeWizardDialog._clear_layout(sub)
+
+    # -- navigation -----------------------------------------------
+    def _goto(self, step: str):
+        self._step_label.setText(self._SUBTITLES[step])
+        self._stack.setCurrentIndex(self._pages[step])
+        if step == "locate":
+            self._run_autodetect()
+        elif step == "confirm":
+            self._render_confirm()
+
+    # -- step: choice (3 paths) --------------------------------------
+    def _build_choice_page(self) -> QWidget:
+        t = self._t
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+
+        intro = QLabel(
+            "Office ships as one bundle through Microsoft's official "
+            "Deployment Tool (ODT) — there's no per-app silent installer. "
+            "Choose how you'd like to proceed.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(intro)
+
+        opt_a = GlassCard({
+            "icon": "🚀", "title": "Automated Cloud Download",
+            "desc": "Pulse downloads the Deployment Tool and applies a standard configuration for you.",
+        }, t["accent"], t)
+        opt_a.setMinimumHeight(88)
+        opt_a.clicked.connect(lambda: self._goto("auto_confirm"))
+        lay.addWidget(opt_a)
+
+        opt_b = GlassCard({
+            "icon": "📁", "title": "I already have my Office folder ready",
+            "desc": "Auto-detect the Office folder on your Desktop, or browse to it.",
+        }, t["accent"], t)
+        opt_b.setMinimumHeight(88)
+        opt_b.clicked.connect(self._enter_locate_from_choice)
+        lay.addWidget(opt_b)
+
+        opt_c = GlassCard({
+            "icon": "📘", "title": "Step-by-Step Beginner Guide",
+            "desc": "New to this? A plain-language walkthrough of the official Microsoft tools.",
+        }, t["accent"], t)
+        opt_c.setMinimumHeight(88)
+        opt_c.clicked.connect(lambda: self._goto("guide"))
+        lay.addWidget(opt_c)
+
+        lay.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.setFixedSize(96, 34)
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.setStyleSheet(TH.dialog_cancel_qss(t))
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        lay.addLayout(row)
+        return page
+
+    def _enter_locate_from_choice(self):
+        self._locate_origin = "choice"
+        self._goto("locate")
+
+    # -- Path A: automated cloud download ----------------------------
+    def _build_auto_page(self) -> QWidget:
+        t = self._t
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(14)
+
+        info = QLabel(
+            "Pulse will download the official Office Click-to-Run client "
+            "and write a standard configuration to <b>Desktop\\Office</b> "
+            "— Word, Excel, PowerPoint and Outlook in English and Arabic. "
+            "No files to find, nothing to configure by hand.")
+        info.setTextFormat(Qt.TextFormat.RichText)
+        info.setWordWrap(True)
+        info.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(info)
+
+        note = QLabel(
+            "ℹ️  This standard configuration targets Volume License "
+            "activation (no product key baked in). If your network has a "
+            "KMS host it activates automatically; otherwise Office installs "
+            "but stays unactivated until a key is added. Prefer a "
+            "subscription install with your own settings? Use one of the "
+            "other two paths instead.")
+        note.setWordWrap(True)
+        note.setStyleSheet(TH.label_qss(t, "caption"))
+        lay.addWidget(note)
+
+        warn = QLabel(
+            "⚠️  IMPORTANT: When the Microsoft Setup window appears, DO NOT "
+            "close it or open any other apps until it reaches 100%.")
+        warn.setWordWrap(True)
+        warn.setStyleSheet(TH.warning_banner_qss(t))
+        lay.addWidget(warn)
+        lay.addStretch()
+
+        row = QHBoxLayout()
+        row.addWidget(self._back_button(lambda: self._goto("choice")))
+        row.addStretch()
+        row.addWidget(self._primary_button(
+            "Download && Install Now", self._accept_auto, width=190))
+        lay.addLayout(row)
+        return page
+
+    def _accept_auto(self):
+        self.task_override = "InstallOfficeODTAuto"
+        self.accept()
+
+    # -- Path C: beginner guide ---------------------------------------
+    def _build_guide_page(self) -> QWidget:
+        t = self._t
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        steps = [
+            ("1", "Open the Deployment Tool below, run it, and extract it "
+                  "into a folder named <b>Office</b> on your Desktop."),
+            ("2", "Open the Customization Tool below, choose your apps, "
+                  "languages and channel, then download the resulting "
+                  "<b>configuration.xml</b> into that same Office folder."),
+            ("3", "Come back here and continue — Pulse will pick up both "
+                  "files automatically."),
+        ]
+        for num, text in steps:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            badge = QLabel(num)
+            badge.setFixedSize(22, 22)
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            badge.setStyleSheet(
+                f"color: {t['accent']}; background: {TH.alpha(t['accent'], 0.14)};"
+                f"border: 1px solid {TH.alpha(t['accent'], 0.40)}; border-radius: 11px;"
+                "font-size: 11px; font-weight: 700;")
+            row.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
+            label = QLabel(text)
+            label.setTextFormat(Qt.TextFormat.RichText)
+            label.setWordWrap(True)
+            label.setStyleSheet(TH.label_qss(t, "body"))
+            row.addWidget(label, 1)
+            lay.addLayout(row)
+
+        lay.addWidget(self._link_row_button(
+            "🌐  Open Office Deployment Tool   ↗",
+            lambda: QDesktopServices.openUrl(QUrl(self.ODT_URL))))
+        lay.addWidget(self._link_row_button(
+            "⚙️  Open Office Customization Tool   ↗",
+            lambda: QDesktopServices.openUrl(QUrl(self.OCT_URL))))
+
+        lay.addStretch()
+        row = QHBoxLayout()
+        row.addWidget(self._back_button(lambda: self._goto("choice")))
+        row.addStretch()
+        row.addWidget(self._primary_button(
+            "I have the files now  ›", self._enter_locate_from_guide, width=170))
+        lay.addLayout(row)
+        return page
+
+    def _enter_locate_from_guide(self):
+        self._locate_origin = "guide"
+        self._goto("locate")
+
+    # -- Path B (direct, or continuing from C): locate files ----------
+    def _build_locate_page(self) -> QWidget:
+        page = QWidget()
+        self._locate_lay = QVBoxLayout(page)
+        self._locate_lay.setContentsMargins(0, 0, 0, 0)
+        self._locate_lay.setSpacing(10)
+        return page
+
+    def _locate_back(self):
+        self._goto(self._locate_origin)
+
+    def _run_autodetect(self):
+        self._clear_layout(self._locate_lay)
+        folder, setup, configs = self._detect_office_folder()
+        if setup and configs:
+            self._render_locate_found(folder, setup, configs)
+        else:
+            self._render_locate_missing(folder)
+
+    def _render_locate_found(self, folder: str, setup: Path, configs: list[Path]):
+        t = self._t
+        lay = self._locate_lay
+
+        ok = QLabel(f"✅  Found in <b>{folder}</b>")
+        ok.setTextFormat(Qt.TextFormat.RichText)
+        ok.setWordWrap(True)
+        ok.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(ok)
+
+        setup_row = QLabel(f"<b>Setup:</b> {setup}")
+        setup_row.setTextFormat(Qt.TextFormat.RichText)
+        setup_row.setWordWrap(True)
+        setup_row.setStyleSheet(TH.label_qss(t, "caption"))
+        lay.addWidget(setup_row)
+
+        if len(configs) == 1:
+            config_row = QLabel(f"<b>Config:</b> {configs[0]}")
+            config_row.setTextFormat(Qt.TextFormat.RichText)
+            config_row.setWordWrap(True)
+            config_row.setStyleSheet(TH.label_qss(t, "caption"))
+            lay.addWidget(config_row)
+        else:
+            picker_label = QLabel(
+                f"Found {len(configs)} configuration files — which one should Pulse use?")
+            picker_label.setWordWrap(True)
+            picker_label.setStyleSheet(TH.label_qss(t, "body"))
+            lay.addWidget(picker_label)
+            for i, cfg in enumerate(configs):
+                tag = "  (recommended)" if i == 0 else ""
+                btn = self._link_row_button(
+                    f"📝  {cfg.name}{tag}",
+                    lambda checked=False, c=cfg: self._on_files_chosen(str(setup), str(c)))
+                lay.addWidget(btn)
+
+        browse = QPushButton("📂  Browse for a different folder…")
+        browse.setCursor(Qt.CursorShape.PointingHandCursor)
+        browse.setStyleSheet(TH.link_button_qss(t, t["accent"]))
+        browse.clicked.connect(self._browse_folder)
+        lay.addWidget(browse)
+        lay.addStretch()
+
+        row2 = QHBoxLayout()
+        row2.addWidget(self._back_button(self._locate_back))
+        row2.addStretch()
+        if len(configs) == 1:
+            row2.addWidget(self._primary_button(
+                "Continue  ›", lambda: self._on_files_chosen(str(setup), str(configs[0]))))
+        lay.addLayout(row2)
+
+    def _render_locate_missing(self, folder: str):
+        t = self._t
+        lay = self._locate_lay
+
+        warn = QLabel(
+            f"⚠️  No Office folder with both setup.exe and a configuration "
+            f"file was found automatically (checked <b>{folder}</b>).")
+        warn.setTextFormat(Qt.TextFormat.RichText)
+        warn.setWordWrap(True)
+        warn.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(warn)
+
+        lay.addWidget(self._link_row_button(
+            "📂  Browse for the Office folder…", self._browse_folder))
+        lay.addWidget(self._link_row_button(
+            "🗂️  Pick setup.exe and configuration.xml individually…",
+            self._pick_files_individually))
+        lay.addStretch()
+
+        row = QHBoxLayout()
+        row.addWidget(self._back_button(self._locate_back))
+        row.addStretch()
+        retry = QPushButton("Retry auto-detect")
+        retry.setCursor(Qt.CursorShape.PointingHandCursor)
+        retry.setStyleSheet(TH.link_button_qss(t, t["accent"]))
+        retry.clicked.connect(self._run_autodetect)
+        row.addWidget(retry)
+        lay.addLayout(row)
+
+    def _render_browse_incomplete(self, folder: str, setup: Path | None, configs: list[Path]):
+        t = self._t
+        lay = self._locate_lay
+        missing = []
+        if not setup:
+            missing.append("setup.exe (or the ODT self-extractor)")
+        if not configs:
+            missing.append("a configuration .xml file")
+
+        msg = QLabel(f"❌  <b>{folder}</b> is missing: " + ", ".join(missing))
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setWordWrap(True)
+        msg.setStyleSheet(
+            f"color: {t['err']}; font-size: 12px; font-weight: 500;"
+            "background: transparent; border: none;")
+        lay.addWidget(msg)
+
+        lay.addWidget(self._link_row_button(
+            "🗂️  Pick the files individually…", self._pick_files_individually))
+        lay.addStretch()
+
+        row = QHBoxLayout()
+        row.addWidget(self._back_button(self._locate_back))
+        row.addStretch()
+        retry = QPushButton("Browse again")
+        retry.setCursor(Qt.CursorShape.PointingHandCursor)
+        retry.setStyleSheet(TH.link_button_qss(t, t["accent"]))
+        retry.clicked.connect(self._browse_folder)
+        row.addWidget(retry)
+        lay.addLayout(row)
+
+    def _browse_folder(self):
+        start = str(Path.home() / "Desktop")
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select the folder with setup.exe and configuration.xml", start)
+        if not folder:
+            return
+        setup, configs = self._find_office_files(Path(folder))
+        self._clear_layout(self._locate_lay)
+        if setup and configs:
+            self._render_locate_found(folder, setup, configs)
+        else:
+            self._render_browse_incomplete(folder, setup, configs)
+
+    def _pick_files_individually(self):
+        start = str(Path.home() / "Desktop")
+        setup, _ = QFileDialog.getOpenFileName(
+            self, "Select the Office Deployment Tool (setup.exe)", start,
+            "Executable files (*.exe)")
+        if not setup:
+            return
+        config, _ = QFileDialog.getOpenFileName(
+            self, "Select configuration.xml", str(Path(setup).parent),
+            "XML files (*.xml)")
+        if not config:
+            return
+        self._clear_layout(self._locate_lay)
+        self._render_locate_found(str(Path(setup).parent), Path(setup), [Path(config)])
+
+    def _on_files_chosen(self, setup: str, config: str):
+        self.setup_path = setup
+        self.config_path = config
+        self._goto("confirm")
+
+    # -- Path B/C tail: confirm + the "don't close it" warning --------
+    def _build_confirm_page(self) -> QWidget:
+        page = QWidget()
+        self._confirm_lay = QVBoxLayout(page)
+        self._confirm_lay.setContentsMargins(0, 0, 0, 0)
+        self._confirm_lay.setSpacing(14)
+        return page
+
+    def _render_confirm(self):
+        self._clear_layout(self._confirm_lay)
+        t = self._t
+        lay = self._confirm_lay
+
+        summary = QLabel(
+            f"<b>Setup:</b> {self.setup_path}<br><b>Config:</b> {self.config_path}")
+        summary.setTextFormat(Qt.TextFormat.RichText)
+        summary.setWordWrap(True)
+        summary.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(summary)
+
+        warn = QLabel(
+            "⚠️  IMPORTANT: When the Microsoft Setup window appears, DO NOT "
+            "close it or open any other apps until it reaches 100%.")
+        warn.setWordWrap(True)
+        warn.setStyleSheet(TH.warning_banner_qss(t))
+        lay.addWidget(warn)
+        lay.addStretch()
+
+        row = QHBoxLayout()
+        row.addWidget(self._back_button(lambda: self._goto("locate")))
+        row.addStretch()
+        row.addWidget(self._primary_button("Install Now", self.accept, width=130))
+        lay.addLayout(row)
+
+    # -- file-system detection (client-side, no PowerShell spawned) --
+    @classmethod
+    def _find_office_files(cls, folder: Path) -> tuple[Path | None, list[Path]]:
+        if not folder.is_dir():
+            return None, []
+
+        setup: Path | None = None
+        for name in cls._SETUP_NAMES:
+            cand = folder / name
+            if cand.is_file():
+                setup = cand
+                break
+        if setup is None:
+            matches = sorted(folder.glob("officedeploymenttool*.exe"))
+            if matches:
+                setup = matches[0]
+        if setup is None:
+            exes = sorted(folder.glob("*.exe"))
+            if exes:
+                setup = exes[0]
+
+        # Every .xml in the folder, known names first (preference order),
+        # then whatever else is left over, alphabetically — so a folder
+        # with several exports still surfaces a sane "recommended" pick
+        # instead of an arbitrary one.
+        seen: set[Path] = set()
+        configs: list[Path] = []
+        for name in cls._CONFIG_NAMES:
+            cand = folder / name
+            if cand.is_file() and cand not in seen:
+                configs.append(cand)
+                seen.add(cand)
+        for xml in sorted(folder.glob("*.xml")):
+            if xml not in seen:
+                configs.append(xml)
+                seen.add(xml)
+
+        return setup, configs
+
+    def _detect_office_folder(self) -> tuple[str, Path | None, list[Path]]:
+        home = Path.home()
+        userprofile = os.environ.get("USERPROFILE", str(home))
+        public = os.environ.get("PUBLIC", "")
+        candidates = [
+            home / "Desktop" / "Office",
+            Path(userprofile) / "OneDrive" / "Desktop" / "Office",
+        ]
+        if public:
+            candidates.append(Path(public) / "Desktop" / "Office")
+
+        for folder in candidates:
+            setup, configs = self._find_office_files(folder)
+            if setup and configs:
+                return str(folder), setup, configs
+
+        first_existing = next((f for f in candidates if f.is_dir()), candidates[0])
+        return str(first_existing), None, []
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _animate_dialog_entrance(self)

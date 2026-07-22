@@ -168,6 +168,27 @@ def paint_glow_frame(painter: QPainter, rect, radius: int,
     painter.restore()
 
 
+def paint_nav_indicator(painter: QPainter, rect, c1: QColor, c2: QColor,
+                        inset: int = 8, bar_width: float = 3.0):
+    """Left-edge active-item bar for the selected sidebar entry — the same
+    affordance Windows 11 Settings uses to mark its selected nav item.
+    A short rounded bar with the app's accent->accent2 brand gradient
+    running top to bottom; call only while the item is selected (see
+    widgets.NavButton.paintEvent). One drawRoundedRect, no offscreen buffer.
+    """
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    bar = QRectF(rect.left() + 4, rect.top() + inset,
+                bar_width, rect.height() - inset * 2)
+    grad = QLinearGradient(bar.topLeft(), bar.bottomLeft())
+    grad.setColorAt(0.0, c1)
+    grad.setColorAt(1.0, c2)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(grad))
+    painter.drawRoundedRect(bar, bar_width / 2.0, bar_width / 2.0)
+    painter.restore()
+
+
 def paint_bevel_frame(painter: QPainter, rect, radius: int,
                       light_alpha: float = 0.14, dark_alpha: float = 0.20):
     """Permanent glass-edge bevel — depth + a sub-pixel highlight in one

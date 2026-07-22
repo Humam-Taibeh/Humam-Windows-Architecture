@@ -43,6 +43,30 @@ def alpha(color: str, opacity: float) -> str:
     return f"rgba({r}, {g}, {b}, {opacity:.3f})"
 
 
+def glass_fill(t: dict, base: str, sheen_stop: float = 0.13) -> str:
+    """The one frosted-glass gradient every translucent surface in the app
+    shares: a top sheen highlight falling into a flat base tone. Cards,
+    Welcome insight tiles and dialog panels all call this with their own
+    base color so the whole app reads as one material, not three slightly
+    different ad-hoc gradients (which is what card_qss/insight_card_qss
+    had before this — 0.12 vs 0.15 sheen stops, purely accidental drift)."""
+    return (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+            f"stop:0 {t['card_sheen']}, stop:{sheen_stop} {base}, stop:1 {base})")
+
+
+def brand_gradient(t: dict, a1: float, a2: float | None = None) -> str:
+    """The app's signature two-tone sweep (accent -> accent2). Before this,
+    accent2 (the violet half of the brand pair) was painted nowhere but the
+    shimmer bar — every other 'primary' surface used a flat single-color
+    alpha fill. Reused sparingly here (primary dialog buttons, the selected
+    nav item, the running-state pill) so the duotone reads as a deliberate
+    system, not a one-off."""
+    if a2 is None:
+        a2 = a1
+    return (f"qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            f"stop:0 {alpha(t['accent'], a1)}, stop:1 {alpha(t['accent2'], a2)})")
+
+
 # ============================================================
 #  TOKENS — PREMIUM DARK
 # ============================================================
@@ -227,7 +251,7 @@ def nav_button_qss(t: dict) -> str:
         }}
         QPushButton:pressed {{ background-color: {alpha(t['accent'], 0.18)}; }}
         QPushButton[selected="true"] {{
-            background-color: {alpha(t['accent'], 0.13)};
+            background-color: {brand_gradient(t, 0.16, 0.11)};
             border: 1px solid {alpha(t['accent'], 0.55)};
             color: {t['text']};
         }}
@@ -243,8 +267,7 @@ def card_qss(t: dict, accent: str, danger: bool = False) -> str:
     # equal specificity, and a verdict flash must outrank a stale hover.
     return f"""
         GlassCard {{
-            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 {t['card_sheen']}, stop:0.12 {t['card']}, stop:1 {t['card']});
+            background-color: {glass_fill(t, t['card'])};
             border: 1px solid {line};
             border-radius: 16px;
         }}
@@ -324,6 +347,13 @@ def scroll_area_qss(t: dict) -> str:
         QScrollBar::handle:vertical:hover {{ background: {t['scroll_hov']}; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+        QScrollBar:horizontal {{ background: transparent; height: 6px; margin: 2px; }}
+        QScrollBar::handle:horizontal {{
+            background: {t['scroll']}; border-radius: 3px; min-width: 30px;
+        }}
+        QScrollBar::handle:horizontal:hover {{ background: {t['scroll_hov']}; }}
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
     """
 
 
@@ -347,9 +377,14 @@ def badge_qss(t: dict) -> str:
 
 
 def dialog_panel_qss(t: dict, accent: str) -> str:
+    """Same frosted-glass material as GlassCard (glass_fill), so a dialog
+    reads as depth-consistent with the surface that opened it instead of a
+    flatter, unrelated modal — paired with paint_bevel_frame on the
+    DepthCard panel that hosts this (see widgets.ConfirmDialog /
+    AppSelectorDialog / CommandPalette)."""
     return f"""
         QFrame {{
-            background-color: {t['dialog_bg']};
+            background-color: {glass_fill(t, t['dialog_bg'], sheen_stop=0.18)};
             border: 1px solid {alpha(accent, 0.35)};
             border-radius: 18px;
         }}
@@ -385,6 +420,13 @@ def console_qss(t: dict) -> str:
         QScrollBar::handle:vertical:hover {{ background: {t['scroll_hov']}; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+        QScrollBar:horizontal {{ background: transparent; height: 6px; margin: 2px; }}
+        QScrollBar::handle:horizontal {{
+            background: {t['scroll']}; border-radius: 3px; min-width: 30px;
+        }}
+        QScrollBar::handle:horizontal:hover {{ background: {t['scroll_hov']}; }}
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
     """
 
 
@@ -425,7 +467,7 @@ def state_pill_qss(t: dict) -> str:
             border: 1px solid {t['panel_line']}; }}
         QLabel#statePill[state="running"] {{ {base}
             color: {t['accent']};
-            background: {alpha(t['accent'], 0.10)};
+            background: {brand_gradient(t, 0.14, 0.10)};
             border: 1px solid {alpha(t['accent'], 0.45)}; }}
         QLabel#statePill[state="ok"] {{ {base}
             color: {t['ok']};
@@ -467,6 +509,42 @@ def app_row_qss(t: dict) -> str:
             border-radius: 10px;
         }}
         QFrame:hover {{ border: 1px solid {alpha(t['accent'], 0.35)}; }}
+    """
+
+
+def wizard_link_qss(t: dict, accent: str) -> str:
+    """Full-width clickable link row — the Office wizard's 'open this URL'
+    / 'browse for a folder' actions, styled like an inert app_row until
+    hovered, when it lights up with the accent (a link that reads as a
+    link, not a generic button)."""
+    return f"""
+        QPushButton {{
+            background: {t['card']}; border: 1px solid {t['card_line']};
+            border-radius: 12px; color: {t['text']}; font-size: 13px; font-weight: 600;
+            text-align: left; padding: 0 16px;
+        }}
+        QPushButton:hover {{
+            background: {t['card_hover']}; border: 1px solid {alpha(accent, 0.45)};
+            color: {accent};
+        }}
+        QPushButton:pressed {{ background: {alpha(accent, 0.16)}; }}
+    """
+
+
+def warning_banner_qss(t: dict) -> str:
+    """Prominent inline warning banner — amber, not danger-red: this is a
+    'pay attention' caveat (don't close the Office setup window), not a
+    destructive-action confirmation, so it borrows the `warn` token rather
+    than `err`."""
+    return f"""
+        QLabel {{
+            background: {alpha(t['warn'], 0.12)};
+            border: 1px solid {alpha(t['warn'], 0.45)};
+            border-radius: 12px;
+            color: {t['warn']};
+            font-size: 12px; font-weight: 600;
+            padding: 14px 16px;
+        }}
     """
 
 
@@ -523,13 +601,19 @@ def command_list_qss(t: dict) -> str:
 
 
 def dialog_go_qss(t: dict, accent: str) -> str:
+    """Primary dialog action ('Proceed' / 'Deploy'). The two-tone brand
+    sweep only applies when `accent` is the theme's normal accent — a
+    danger confirmation (accent == t['err']) stays a flat, unambiguous red;
+    gradients on a 'this may be hard to undo' button would blur the warning."""
+    is_brand = accent == t["accent"]
+    fill = (lambda a1, a2: brand_gradient(t, a1, a2)) if is_brand else (lambda a1, a2: alpha(accent, a1))
     return f"""
         QPushButton {{
-            background: {alpha(accent, 0.14)}; border: 1px solid {alpha(accent, 0.55)};
+            background: {fill(0.16, 0.11)}; border: 1px solid {alpha(accent, 0.55)};
             border-radius: 10px; color: {accent}; font-size: 12px; font-weight: 600;
         }}
-        QPushButton:hover {{ background: {alpha(accent, 0.28)}; color: {t['text']}; }}
-        QPushButton:pressed {{ background: {alpha(accent, 0.40)}; color: {t['text']}; }}
+        QPushButton:hover {{ background: {fill(0.30, 0.24)}; color: {t['text']}; }}
+        QPushButton:pressed {{ background: {fill(0.42, 0.34)}; color: {t['text']}; }}
     """
 
 
@@ -556,8 +640,7 @@ def insight_card_qss(t: dict) -> str:
     material across the app."""
     return f"""
         QFrame#insight {{
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 {t['card_sheen']}, stop:0.15 {t['card']}, stop:1 {t['card']});
+            background: {glass_fill(t, t['card'])};
             border: 1px solid {t['card_line']};
             border-radius: 14px;
         }}

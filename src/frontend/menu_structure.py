@@ -36,6 +36,12 @@ Item schema:
              (same IDs, same order) - the backend is the source of truth for
              what winget ID each entry installs; this list is only the GUI's
              mirror of it.
+    wizard   str   when present, the GUI opens a dedicated multi-step wizard
+             dialog instead of the app selector / confirm dialog (checked
+             before both). Currently only "office" -> widgets.OfficeWizardDialog,
+             which resolves a setup.exe/configuration.xml pair and passes
+             them to core.ps1 as -OfficeSetupPath/-OfficeConfigPath. A task
+             using "wizard" should not also set "apps" or "confirm".
 """
 
 # ============================================================
@@ -108,10 +114,12 @@ CATEGORIES = [
                  ("Oracle.JavaRuntimeEnvironment", "Java Runtime Environment"),
              ]},
             {"icon": "📄", "title": "Microsoft Office Suite",
-             "desc": "Word, Excel, PowerPoint, Outlook and more, plus Teams and OneDrive — via winget.",
+             "desc": "Word, Excel, PowerPoint, Outlook and more — via the official Deployment Tool wizard.",
+             "task": "InstallOfficeODT", "timeout": 3600, "wizard": "office"},
+            {"icon": "🤝", "title": "Teams & OneDrive",
+             "desc": "Microsoft Teams and OneDrive — real standalone winget packages.",
              "task": "InstallOfficeApps", "timeout": 3600, "confirm": True,
              "apps": [
-                 ("Microsoft.Office", "Microsoft 365 Apps (Word, Excel, PowerPoint, Outlook, OneNote, Access, Publisher)"),
                  ("Microsoft.Teams", "Microsoft Teams"),
                  ("Microsoft.OneDrive", "Microsoft OneDrive"),
              ]},

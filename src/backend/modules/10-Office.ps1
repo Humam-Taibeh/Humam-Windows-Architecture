@@ -90,7 +90,15 @@ function Find-OfficeConfigFile {
     if ([string]::IsNullOrWhiteSpace($Folder)) { return $null }
     if (-not (Test-Path -Path $Folder -PathType Container -ErrorAction SilentlyContinue)) { return $null }
 
-    $ExactNames = @("configuration.xml", "Configuration.xml", "configuration.xml.xml", "Configuration.xml.xml")
+    # Known names in preference order: bare "configuration.xml" first, then
+    # the filenames the Office Customization Tool itself exports (e.g.
+    # "configuration-Office365-x64.xml") - kept in sync with widgets.py's
+    # OfficeWizardDialog._CONFIG_NAMES so the console and GUI flows agree
+    # on what counts as "the standard name" for a config file.
+    $ExactNames = @(
+        "configuration.xml", "Configuration.xml", "configuration.xml.xml", "Configuration.xml.xml",
+        "configuration-Office365-x64.xml", "configuration-Office365-x86.xml"
+    )
     foreach ($Name in $ExactNames) {
         try {
             $f = Join-Path -Path $Folder -ChildPath $Name
@@ -238,6 +246,205 @@ function Invoke-OfficeDeploymentInstall {
         Write-Info "   $SetupExe /configure $ConfigXml"
     }
     return "OK"
+}
+
+function Get-OfficeDefaultConfigXml {
+    <#
+    .SYNOPSIS
+        The built-in configuration.xml for the wizard's Path A (fully
+        automated install) - written only when the target folder doesn't
+        already have one, so it never clobbers a config the user brought.
+
+    .DESCRIPTION
+        Modeled on a real-world Office Customization Tool export: 64-bit,
+        Perpetual VL2024 channel, ProPlus2024Volume, English + Arabic,
+        Access/Lync/OneDrive/OneNote/Publisher excluded, and the same
+        default-save-format AppSettings.
+
+        DELIBERATELY NO PIDKEY: for a Volume License product like
+        ProPlus2024Volume, omitting PIDKEY is valid - it defers to KMS
+        activation (the normal VL pattern when a KMS host exists on the
+        network) rather than embedding any specific key. Anyone without
+        KMS infrastructure will get an installed-but-unactivated Office
+        until they either add a PIDKEY/MAK themselves or point Path A's
+        folder at their own configuration.xml (Path B/C) instead. The
+        wizard's auto-install confirm step says this explicitly - it is
+        not a silent gap.
+    #>
+    return @'
+<Configuration>
+  <Add OfficeClientEdition="64" Channel="PerpetualVL2024">
+    <Product ID="ProPlus2024Volume">
+      <Language ID="en-us" />
+      <Language ID="ar-sa" />
+      <ExcludeApp ID="Access" />
+      <ExcludeApp ID="Lync" />
+      <ExcludeApp ID="OneDrive" />
+      <ExcludeApp ID="OneNote" />
+      <ExcludeApp ID="Publisher" />
+    </Product>
+  </Add>
+  <Property Name="SharedComputerLicensing" Value="0" />
+  <Property Name="FORCEAPPSHUTDOWN" Value="FALSE" />
+  <Property Name="DeviceBasedLicensing" Value="0" />
+  <Property Name="SCLCacheOverride" Value="0" />
+  <Property Name="AUTOACTIVATE" Value="1" />
+  <Updates Enabled="TRUE" />
+  <RemoveMSI />
+  <Display Level="Full" AcceptEULA="TRUE" />
+  <AppSettings>
+    <User Key="software\microsoft\office\16.0\excel\options" Name="defaultformat" Value="51" Type="REG_DWORD" App="excel16" Id="L_SaveExcelfilesas" />
+    <User Key="software\microsoft\office\16.0\powerpoint\options" Name="defaultformat" Value="27" Type="REG_DWORD" App="ppt16" Id="L_SavePowerPointfilesas" />
+    <User Key="software\microsoft\office\16.0\word\options" Name="defaultformat" Value="" Type="REG_SZ" App="word16" Id="L_SaveWordfilesas" />
+  </AppSettings>
+</Configuration>
+'@
+}
+
+function Invoke-GuiOfficeAutoDownload {
+    <#
+    .SYNOPSIS
+        Path A of the GUI wizard ("Automated Cloud Download") - fetches
+        the Office Click-to-Run client directly and prepares a ready-to-run
+        folder, no self-extractor dialogs involved.
+
+    .DESCRIPTION
+        Rather than scraping Microsoft's download-center page for the
+        versioned officedeploymenttool_*.exe link (fragile - that URL
+        changes every ODT release and isn't predictable), this downloads
+        https://officecdn.microsoft.com/pr/wsus/setup.exe - Microsoft's own
+        stable Click-to-Run CDN endpoint (the exact URL winget's own
+        "Microsoft.Office" package manifest uses). That file already IS
+        the extracted client the self-extractor would have produced, so
+        there is no extraction step - "download" and "prepare the
+        structure" collapse into one file write. It's also small (a
+        bootstrap stub); the actual multi-GB Office payload streams down
+        later during /configure, inside setup.exe's own native progress
+        window - which is exactly why the wizard's warning banner exists.
+
+        Writes the default configuration.xml (Get-OfficeDefaultConfigXml)
+        into the same folder ONLY if one isn't already there, so re-running
+        this never overwrites a config the user customized by hand.
+    #>
+    $DestinationFolder = Join-Path $env:USERPROFILE "Desktop\Office"
+
+    if (Test-DryRun "Download the Office Click-to-Run client and write a default configuration.xml to '$DestinationFolder'") {
+        return @{ Success = $true; SetupPath = (Join-Path $DestinationFolder "setup.exe"); ConfigPath = (Join-Path $DestinationFolder "configuration.xml") }
+    }
+
+    try {
+        New-Item -Path $DestinationFolder -ItemType Directory -Force -ErrorAction Stop | Out-Null
+    } catch {
+        Write-ErrorX "Could not create '$DestinationFolder': $($_.Exception.Message)"
+        return @{ Success = $false }
+    }
+
+    $SetupPath = Join-Path $DestinationFolder "setup.exe"
+    $SourceUrl = "https://officecdn.microsoft.com/pr/wsus/setup.exe"
+    Write-Info "Downloading the Office Click-to-Run client from Microsoft..."
+    $Client = $null
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $Client = New-Object System.Net.WebClient
+        $Client.DownloadFile($SourceUrl, $SetupPath)
+    } catch {
+        Write-ErrorX "Download failed: $($_.Exception.Message)"
+        return @{ Success = $false }
+    } finally {
+        if ($Client) { $Client.Dispose() }
+    }
+
+    if (-not (Test-Path -Path $SetupPath -PathType Leaf)) {
+        Write-ErrorX "Download appears to have failed - setup.exe was not created."
+        return @{ Success = $false }
+    }
+    Write-Success "Office Click-to-Run client downloaded to '$SetupPath'."
+
+    $ConfigPath = Join-Path $DestinationFolder "configuration.xml"
+    if (Test-Path -Path $ConfigPath -PathType Leaf) {
+        Write-Info "An existing configuration.xml was found in the folder - keeping it instead of overwriting."
+    } else {
+        Get-OfficeDefaultConfigXml | Set-Content -Path $ConfigPath -Encoding UTF8
+        Write-Success "Standard configuration.xml written (Microsoft 365/VL2024 core apps, English + Arabic)."
+    }
+
+    return @{ Success = $true; SetupPath = $SetupPath; ConfigPath = $ConfigPath }
+}
+
+function Invoke-GuiOfficeODTInstall {
+    <#
+    .SYNOPSIS
+        NonInteractive-safe ODT installer for the GUI's Office wizard
+        (widgets.OfficeWizardDialog -> task InstallOfficeODT).
+
+    .DESCRIPTION
+        Unlike Invoke-OfficeDeploymentInstall (the console path, which
+        prompts with Ask-User at each decision point), this never prompts:
+        the wizard itself already collected consent - the option the user
+        picked, the resolved file paths, and the "do not close the setup
+        window" warning are all shown client-side before this ever runs.
+        Still auto-extracts a self-extractor transparently, exactly like
+        the console path, since the wizard's file picker can't tell a
+        self-extractor from the real setup.exe without running it.
+        Returns $true/$false; the dispatcher turns that into the
+        ##PULSE## verdict line.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$SetupPath,
+        [Parameter(Mandatory = $true)][string]$ConfigPath
+    )
+
+    if (-not (Test-Path -Path $SetupPath -PathType Leaf)) {
+        Write-ErrorX "Setup file not found: $SetupPath"
+        return $false
+    }
+    if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
+        Write-ErrorX "configuration.xml not found: $ConfigPath"
+        return $false
+    }
+
+    if (-not (Test-ValidOfficeSetup -FilePath $SetupPath)) {
+        if (Test-IsSelfExtractor -FilePath $SetupPath) {
+            Write-Warn "This is the Office Deployment Tool self-extractor - extracting the real setup.exe first..."
+            $ExtractDir = Split-Path $SetupPath -Parent
+            if (-not (Invoke-ExtractSelfExtractor -ExtractorPath $SetupPath -DestinationFolder $ExtractDir)) {
+                Write-ErrorX "Extraction failed."
+                return $false
+            }
+            $RealSetup = Find-OfficeSetupFile -Folder $ExtractDir
+            if (-not $RealSetup) {
+                Write-ErrorX "Extraction succeeded, but the resulting setup.exe could not be located."
+                return $false
+            }
+            Write-Info "Using the extracted setup.exe: $RealSetup"
+            $SetupPath = $RealSetup
+        } else {
+            Write-ErrorX "The selected file does not support /configure and is not a recognized ODT self-extractor."
+            return $false
+        }
+    }
+
+    Write-Success "Office deployment files confirmed:"
+    Write-Info "   Setup : $SetupPath"
+    Write-Info "   Config: $ConfigPath"
+
+    if (Test-DryRun "Run '$SetupPath /configure $ConfigPath' (Office ODT installation)") { return $true }
+
+    Write-Warn "Starting Office installation - DO NOT close the setup window or open other apps until it finishes."
+    try {
+        $Argument = '/configure ' + [char]34 + $ConfigPath + [char]34
+        $Proc = Start-Process -FilePath $SetupPath -ArgumentList $Argument -Wait -NoNewWindow -PassThru
+        if ($Proc.ExitCode -eq 0) {
+            Write-Success "Office installation command completed."
+            return $true
+        } else {
+            Write-ErrorX "Office installation exited with code $($Proc.ExitCode)."
+            return $false
+        }
+    } catch {
+        Write-ErrorX "Office installation failed: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Show-OfficeDeployment {

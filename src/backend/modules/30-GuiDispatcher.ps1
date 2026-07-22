@@ -155,7 +155,36 @@ function Invoke-GuiTask {
                 break
             }
             "InstallRuntimes"        { Invoke-GuiBulkDeploy $Runtimes "Core API Runtimes" -SelectedIds $Script:SelectedAppIds; break }
-            "InstallOfficeApps"      { Invoke-GuiBulkDeploy $Apps_Office "Microsoft Office Suite" -SelectedIds $Script:SelectedAppIds; break }
+            "InstallOfficeApps"      { Invoke-GuiBulkDeploy $Apps_OfficeCompanions "Microsoft Teams & OneDrive" -SelectedIds $Script:SelectedAppIds; break }
+            "InstallOfficeODT" {
+                if ([string]::IsNullOrWhiteSpace($OfficeSetupPath) -or [string]::IsNullOrWhiteSpace($OfficeConfigPath)) {
+                    Write-Output "##PULSE##ERROR|No Office setup.exe / configuration.xml path was supplied by the wizard."
+                    break
+                }
+                $Ok = Invoke-GuiOfficeODTInstall -SetupPath $OfficeSetupPath -ConfigPath $OfficeConfigPath
+                if ($Ok) {
+                    $Prefix = if ($Script:DryRun) { "[DRY-RUN] " } else { "" }
+                    Write-Output "##PULSE##SUCCESS|${Prefix}Microsoft Office installed via the Deployment Tool. Verify the apps are present."
+                } else {
+                    Write-Output "##PULSE##ERROR|Office installation failed. See the Pulse log (Information > View Operation Log)."
+                }
+                break
+            }
+            "InstallOfficeODTAuto" {
+                $DownloadResult = Invoke-GuiOfficeAutoDownload
+                if (-not $DownloadResult.Success) {
+                    Write-Output "##PULSE##ERROR|Could not download the Office Deployment Tool. Check your internet connection, or use 'I already have my Office files ready' instead."
+                    break
+                }
+                $Ok = Invoke-GuiOfficeODTInstall -SetupPath $DownloadResult.SetupPath -ConfigPath $DownloadResult.ConfigPath
+                if ($Ok) {
+                    $Prefix = if ($Script:DryRun) { "[DRY-RUN] " } else { "" }
+                    Write-Output "##PULSE##SUCCESS|${Prefix}Microsoft Office downloaded and installed automatically. Verify the apps are present."
+                } else {
+                    Write-Output "##PULSE##ERROR|Office installation failed after downloading the deployment tool. See the Pulse log (Information > View Operation Log)."
+                }
+                break
+            }
             "StartupReport" {
                 $Items = @(Get-AllStartupItems)
                 $Enabled  = @($Items | Where-Object { $_.Enabled }).Count

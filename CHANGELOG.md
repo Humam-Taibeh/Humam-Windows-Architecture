@@ -15,6 +15,72 @@ GUI version, with core changes called out explicitly.
 ## [Unreleased]
 
 ### Added
+- **Three-path Office wizard** — `OfficeWizardDialog`'s single "locate your
+  files" flow is now three up-front paths:
+  - **Path A: Automated Cloud Download** (task `InstallOfficeODTAuto`,
+    backend `Invoke-GuiOfficeAutoDownload`) — fetches
+    `officecdn.microsoft.com/pr/wsus/setup.exe` directly (the same stable
+    CDN endpoint winget's own `Microsoft.Office` manifest uses) rather than
+    scraping Microsoft's download-center page for the versioned
+    `officedeploymenttool_*.exe` link. That file already IS the extracted
+    Click-to-Run client, so there's no self-extractor dialog to click
+    through at all. Writes a built-in default `configuration.xml`
+    (`Get-OfficeDefaultConfigXml`) only if the target folder doesn't
+    already have one. The wizard states plainly that this default targets
+    Volume License/KMS activation, not a plug-and-play key.
+  - **Path B**: unchanged auto-detect / browse / individual-file-pick flow.
+  - **Path C: Beginner Guide** — numbered, plain-language walkthrough of
+    downloading the ODT and building a configuration.xml via Microsoft's
+    own tools (the former single "download" step), feeding into Path B's
+    locate flow once the files exist.
+  - **Multi-config detection** — `Find-OfficeConfigFile` / the wizard's
+    `_find_office_files` now recognize OCT's own export naming
+    (`configuration-Office365-x64.xml` etc.) in preference order; if a
+    folder has more than one `.xml`, the wizard shows a picker (top match
+    marked "recommended") instead of silently grabbing the first one
+    alphabetically.
+- **Office Deployment Tool wizard** (`widgets.OfficeWizardDialog`, task
+  `InstallOfficeODT`) — replaces the winget-based Office install (which
+  could only apply Microsoft's stock default configuration) with a
+  4-step guided flow that preserves full `configuration.xml` control:
+  choose to download the official ODT + Customization Tool (direct
+  browser links) or locate files already on disk (auto-detects
+  `Desktop\Office`, including the OneDrive-redirected and Public Desktop
+  variants, with a folder browser and an individual-file-picker fallback),
+  then a confirm step with a prominent amber warning ("don't close the
+  setup window") before handing off to the normal task pipeline — same
+  live console, Stop button and toast machinery as every other task.
+  Backend: `10-Office.ps1`'s new `Invoke-GuiOfficeODTInstall` reuses the
+  existing self-extractor/validation helpers but never prompts (the
+  wizard already collected consent client-side); gated by
+  `AdminRequiredTasks` since `setup.exe /configure` needs elevation.
+  `core.ps1` gained `-OfficeSetupPath`/`-OfficeConfigPath` params, threaded
+  through `PowerShellTask` from the resolved wizard paths. The
+  `$Apps_Office` winget catalog entry for the Office bundle itself is
+  removed (Word/Excel/etc. have no per-app winget package, only a
+  default-config ODT run); Teams and OneDrive remain on the ordinary
+  winget path as `$Apps_OfficeCompanions`, exposed as their own card.
+- **Unified glass material system** (`theme.glass_fill`) — cards, Welcome
+  insight tiles and dialog panels now share one frosted-glass gradient
+  definition instead of three that had quietly drifted apart (card/insight
+  sheen stops were 0.12 vs 0.15). Dialogs (`ConfirmDialog`,
+  `AppSelectorDialog`, `CommandPalette`) also gained the same painted
+  bevel edge (`DepthCard`) cards already had — previously every dialog was
+  a flat rectangle while every card had visible glass depth.
+- **Brand duotone gradient** (`theme.brand_gradient`) — the violet `accent2`
+  color existed only in the shimmer bar; it's now part of a deliberate
+  accent→accent2 sweep reused on the primary dialog button, the selected
+  sidebar item, and the running-state pill, so the two-tone brand reads as
+  one system. Danger confirmations (Purge OneDrive, Remove Edge, etc.)
+  deliberately keep a flat solid red — no gradient on a "hard to undo"
+  action.
+- **Active nav indicator bar** — the selected sidebar item now shows a
+  short rounded accent→accent2 bar on its left edge, the same affordance
+  Windows 11 Settings uses for its selected nav entry.
+- **Horizontal scrollbar styling** — `scroll_area_qss`/`console_qss` only
+  styled the vertical scrollbar; any control needing horizontal scroll
+  (the card grid or app-selector list at a narrow width) fell back to the
+  raw unstyled OS scrollbar. Both now match.
 - **Microsoft Office Suite catalog entry** (`$Apps_Office` in
   `01-Catalogs.ps1`, mirrored in `menu_structure.py` as `InstallOfficeApps`)
   — Word, Excel, PowerPoint, Outlook, OneNote, Access and Publisher via the
@@ -54,6 +120,9 @@ GUI version, with core changes called out explicitly.
 ### Changed
 - Card/nav spacing tightened for a cleaner rhythm: card description
   spacing 4→6px, category grid gutter 14→16px.
+- `ConfirmDialog`'s outer panel margin (26, 24, 26, 22) now matches
+  `AppSelectorDialog`'s (24, 22, 24, 20) — the two are the same "panel +
+  body + actions" pattern and had drifted to slightly different insets.
 
 ### Fixed
 - **Maximized/fullscreen layout** — the shell's floating margins no longer

@@ -154,7 +154,8 @@ function Show-AppDeploymentHub {
             "Programming & AI Core: $($Apps_Dev.Count) items - Cursor, VS Code, PyCharm, NetBeans, MSYS2, Ollama...",
             "Gaming Launchers: $($Apps_Gaming.Count) items - Steam, Epic, Rockstar, BlueStacks + auto GPU app",
             "Hardware Diagnostics: $($Apps_Tools.Count) items - CPU-Z, GPU-Z, HWMonitor... + auto motherboard app",
-            "Microsoft Office Suite: $($Apps_Office.Count) items - Word/Excel/PowerPoint/Outlook bundle, Teams, OneDrive"
+            "Microsoft Teams & OneDrive: $($Apps_OfficeCompanions.Count) items - real standalone winget packages",
+            "(Full Office - Word/Excel/PowerPoint/Outlook - installs via the ODT wizard: Software Management > [4])"
         )
         do {
             Write-Banner "APP DEPLOYMENT HUB"
@@ -162,7 +163,7 @@ function Show-AppDeploymentHub {
             Write-Host "   [B]  Programming & AI Core" -ForegroundColor White
             Write-Host "   [C]  Gaming Launchers" -ForegroundColor White
             Write-Host "   [D]  Hardware Diagnostics" -ForegroundColor White
-            Write-Host "   [E]  Microsoft Office Suite" -ForegroundColor White
+            Write-Host "   [E]  Microsoft Teams & OneDrive" -ForegroundColor White
             Write-Host "   [F]  Check & Deploy ALL Categories" -ForegroundColor Magenta
             Write-Host "   [X]  Back to Software Management" -ForegroundColor DarkGray
             Write-Divider
@@ -201,7 +202,7 @@ function Show-AppDeploymentHub {
                 }
             }
             if ($AppMenu.ToUpper() -eq 'E' -or $RunAll) {
-                $status = Process-AppCategory $Apps_Office "Microsoft Office Suite"
+                $status = Process-AppCategory $Apps_OfficeCompanions "Microsoft Teams & OneDrive"
                 if ($status -eq "QUIT" -and $RunAll) { break }
                 if ($status -eq "BACK" -and $RunAll) { break }
             }

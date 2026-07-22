@@ -71,12 +71,17 @@ class PowerShellTask(QObject):
                                     # progress semantics of sfc / DISM / winget
 
     def __init__(self, ps1_path: str, task_name: str, timeout: int = 120,
-                 app_ids: list[str] | None = None, dry_run: bool = False):
+                 app_ids: list[str] | None = None, dry_run: bool = False,
+                 office_setup: str | None = None, office_config: str | None = None):
         super().__init__()
         self.ps1_path = ps1_path
         self.task_name = task_name
         self.timeout = timeout
         self.app_ids = app_ids or []
+        # Resolved by the Office ODT wizard (widgets.OfficeWizardDialog)
+        # before this worker is ever constructed — both set, or both None.
+        self.office_setup = office_setup
+        self.office_config = office_config
         # dry_run=True appends -WhatIf: the backend simulates the task and
         # reports "[WHATIF] ..." lines / a "[DRY-RUN]" result instead of
         # mutating the system. Same SUCCESS|/ERROR| contract either way.
@@ -191,6 +196,9 @@ class PowerShellTask(QObject):
             if self.app_ids:
                 ids_csv = ",".join(self.app_ids)
                 cmd += f" -AppIds '{self._ps_quote(ids_csv)}'"
+            if self.office_setup and self.office_config:
+                cmd += (f" -OfficeSetupPath '{self._ps_quote(self.office_setup)}'"
+                        f" -OfficeConfigPath '{self._ps_quote(self.office_config)}'")
             if self.dry_run:
                 cmd += " -WhatIf"
 

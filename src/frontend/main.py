@@ -53,7 +53,8 @@ from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: 
 from frontend.menu_structure import CATEGORIES, total_operations  # noqa: E402
 from frontend.widgets import (  # noqa: E402
     AppSelectorDialog, BreathingIcon, CommandPalette, ConfirmDialog, DepthCard,
-    GlassCard, LiveConsole, NavButton, NavPill, StatePill, StatusDot, TitleBar,
+    GlassCard, LiveConsole, NavButton, NavPill, OfficeWizardDialog, StatePill,
+    StatusDot, TitleBar,
 )
 
 # ============================================================
@@ -623,7 +624,23 @@ class PulseApp(QMainWindow):
             return
 
         app_ids: list[str] | None = None
-        if item.get("apps"):
+        office_paths: tuple[str, str] | None = None
+        if item.get("wizard") == "office":
+            wizard = OfficeWizardDialog(self, self.theme.t)
+            if wizard.exec() != QDialog.DialogCode.Accepted:
+                return
+            if wizard.task_override:
+                # Path A (Automated Cloud Download): the backend resolves
+                # its own setup.exe/configuration.xml after downloading, so
+                # there are no paths to pass — just a different task name.
+                item = {**item, "task": wizard.task_override}
+            elif wizard.setup_path and wizard.config_path:
+                office_paths = (wizard.setup_path, wizard.config_path)
+            else:
+                self.toasts.show(
+                    "info", "Office installation cancelled — no files were selected.", 3500)
+                return
+        elif item.get("apps"):
             selector = AppSelectorDialog(self, item, self.theme.t)
             if selector.exec() != QDialog.DialogCode.Accepted:
                 return
@@ -636,10 +653,11 @@ class PulseApp(QMainWindow):
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
 
-        self._start_task(item, card, app_ids)
+        self._start_task(item, card, app_ids, office_paths)
 
     def _start_task(self, item: dict, card: GlassCard | None,
-                     app_ids: list[str] | None = None):
+                     app_ids: list[str] | None = None,
+                     office_paths: tuple[str, str] | None = None):
         self._running_card = card
         if card is not None:
             card.set_running(True)
@@ -655,7 +673,9 @@ class PulseApp(QMainWindow):
         thread = QThread(self)
         worker = PowerShellTask(
             self.ps1_path, item["task"], timeout=item.get("timeout", DEFAULT_TIMEOUT),
-            app_ids=app_ids)
+            app_ids=app_ids,
+            office_setup=office_paths[0] if office_paths else None,
+            office_config=office_paths[1] if office_paths else None)
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run)

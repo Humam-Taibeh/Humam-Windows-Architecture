@@ -36,6 +36,9 @@
                                     final ##PULSE##SUCCESS|... or
                                     ##PULSE##ERROR|... verdict line
       core.ps1 -Task <n> -AppIds a,b   narrows a bulk deploy to ticked apps
+      core.ps1 -Task InstallOfficeODT -OfficeSetupPath <p> -OfficeConfigPath <p>
+                                     runs the Office Deployment Tool wizard's
+                                     resolved setup.exe / configuration.xml
       core.ps1 [...] -WhatIf        DRY-RUN: full simulation, zero mutations
 
     CHANGELOG v4.0 (Modular Architecture Release):
@@ -63,6 +66,8 @@
 param(
     [string]$Task,
     [string]$AppIds,
+    [string]$OfficeSetupPath,
+    [string]$OfficeConfigPath,
     [switch]$WhatIf
 )
 
