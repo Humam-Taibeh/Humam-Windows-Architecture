@@ -31,7 +31,8 @@ if sys.platform == "win32":
     import ctypes.wintypes  # MSG / RECT for native window hit-testing
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPropertyAnimation, Qt, QThread, QTimer, Signal,
+    QEasingCurve, QEvent, QPoint, QPropertyAnimation, Qt, QThread, QTimer,
+    Signal,
 )
 from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -64,6 +65,7 @@ from frontend.widgets import (  # noqa: E402
 # ============================================================
 APP_NAME = "PULSE"
 APP_VERSION = "6.1"
+APP_CHANNEL = "Beta"   # release channel — rendered as a badge, never in prose
 PS1_FILENAME = "core.ps1"
 DEFAULT_TIMEOUT = 900
 
@@ -371,8 +373,7 @@ class PulseApp(QMainWindow):
         icon_path = _locate_icon()
         if icon_path:
             self.setWindowIcon(QIcon(icon_path))
-        self.setGeometry(140, 80, 1180, 740)
-        self.setMinimumSize(1020, 640)
+        self._init_geometry()
 
         # Strong references — Qt/Python will GC these mid-flight otherwise.
         self._thread: QThread | None = None
@@ -397,6 +398,26 @@ class PulseApp(QMainWindow):
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self._open_command_palette)
         QTimer.singleShot(300, self._startup_toasts)
 
+    def _init_geometry(self):
+        """Screen-aware first launch: size to the monitor instead of a
+        hardcoded 1180×740 (which overflowed 1366×768 laptops and small
+        high-DPI displays), centered in the available work area. The
+        minimum size is likewise clamped so the window can never be
+        forced larger than the screen it lives on."""
+        desired_w, desired_h = 1180, 760
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(desired_w, desired_h)
+            self.setMinimumSize(980, 620)
+            return
+        avail = screen.availableGeometry()
+        w = min(desired_w, avail.width() - 48)
+        h = min(desired_h, avail.height() - 48)
+        self.setMinimumSize(min(980, avail.width() - 48),
+                            min(620, avail.height() - 48))
+        self.resize(w, h)
+        self.move(avail.center().x() - w // 2, avail.center().y() - h // 2)
+
     # ============================================================
     #  UI ASSEMBLY
     # ============================================================
@@ -411,7 +432,7 @@ class PulseApp(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.titlebar = TitleBar(self, t, APP_NAME, APP_VERSION)
+        self.titlebar = TitleBar(self, t, APP_NAME, APP_VERSION, APP_CHANNEL)
         self.titlebar.theme_toggle_requested.connect(self._toggle_theme_animated)
         root.addWidget(self.titlebar)
 
@@ -430,7 +451,8 @@ class PulseApp(QMainWindow):
         side.setSpacing(9)
 
         self._section = QLabel("MODULES")
-        self._section.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._section.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._section.setIndent(10)   # editor-style left-aligned section label
         side.addWidget(self._section)
         side.addSpacing(8)
 
@@ -442,7 +464,7 @@ class PulseApp(QMainWindow):
         side.addStretch()
 
         self._exit_btn = QPushButton("✕  Exit")
-        self._exit_btn.setFixedHeight(44)
+        self._exit_btn.setFixedHeight(40)
         self._exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._exit_btn.clicked.connect(self.close)
         side.addWidget(self._exit_btn)
@@ -506,7 +528,7 @@ class PulseApp(QMainWindow):
         content.addLayout(status)
 
         body.addWidget(self._content, 1)
-        self.toasts = ToastManager(self._shell)
+        self.toasts = ToastManager(self._shell, t)
 
     # ============================================================
     #  LIVE THEME PIPELINE
@@ -529,6 +551,7 @@ class PulseApp(QMainWindow):
         self.stop_btn.setStyleSheet(TH.stop_button_qss(t))
         self.console.apply_theme(t)
         self.status_text.setStyleSheet(TH.label_qss(t, "status"))
+        self.toasts.apply_theme(t)
         self._set_status(self._status_state, self.status_text.text())
 
     def _toggle_theme_animated(self):
@@ -836,7 +859,7 @@ class PulseApp(QMainWindow):
         if not self.ps1_path:
             self.toasts.show("error", f"{PS1_FILENAME} not found next to the app.", 8000)
         else:
-            self.toasts.show("success", "Engine loaded successfully.", 3000)
+            self.toasts.show("success", "Engine ready — all modules loaded.", 2500)
         if not self.is_admin:
             self.toasts.show(
                 "info",
@@ -852,7 +875,7 @@ class PulseApp(QMainWindow):
             self._glass_applied = True
             hwnd = int(self.winId())
             TH.apply_blur_behind(hwnd)      # real DWM blur behind the shell
-            TH.apply_native_rounding(hwnd)  # Win11: clip blur to rounded corners
+            TH.apply_native_rounding(hwnd, rounded=not self.isMaximized())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -875,49 +898,114 @@ class PulseApp(QMainWindow):
             # must collapse too, or "flush" still looks like a floating
             # window with a big empty frame around it.
             self._body.setContentsMargins(*(_FLUSH_MARGINS if flush else _FLOAT_MARGINS))
+            # DWM must stop rounding too: on a per-pixel-alpha window the
+            # corner pixels DWM shaves off become CLICK-THROUGH holes into
+            # whatever sits behind the app — square corners while
+            # maximized make every edge pixel opaque and click-owning,
+            # exactly like a native maximized window.
+            if self._glass_applied:
+                TH.apply_native_rounding(int(self.winId()), rounded=not flush)
 
     # Win32 hit-test codes for the native resize border (WM_NCHITTEST)
     _HT = {"L": 10, "R": 11, "T": 12, "TL": 13, "TR": 14,
            "B": 15, "BL": 16, "BR": 17}
+    _HTMAXBUTTON = 9          # WM_NCHITTEST verdict that summons Snap Layouts
+    _WM_NCHITTEST = 0x0084
+    _WM_NCLBUTTONDOWN = 0x00A1
+    _WM_NCLBUTTONUP = 0x00A2
+    _WM_NCMOUSELEAVE = 0x02A2
+
+    def _max_button_hit(self, hwnd: int, gx: int, gy: int) -> bool:
+        """Is the (physical-pixel, screen-space) point over the maximize
+        button? Computed window-relative so mixed-DPI multi-monitor
+        setups can't skew the mapping."""
+        titlebar = getattr(self, "titlebar", None)
+        if titlebar is None or not titlebar.btn_max.isVisible():
+            return False
+        rect = ctypes.wintypes.RECT()
+        if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+        dpr = self.devicePixelRatioF()
+        btn = titlebar.btn_max
+        top_left = btn.mapTo(self, QPoint(0, 0))
+        left = rect.left + round(top_left.x() * dpr)
+        top = rect.top + round(top_left.y() * dpr)
+        return (left <= gx < left + round(btn.width() * dpr)
+                and top <= gy < top + round(btn.height() * dpr))
 
     def nativeEvent(self, eventType, message):
-        """Hand the outer 8px of the window back to Windows so edge and
-        corner resizing is fully native: real cursors, the OS size loop,
-        min-size clamping, and snap-consistent behavior. Everything inside
-        stays HTCLIENT, so Qt widgets are untouched. A maximized window has
-        no resize border, matching native apps."""
-        if (sys.platform == "win32" and eventType == b"windows_generic_MSG"
-                and not self.isMaximized()):
+        """Native window integration, in two parts:
+
+        1. Snap Layouts (Windows 11): answering WM_NCHITTEST with
+           HTMAXBUTTON over the maximize button makes Windows show its
+           Snap Layouts flyout on hover — the definitive 'this is a real
+           native app' signal. Windows then owns that button's mouse
+           events, so hover is mirrored via titlebar.set_max_hover() and
+           the click is re-injected from WM_NCLBUTTONUP (the sequence
+           Microsoft's own custom-titlebar guidance prescribes).
+        2. Native resize borders: the outer 8px goes back to Windows so
+           edge/corner resizing uses real cursors, the OS size loop,
+           min-size clamping and snap behavior. Everything inside stays
+           HTCLIENT. A maximized window has no resize border, matching
+           native apps.
+        """
+        if sys.platform == "win32" and eventType == b"windows_generic_MSG":
+            # Native messages can arrive while the window is still being
+            # constructed — before the title bar exists, fall through to Qt.
+            titlebar = getattr(self, "titlebar", None)
+            if titlebar is None:
+                return super().nativeEvent(eventType, message)
             msg = ctypes.wintypes.MSG.from_address(int(message))
-            if msg.message == 0x0084:  # WM_NCHITTEST
+
+            if msg.message == self._WM_NCHITTEST:
                 x = ctypes.c_short(msg.lParam & 0xFFFF).value
                 y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-                rect = ctypes.wintypes.RECT()
-                if ctypes.windll.user32.GetWindowRect(msg.hWnd, ctypes.byref(rect)):
-                    border = max(4, int(8 * self.devicePixelRatioF()))
-                    left = x < rect.left + border
-                    right = x >= rect.right - border
-                    top = y < rect.top + border
-                    bottom = y >= rect.bottom - border
-                    code = 0
-                    if top and left:
-                        code = self._HT["TL"]
-                    elif top and right:
-                        code = self._HT["TR"]
-                    elif bottom and left:
-                        code = self._HT["BL"]
-                    elif bottom and right:
-                        code = self._HT["BR"]
-                    elif left:
-                        code = self._HT["L"]
-                    elif right:
-                        code = self._HT["R"]
-                    elif top:
-                        code = self._HT["T"]
-                    elif bottom:
-                        code = self._HT["B"]
-                    if code:
-                        return True, code
+
+                over_max = self._max_button_hit(msg.hWnd, x, y)
+                titlebar.set_max_hover(over_max)
+                if over_max:
+                    return True, self._HTMAXBUTTON
+
+                if not self.isMaximized():
+                    rect = ctypes.wintypes.RECT()
+                    if ctypes.windll.user32.GetWindowRect(msg.hWnd, ctypes.byref(rect)):
+                        border = max(4, int(8 * self.devicePixelRatioF()))
+                        left = x < rect.left + border
+                        right = x >= rect.right - border
+                        top = y < rect.top + border
+                        bottom = y >= rect.bottom - border
+                        code = 0
+                        if top and left:
+                            code = self._HT["TL"]
+                        elif top and right:
+                            code = self._HT["TR"]
+                        elif bottom and left:
+                            code = self._HT["BL"]
+                        elif bottom and right:
+                            code = self._HT["BR"]
+                        elif left:
+                            code = self._HT["L"]
+                        elif right:
+                            code = self._HT["R"]
+                        elif top:
+                            code = self._HT["T"]
+                        elif bottom:
+                            code = self._HT["B"]
+                        if code:
+                            return True, code
+
+            elif (msg.message == self._WM_NCLBUTTONDOWN
+                    and msg.wParam == self._HTMAXBUTTON):
+                return True, 0   # consume — no default non-client flicker
+
+            elif (msg.message == self._WM_NCLBUTTONUP
+                    and msg.wParam == self._HTMAXBUTTON):
+                titlebar._toggle_max()
+                return True, 0
+
+            elif msg.message == self._WM_NCMOUSELEAVE:
+                titlebar.set_max_hover(False)
+
         return super().nativeEvent(eventType, message)
 
 
@@ -933,7 +1021,15 @@ def main() -> int:
                 "HumamTaibeh.Pulse")
         except (OSError, AttributeError):
             pass
+    # Fractional per-monitor DPI (125% / 150% / 175% laptops): pass the
+    # exact scale factor through instead of rounding to whole integers,
+    # so the UI is pixel-crisp and identically proportioned on every
+    # display. Must be set before the QApplication exists.
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
+    app.setApplicationName("Pulse")
+    app.setApplicationVersion(APP_VERSION)
     app.setStyle("Fusion")
     app.setFont(QFont("Segoe UI", 10))
     icon_path = _locate_icon()

@@ -68,36 +68,40 @@ def brand_gradient(t: dict, a1: float, a2: float | None = None) -> str:
 
 
 # ============================================================
-#  TOKENS — PREMIUM DARK
+#  TOKENS — GRAPHITE DARK (v6.2)
 # ============================================================
+# Design intent: a deep charcoal/slate register (Linear / GitHub-dark /
+# VS Code territory) — near-black neutral surfaces, elevation expressed
+# through *lightness*, never through saturated color. The old bright cyan
+# (#4cc2ff) accent read as neon on long sessions; the brand pair is now a
+# calm azure + soft violet, reserved for interactive states.
 _DARK = {
     "name":        "dark",
     "font":        "Segoe UI",
 
-    # surfaces — v6.2 enterprise grading: neutral deep charcoal-navy
-    # (VS Code / Slack register) instead of saturated navy; frost comes
-    # from borders + the sheen gradient, never from lower fill opacity
-    "bg":          "rgba(16, 18, 23, 0.96)",
-    "bg_solid":    "#101217",
-    "overlay":     "rgba(8, 10, 14, 0.55)",    # blur-backing layer behind card grids
-    "panel":       "rgba(255, 255, 255, 0.045)",
-    "panel_line":  "rgba(255, 255, 255, 0.08)",
-    "card":        "rgba(26, 29, 37, 0.66)",
-    "card_hover":  "rgba(76, 194, 255, 0.07)",
-    "card_line":   "rgba(255, 255, 255, 0.11)",
-    "card_sheen":  "rgba(255, 255, 255, 0.05)",   # top stop of the glass gradient
-    "dialog_bg":   "rgba(19, 22, 29, 0.98)",
+    # surfaces — charcoal base, cards one perceptual step lighter
+    "bg":          "rgba(15, 17, 21, 0.97)",
+    "bg_solid":    "#0f1115",
+    "overlay":     "rgba(9, 11, 15, 0.50)",    # blur-backing layer behind card grids
+    "panel":       "rgba(255, 255, 255, 0.032)",
+    "panel_line":  "rgba(255, 255, 255, 0.065)",
+    "card":        "rgba(24, 27, 34, 0.62)",
+    "card_hover":  "rgba(88, 166, 255, 0.06)",
+    "card_line":   "rgba(255, 255, 255, 0.085)",
+    "card_sheen":  "rgba(255, 255, 255, 0.04)",   # top stop of the glass gradient
+    "dialog_bg":   "rgba(17, 19, 24, 0.985)",
+    "toast_bg":    "rgba(22, 25, 31, 0.97)",
 
-    # brand — calmer, Windows-11-adjacent blue; violet softened to match
-    "accent":      "#4cc2ff",
-    "accent2":     "#8a7dff",
+    # brand — calm azure + soft violet (interactive states only)
+    "accent":      "#58a6ff",
+    "accent2":     "#a78bfa",
 
-    # text (contrast ≥ WCAG AA on the surfaces above; slightly desaturated
-    # so long sessions read like an editor, not a neon dashboard)
-    "text":        "#e8eaed",
-    "text_soft":   "#c6ccd8",
+    # text (contrast ≥ WCAG AA on the surfaces above; four deliberate
+    # steps so hierarchy comes from tone, not from size alone)
+    "text":        "#e8ebf0",
+    "text_soft":   "#c3cad7",
     "text_muted":  "#8b93a5",
-    "text_faint":  "#5c6472",
+    "text_faint":  "#5a6272",
 
     # status — GitHub-dark grade: unmistakable but never neon
     "ok":          "#3fb950",
@@ -106,39 +110,44 @@ _DARK = {
     "danger_line": "rgba(248, 81, 73, 0.30)",
 
     # chrome
-    "scroll":      "rgba(255, 255, 255, 0.14)",
-    "scroll_hov":  "rgba(76, 194, 255, 0.50)",
+    "scroll":      "rgba(255, 255, 255, 0.13)",
+    "scroll_hov":  "rgba(88, 166, 255, 0.50)",
     "shimmer_track": (255, 255, 255, 12),      # QColor args for painted widgets
-    "titlebar_hover": "rgba(255, 255, 255, 0.08)",
-    "close_hover":    "rgba(248, 81, 73, 0.30)",
+    "titlebar_hover": "rgba(255, 255, 255, 0.06)",
+    "close_hover":    "#c42b1c",               # native Win11 caption red
 }
 
 # ============================================================
-#  TOKENS — CLEAN LIGHT
+#  TOKENS — PORCELAIN LIGHT (v6.2)
 # ============================================================
+# Design intent: comfortable, not blinding — a cool porcelain gray canvas
+# with soft-white raised surfaces. Pure #ffffff appears only on cards
+# (and translucently), never as the page itself, so the mode reads like
+# paper under studio light instead of a lightbox.
 _LIGHT = {
     "name":        "light",
     "font":        "Segoe UI",
 
-    # v6.2 enterprise grading: soft white on cool gray, Fluent-style accent
-    "bg":          "rgba(244, 246, 249, 0.97)",
-    "bg_solid":    "#f4f6f9",
-    "overlay":     "rgba(255, 255, 255, 0.45)",
-    "panel":       "rgba(255, 255, 255, 0.60)",
-    "panel_line":  "rgba(27, 32, 40, 0.10)",
-    "card":        "rgba(255, 255, 255, 0.85)",
-    "card_hover":  "rgba(0, 103, 192, 0.07)",
-    "card_line":   "rgba(27, 32, 40, 0.14)",
-    "card_sheen":  "rgba(255, 255, 255, 0.95)",   # top stop of the glass gradient
-    "dialog_bg":   "rgba(251, 252, 254, 0.99)",
+    "bg":          "rgba(236, 239, 244, 0.98)",
+    "bg_solid":    "#eceff4",
+    "overlay":     "rgba(255, 255, 255, 0.40)",
+    "panel":       "rgba(255, 255, 255, 0.52)",
+    "panel_line":  "rgba(22, 28, 38, 0.085)",
+    "card":        "rgba(255, 255, 255, 0.70)",
+    "card_hover":  "rgba(0, 103, 192, 0.06)",
+    "card_line":   "rgba(22, 28, 38, 0.11)",
+    "card_sheen":  "rgba(255, 255, 255, 0.80)",   # top stop of the glass gradient
+    "dialog_bg":   "rgba(247, 249, 252, 0.99)",
+    "toast_bg":    "rgba(252, 253, 255, 0.98)",
 
+    # brand — Fluent blue + muted violet
     "accent":      "#0067c0",
-    "accent2":     "#6d5ed6",
+    "accent2":     "#6f5fd8",
 
-    "text":        "#1b2028",
-    "text_soft":   "#2c3340",
-    "text_muted":  "#5a6474",
-    "text_faint":  "#8b94a3",
+    "text":        "#1d222b",
+    "text_soft":   "#39404d",
+    "text_muted":  "#5d6879",
+    "text_faint":  "#8d97a8",
 
     # status — GitHub-light grade
     "ok":          "#1a7f37",
@@ -146,11 +155,11 @@ _LIGHT = {
     "err":         "#cf222e",
     "danger_line": "rgba(207, 34, 46, 0.35)",
 
-    "scroll":      "rgba(27, 32, 40, 0.18)",
+    "scroll":      "rgba(22, 28, 38, 0.16)",
     "scroll_hov":  "rgba(0, 103, 192, 0.55)",
-    "shimmer_track": (27, 32, 40, 16),
-    "titlebar_hover": "rgba(27, 32, 40, 0.07)",
-    "close_hover":    "rgba(207, 34, 46, 0.22)",
+    "shimmer_track": (22, 28, 38, 16),
+    "titlebar_hover": "rgba(22, 28, 38, 0.06)",
+    "close_hover":    "#c42b1c",               # native Win11 caption red
 }
 
 _MODES = {"dark": _DARK, "light": _LIGHT}
@@ -327,13 +336,75 @@ def exit_button_qss(t: dict) -> str:
 
 
 def titlebar_button_qss(t: dict, hover: str) -> str:
+    """Caption buttons (theme / minimize / maximize). The `nchover`
+    dynamic property mirrors :hover for the maximize button, whose mouse
+    events are owned by Windows while Snap Layouts is active (the
+    WM_NCHITTEST → HTMAXBUTTON path in main.nativeEvent) — Qt never sees
+    Enter/Leave there, so the hover look is driven by property flips."""
     return f"""
         QPushButton {{
-            background: transparent; border: none; border-radius: 8px;
+            background: transparent; border: none; border-radius: 7px;
             color: {t['text_muted']}; font-size: 13px;
         }}
-        QPushButton:hover {{ background: {hover}; color: {t['text']}; }}
+        QPushButton:hover, QPushButton[nchover="true"] {{
+            background: {hover}; color: {t['text']};
+        }}
         QPushButton:pressed {{ background: {alpha(t['accent'], 0.18)}; color: {t['text']}; }}
+    """
+
+
+def titlebar_close_qss(t: dict) -> str:
+    """The close button gets the native Win11 treatment: solid caption-red
+    fill with a white glyph on hover — the one affordance every Windows
+    user's muscle memory expects to look exactly this way."""
+    return f"""
+        QPushButton {{
+            background: transparent; border: none; border-radius: 7px;
+            color: {t['text_muted']}; font-size: 13px;
+        }}
+        QPushButton:hover {{ background: {t['close_hover']}; color: #ffffff; }}
+        QPushButton:pressed {{ background: #b12417; color: #ffffff; }}
+    """
+
+
+def beta_badge_qss(t: dict) -> str:
+    """The release-channel pill in the title bar ('BETA') — violet half of
+    the brand pair so it reads as identity, not as a warning."""
+    return f"""
+        color: {t['accent2']}; font-size: 9px; font-weight: 700;
+        background: {alpha(t['accent2'], 0.12)};
+        border: 1px solid {alpha(t['accent2'], 0.35)};
+        border-radius: 8px; padding: 2px 8px; letter-spacing: 1px;
+    """
+
+
+def toast_qss(t: dict, accent: str) -> str:
+    """One toast notification card: app-material surface (same frosted
+    treatment as dialogs), a slim colored status spine on the left, and
+    the theme's own text/border tokens — light mode gets a real light
+    toast instead of the old hardcoded dark rectangle."""
+    return f"""
+        QFrame#toast {{
+            background-color: {glass_fill(t, t['toast_bg'], sheen_stop=0.20)};
+            border: 1px solid {t['panel_line']};
+            border-left: 3px solid {accent};
+            border-radius: 12px;
+        }}
+    """
+
+
+def toast_text_qss(t: dict) -> str:
+    return (f"color: {t['text']}; font-size: 12px; font-weight: 500;"
+            "background: transparent; border: none;")
+
+
+def toast_icon_qss(t: dict, accent: str) -> str:
+    """22px circular status chip inside a toast (✓ / ✕ / i)."""
+    return f"""
+        color: {accent}; font-size: 11px; font-weight: 700;
+        background: {alpha(accent, 0.14)};
+        border: 1px solid {alpha(accent, 0.40)};
+        border-radius: 11px;
     """
 
 
@@ -654,8 +725,9 @@ def dialog_go_qss(t: dict, accent: str) -> str:
 
 # -- label roles ---------------------------------------------
 _LABEL_ROLES = {
-    "hero":     ("30px", "700", "text",       "letter-spacing: 8px;"),
+    "hero":     ("32px", "650", "text",       "letter-spacing: 6px;"),
     "title":    ("19px", "650", "text",       ""),
+    "version":  ("11px", "500", "text_faint", ""),
     "card":     ("14px", "600", "text",       ""),
     "body":     ("12px", "400", "text_muted", ""),
     "desc":     ("11px", "400", "text_muted", ""),
@@ -741,18 +813,25 @@ def apply_blur_behind(hwnd: int, use_acrylic: bool = False) -> bool:
         return False
 
 
-def apply_native_rounding(hwnd: int) -> bool:
-    """Ask DWM to clip the window to rounded corners (Windows 11+).
-    Keeps the blur-behind region from showing square corners around the
-    frameless glass shell. Harmless no-op on Windows 10."""
+def apply_native_rounding(hwnd: int, rounded: bool = True) -> bool:
+    """Ask DWM to clip the window to rounded corners (Windows 11+), or to
+    explicitly NOT round them (`rounded=False`).
+
+    The False path is the maximized-state fix: a frameless translucent
+    window keeps per-pixel hit-testing, so any corner pixel DWM rounds
+    away (or QSS leaves unpainted) is alpha-0 and clicks fall STRAIGHT
+    THROUGH to whatever window sits behind — the 'I clicked my browser
+    through the corner of the maximized app' bug. Maximized native Win11
+    windows are square; ours now is too, edge to edge, every pixel opaque
+    and click-owning. Harmless no-op on Windows 10."""
     if sys.platform != "win32" or not hwnd:
         return False
     try:
         DWMWA_WINDOW_CORNER_PREFERENCE = 33
-        DWMWCP_ROUND = ctypes.c_int(2)
+        pref = ctypes.c_int(2 if rounded else 1)   # DWMWCP_ROUND / DONOTROUND
         res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
             ctypes.c_void_p(int(hwnd)), DWMWA_WINDOW_CORNER_PREFERENCE,
-            ctypes.byref(DWMWCP_ROUND), ctypes.sizeof(DWMWCP_ROUND))
+            ctypes.byref(pref), ctypes.sizeof(pref))
         return res == 0
     except (OSError, AttributeError):
         return False

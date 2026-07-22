@@ -14,6 +14,7 @@ Import graph: theme.py <- animations.py <- widgets.py <- main.py
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -52,66 +53,131 @@ def _animate_dialog_entrance(dialog: QDialog, duration_ms: int = 130):
 
 
 # ============================================================
-#  TITLE BAR — drag, double-click max, ☀️/🌙, ▢ max/restore
+#  TITLE BAR — drag, double-click max, Fluent caption buttons
 # ============================================================
+def _caption_icon_font() -> QFont | None:
+    """Native Windows caption glyphs: Segoe Fluent Icons (Win11), falling
+    back to Segoe MDL2 Assets (Win10). None on other platforms / missing
+    fonts — the title bar then uses plain text glyphs."""
+    if sys.platform != "win32":
+        return None
+    from PySide6.QtGui import QFontDatabase
+    for family in ("Segoe Fluent Icons", "Segoe MDL2 Assets"):
+        if family in QFontDatabase.families():
+            font = QFont(family)
+            font.setPixelSize(13)
+            return font
+    return None
+
+
 class TitleBar(QWidget):
-    """Frameless-window chrome. Left: brand. Right: theme toggle,
-    minimize, maximize/restore (square glyph), close.
+    """Frameless-window chrome. Left: brand block (glyph · name · version
+    · release-channel pill). Right: theme toggle + native-styled caption
+    buttons using the OS's own Segoe Fluent icon glyphs.
 
     Drag guard: dragging while maximized restores the window first and
     re-anchors it under the cursor proportionally — native Windows feel.
+
+    Snap Layouts contract (Windows 11): main.nativeEvent answers
+    WM_NCHITTEST with HTMAXBUTTON over `btn_max`, which makes Windows
+    show its Snap Layouts flyout on hover — but also means Qt no longer
+    receives mouse events for that button. `set_max_hover()` mirrors the
+    hover visual and the click is re-injected from WM_NCLBUTTONUP.
     """
 
     theme_toggle_requested = Signal()
 
+    # (caption-font glyph, text fallback)
+    _ICONS = {
+        "min":     ("", "–"),
+        "max":     ("", "□"),
+        "restore": ("", "❐"),
+        "close":   ("", "✕"),
+        "sun":     ("", "☀"),
+        "moon":    ("", "☾"),
+    }
+
     def __init__(self, window: QMainWindow, t: dict,
-                 app_name: str, version: str):
+                 app_name: str, version: str, channel: str = ""):
         super().__init__(window)
         self._window = window
         self._drag_offset: QPoint | None = None
         self._press_gp: QPoint | None = None
-        self.setFixedHeight(48)
+        self._max_nchover = False
+        self._icon_font = _caption_icon_font()
+        self.setFixedHeight(50)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(22, 10, 14, 0)
-        lay.setSpacing(8)
+        lay.setContentsMargins(20, 8, 10, 6)
+        lay.setSpacing(9)
 
         self._glyph = QLabel("✦")
         lay.addWidget(self._glyph)
-        self._brand = QLabel(f"{app_name}  ·  v{version}")
-        lay.addWidget(self._brand)
+        self._name = QLabel(app_name)
+        lay.addWidget(self._name)
+        self._version = QLabel(f"v{version}")
+        lay.addWidget(self._version)
+        self._channel: QLabel | None = None
+        if channel:
+            self._channel = QLabel(channel.upper())
+            lay.addWidget(self._channel)
         lay.addStretch()
 
-        def _mk(text: str, tip: str, slot) -> QPushButton:
-            b = QPushButton(text)
-            b.setFixedSize(34, 28)
+        btns = QHBoxLayout()
+        btns.setSpacing(2)
+
+        def _mk(icon_key: str, tip: str, slot) -> QPushButton:
+            b = QPushButton(self._icon(icon_key))
+            b.setFixedSize(40, 30)
             b.setToolTip(tip)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            if self._icon_font is not None:
+                b.setFont(self._icon_font)
             b.clicked.connect(slot)
-            lay.addWidget(b)
+            btns.addWidget(b)
             return b
 
-        self._btn_theme = _mk("☀️", "Switch theme", self.theme_toggle_requested.emit)
-        self._btn_min = _mk("—", "Minimize", window.showMinimized)
-        self._btn_max = _mk("□", "Maximize", self._toggle_max)
-        self._btn_close = _mk("✕", "Close", window.close)
+        self._btn_theme = _mk("sun", "Switch theme", self.theme_toggle_requested.emit)
+        self._btn_min = _mk("min", "Minimize", window.showMinimized)
+        self.btn_max = _mk("max", "Maximize", self._toggle_max)
+        self._btn_close = _mk("close", "Close", window.close)
+        lay.addLayout(btns)
 
         # keep the max/restore glyph honest however the state changes
         window.installEventFilter(self)
         self.apply_theme(t)
 
+    def _icon(self, key: str) -> str:
+        fluent, fallback = self._ICONS[key]
+        return fluent if self._icon_font is not None else fallback
+
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
         self._t = t
         self._glyph.setStyleSheet(
-            f"color: {t['accent']}; font-size: 18px; background: transparent; border: none;")
-        self._brand.setStyleSheet(TH.label_qss(t, "brand"))
-        for btn in (self._btn_theme, self._btn_min, self._btn_max):
+            f"color: {t['accent']}; font-size: 17px; background: transparent; border: none;")
+        self._name.setStyleSheet(TH.label_qss(t, "brand"))
+        self._version.setStyleSheet(TH.label_qss(t, "version"))
+        if self._channel is not None:
+            self._channel.setStyleSheet(TH.beta_badge_qss(t))
+        for btn in (self._btn_theme, self._btn_min, self.btn_max):
             btn.setStyleSheet(TH.titlebar_button_qss(t, t["titlebar_hover"]))
-        self._btn_close.setStyleSheet(TH.titlebar_button_qss(t, t["close_hover"]))
-        self._btn_theme.setText("☀️" if t["name"] == "dark" else "🌙")
+        self._btn_close.setStyleSheet(TH.titlebar_close_qss(t))
+        self._btn_theme.setText(self._icon("sun" if t["name"] == "dark" else "moon"))
         self._btn_theme.setToolTip(
             "Switch to light theme" if t["name"] == "dark" else "Switch to dark theme")
+
+    # -- Snap Layouts support (driven by main.nativeEvent) ------
+    def set_max_hover(self, on: bool):
+        """Mirror :hover on the maximize button while Windows owns its
+        mouse events (HTMAXBUTTON). Cheap no-op unless the state flips."""
+        if on == self._max_nchover:
+            return
+        self._max_nchover = on
+        self.btn_max.setProperty("nchover", on)
+        self.btn_max.style().unpolish(self.btn_max)
+        self.btn_max.style().polish(self.btn_max)
 
     # -- maximize / restore -----------------------------------
     def _toggle_max(self):
@@ -122,8 +188,8 @@ class TitleBar(QWidget):
 
     def _sync_max_glyph(self):
         maxed = self._window.isMaximized()
-        self._btn_max.setText("❐" if maxed else "□")
-        self._btn_max.setToolTip("Restore" if maxed else "Maximize")
+        self.btn_max.setText(self._icon("restore" if maxed else "max"))
+        self.btn_max.setToolTip("Restore" if maxed else "Maximize")
 
     def eventFilter(self, obj, event):
         if obj is self._window and event.type() == QEvent.Type.WindowStateChange:
@@ -180,7 +246,7 @@ class TitleBar(QWidget):
 class NavButton(QPushButton):
     def __init__(self, icon: str, title: str, accent: str, t: dict):
         super().__init__(f"{icon}  {title}")
-        self.setFixedHeight(50)
+        self.setFixedHeight(46)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setProperty("selected", False)
         self._glow = GlowController(self, accent)

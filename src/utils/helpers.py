@@ -29,10 +29,16 @@ import threading
 from dataclasses import dataclass
 
 from PySide6.QtCore import (
-    QEasingCurve, QObject, QPoint, QPropertyAnimation, QTimer, Qt, Signal,
+    QEasingCurve, QElapsedTimer, QObject, QPoint, QPropertyAnimation, QTimer,
+    Qt, Signal,
 )
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QLabel, QWidget
+from PySide6.QtWidgets import (
+    QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QHBoxLayout,
+    QLabel, QWidget,
+)
+
+from frontend import theme as TH
 
 
 # ============================================================
@@ -342,42 +348,59 @@ class PowerShellTask(QObject):
 
 
 # ============================================================
-#  TOAST NOTIFICATION (slide-in, auto-hide)
+#  TOAST NOTIFICATION (bottom-right, theme-aware, dismissible)
 # ============================================================
-class Toast(QWidget):
-    """A single glass toast. Positioned by ToastManager; do not use directly."""
+class Toast(QFrame):
+    """A single notification card. Positioned by ToastManager; never used
+    directly.
 
-    ACCENTS = {"success": "#3fb950", "error": "#f85149", "info": "#4cc2ff"}
-    ICONS = {"success": "✅", "error": "❌", "info": "ℹ️"}
+    v6.2 redesign, fixing every complaint about the old top-right toast:
+      - theme-aware: styled from the live token dict (the old toast was a
+        hardcoded dark rectangle that looked broken in light mode),
+      - anchored bottom-right (VS Code register) so it never covers the
+        title bar or fights the caption buttons,
+      - click anywhere on it to dismiss instantly,
+      - hovering pauses the auto-hide countdown (read at your own pace),
+      - status is a quiet ✓ / ✕ / i chip + colored spine, not an emoji.
+    """
 
-    def __init__(self, parent: QWidget, kind: str, message: str, duration_ms: int = 5000):
+    WIDTH = 340
+    GLYPHS = {"success": "✓", "error": "✕", "info": "i"}
+
+    def __init__(self, parent: QWidget, kind: str, message: str,
+                 t: dict, duration_ms: int = 5000):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedWidth(320)
-        accent = self.ACCENTS.get(kind, "#00d4ff")
-        icon = self.ICONS.get(kind, "⚡")
+        self.kind = kind
+        self.message = message
+        self.setObjectName("toast")
+        self.setFixedWidth(self.WIDTH)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click to dismiss")
 
-        self.setStyleSheet(f"""
-            Toast {{
-                background-color: rgba(20, 24, 38, 0.92);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-left: 3px solid {accent};
-                border-radius: 14px;
-            }}
-        """)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 11, 16, 11)
+        lay.setSpacing(10)
 
-        label = QLabel(f"{icon}  {message}", self)
-        label.setWordWrap(True)
-        label.setStyleSheet("color: #e6f1ff; font-size: 13px; font-weight: 500; background: transparent; border: none;")
-        label.setContentsMargins(16, 12, 16, 12)
-        label.setGeometry(0, 0, 320, 0)
-        label.adjustSize()
-        label.setFixedWidth(320)
+        self._chip = QLabel(self.GLYPHS.get(kind, "i"))
+        self._chip.setFixedSize(22, 22)
+        self._chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._chip, 0, Qt.AlignmentFlag.AlignTop)
 
-        self.setFixedHeight(max(56, label.sizeHint().height() + 24))
-        label.setGeometry(0, 0, 320, self.height())
+        self._label = QLabel(message)
+        self._label.setWordWrap(True)
+        self._label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        lay.addWidget(self._label, 1)
 
-        # Fade in via opacity effect
+        self.apply_theme(t)
+
+        # Height from the real wrapped-text metrics at the final width.
+        text_w = self.WIDTH - 14 - 16 - 22 - 10
+        text_h = self._label.heightForWidth(text_w)
+        self.setFixedHeight(max(46, text_h + 22))
+
+        # Fade in via a transient opacity effect (child widgets have no
+        # windowOpacity; the effect is unavoidable here but short-lived
+        # and only ever on a 340px card).
         self._opacity_effect = QGraphicsOpacityEffect(self)
         self._opacity_effect.setOpacity(0.0)
         self.setGraphicsEffect(self._opacity_effect)
@@ -389,36 +412,83 @@ class Toast(QWidget):
         self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         self._slide_anim = QPropertyAnimation(self, b"pos", self)
-        self._slide_anim.setDuration(170)
+        self._slide_anim.setDuration(180)
         self._slide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-        self._duration_ms = duration_ms
+        # Pausable auto-hide: a single-shot timer plus an elapsed clock so
+        # hover can freeze the countdown and resume with the remainder.
+        self._life = QTimer(self)
+        self._life.setSingleShot(True)
+        self._life.timeout.connect(self.dismiss)
+        self._clock = QElapsedTimer()
+        self._remaining_ms = duration_ms
         self._closing = False
 
+    # -- theming ----------------------------------------------
+    def apply_theme(self, t: dict):
+        accent = {"success": t["ok"], "error": t["err"]}.get(self.kind, t["accent"])
+        self.setStyleSheet(TH.toast_qss(t, accent))
+        self._chip.setStyleSheet(TH.toast_icon_qss(t, accent))
+        self._label.setStyleSheet(TH.toast_text_qss(t))
+
+    # -- lifecycle --------------------------------------------
     def slide_in(self, target_pos: QPoint):
-        start_pos = QPoint(target_pos.x() + 60, target_pos.y())
+        start_pos = QPoint(target_pos.x() + 48, target_pos.y())
         self.move(start_pos)
         self.show()
+        self.raise_()
         self._slide_anim.setStartValue(start_pos)
         self._slide_anim.setEndValue(target_pos)
         self._slide_anim.start()
         self._fade_anim.start()
-        QTimer.singleShot(self._duration_ms, self.dismiss)
+        self._clock.start()
+        self._life.start(self._remaining_ms)
 
     def slide_to(self, target_pos: QPoint):
-        """Re-position an already-visible toast (e.g. when one above it closes)."""
+        """Re-position an already-visible toast (stack shuffle)."""
+        if self.pos() == target_pos:
+            return
         self._slide_anim.stop()
         self._slide_anim.setStartValue(self.pos())
         self._slide_anim.setEndValue(target_pos)
         self._slide_anim.start()
 
+    def extend(self, duration_ms: int):
+        """A duplicate message arrived — restart this toast's countdown
+        instead of stacking an identical card underneath it."""
+        if self._closing:
+            return
+        self._remaining_ms = duration_ms
+        self._clock.restart()
+        self._life.start(duration_ms)
+
+    # -- interaction ------------------------------------------
+    def enterEvent(self, e):
+        if self._life.isActive():
+            spent = self._clock.elapsed()
+            self._remaining_ms = max(0, self._remaining_ms - spent)
+            self._life.stop()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        if not self._closing:
+            self._clock.restart()
+            self._life.start(max(900, self._remaining_ms))
+        super().leaveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.dismiss()
+        super().mouseReleaseEvent(e)
+
     def dismiss(self):
         if self._closing:
             return
         self._closing = True
+        self._life.stop()
         fade_out = QPropertyAnimation(self._opacity_effect, b"opacity", self)
         fade_out.setDuration(140)
-        fade_out.setStartValue(1.0)
+        fade_out.setStartValue(self._opacity_effect.opacity())
         fade_out.setEndValue(0.0)
         fade_out.setEasingCurve(QEasingCurve.Type.InCubic)
         fade_out.finished.connect(self._remove)
@@ -433,33 +503,64 @@ class Toast(QWidget):
 
 
 class ToastManager(QObject):
-    """
-    Stacks Toasts in the top-right corner of `container`, newest on top,
-    matching the VS Code / macOS notification pattern.
-    """
+    """Stacks Toasts in the bottom-right corner of `container`, newest
+    nearest the corner, older cards pushed upward — the VS Code
+    notification pattern. Lives inside the app's own layout hierarchy
+    (a child of the shell), so it can never cover the title bar, block
+    the caption buttons, or outstack the window."""
 
-    MARGIN = 20
+    MARGIN_X = 18
+    MARGIN_BOTTOM = 52   # clears the status bar + resize grip
     SPACING = 10
+    MAX_VISIBLE = 4
 
-    def __init__(self, container: QWidget):
+    def __init__(self, container: QWidget, t: dict | None = None):
         super().__init__(container)
         self.container = container
+        self._t = t or TH.tokens("dark")
         self._toasts: list[Toast] = []
 
+    def apply_theme(self, t: dict):
+        self._t = t
+        for toast in self._toasts:
+            toast.apply_theme(t)
+
     def show(self, kind: str, message: str, duration_ms: int = 5000):
-        toast = Toast(self.container, kind, message, duration_ms)
+        # Dedupe: an identical live toast just restarts its countdown.
+        for toast in self._toasts:
+            if (toast.kind == kind and toast.message == message
+                    and not toast._closing):
+                toast.extend(duration_ms)
+                return toast
+
+        toast = Toast(self.container, kind, message, self._t, duration_ms)
         toast.setProperty("manager", self)
         self._toasts.append(toast)
-        target = self._position_for_index(len(self._toasts) - 1, toast.height())
-        toast.slide_in(target)
+
+        # Bound the stack — the oldest card yields its slot.
+        overflow = len(self._toasts) - self.MAX_VISIBLE
+        if overflow > 0:
+            for old in self._toasts[:overflow]:
+                old.dismiss()
+
+        positions = self._target_positions()
+        for older, pos in zip(self._toasts[:-1], positions[:-1]):
+            older.slide_to(pos)
+        toast.slide_in(positions[-1])
         return toast
 
-    def _position_for_index(self, index: int, height: int) -> QPoint:
-        x = self.container.width() - 320 - self.MARGIN
-        y = self.MARGIN
-        for t in self._toasts[:index]:
-            y += t.height() + self.SPACING
-        return QPoint(x, y)
+    def _target_positions(self) -> list[QPoint]:
+        """Bottom-up stack: the newest toast hugs the corner, each older
+        one sits SPACING above the card below it."""
+        x = self.container.width() - Toast.WIDTH - self.MARGIN_X
+        positions: list[QPoint] = []
+        y = self.container.height() - self.MARGIN_BOTTOM
+        for toast in reversed(self._toasts):
+            y -= toast.height()
+            positions.append(QPoint(x, y))
+            y -= self.SPACING
+        positions.reverse()
+        return positions
 
     def _on_toast_closed(self, closed: Toast):
         if closed in self._toasts:
@@ -467,11 +568,8 @@ class ToastManager(QObject):
         self.reposition()
 
     def reposition(self):
-        y = self.MARGIN
-        x = self.container.width() - 320 - self.MARGIN
-        for t in self._toasts:
-            t.slide_to(QPoint(x, y))
-            y += t.height() + self.SPACING
+        for toast, pos in zip(self._toasts, self._target_positions()):
+            toast.slide_to(pos)
 
 
 # ============================================================

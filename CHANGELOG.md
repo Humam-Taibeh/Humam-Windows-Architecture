@@ -14,7 +14,46 @@ GUI version, with core changes called out explicitly.
 
 ## [Unreleased]
 
+### Changed
+- **Full dual-theme re-grade (frontend only — zero backend changes).**
+  Dark mode moved from saturated navy + neon cyan to a deep
+  charcoal/slate register (Linear / GitHub-dark territory): `#0f1115`
+  base, elevation via lightness steps, calm azure `#58a6ff` + soft
+  violet `#a78bfa` brand pair reserved for interactive states. Light
+  mode is no longer blinding: a cool porcelain-gray canvas (`#eceff4`)
+  with translucent soft-white cards — pure white never appears as a
+  full-page surface. All four text tones re-tuned for WCAG AA on the
+  new surfaces.
+- **Toast notifications redesigned from scratch** (`utils/helpers.py`):
+  now theme-aware (the old toast was a hardcoded dark rectangle that
+  looked broken in light mode), anchored bottom-right in the VS Code
+  register so they never cover the title bar or caption buttons,
+  click-anywhere-to-dismiss, hover pauses the auto-hide countdown,
+  duplicate messages extend the live toast instead of stacking, and the
+  stack is capped at four with oldest-yields eviction. Status reads as
+  a quiet ✓/✕/i chip + colored spine instead of emoji.
+- **Title bar rebuilt to native-caption grade**: Segoe Fluent Icons /
+  MDL2 caption glyphs (the OS's own minimize/maximize/restore/close
+  characters), a solid caption-red close hover exactly like native
+  Win11 windows, and the brand block now renders name · version · an
+  elegant violet **BETA** channel pill (`APP_CHANNEL` in `main.py`).
+
 ### Fixed
+- **Maximized click-through corners (critical)** — on a frameless
+  per-pixel-alpha window, the corner pixels DWM rounds away are alpha-0
+  and clicks fell straight through to whatever app sat behind Pulse.
+  DWM corner rounding is now explicitly disabled while maximized
+  (`DWMWCP_DONOTROUND`) and restored on unmaximize, so a maximized
+  Pulse is square, opaque and click-owning edge-to-edge like every
+  native Win11 app.
+- **Fixed-size first launch overflowed small screens** — the hardcoded
+  `1180×740 @ (140, 80)` geometry was taller than a 1366×768 laptop's
+  work area (and worse at 125%+ DPI scale). The window now sizes to the
+  monitor's available geometry, centers itself, and clamps its minimum
+  size so it can never be forced larger than the screen it lives on.
+  Fractional DPI scale factors are passed through exactly
+  (`HighDpiScaleFactorRoundingPolicy.PassThrough`) for pixel-crisp
+  rendering at 125/150/175%.
 - **Console UTF-8 output encoding** — `core.ps1`'s interactive console mode
   never set `[Console]::OutputEncoding`, so on the default OEM code page
   (437 on US-English Windows, confirmed live) every box-drawing character
@@ -53,6 +92,14 @@ GUI version, with core changes called out explicitly.
   unnecessary reinstall instead of honoring the skip.
 
 ### Added
+- **Windows 11 Snap Layouts on the maximize button** — hovering the
+  custom maximize button now summons the native Snap Layouts flyout,
+  via the `WM_NCHITTEST → HTMAXBUTTON` contract from Microsoft's
+  custom-titlebar guidance: Windows owns the button's mouse events
+  (hover is mirrored with a `nchover` property flip, the click is
+  re-injected from `WM_NCLBUTTONUP`), and hit-testing is computed
+  window-relative in physical pixels so mixed-DPI multi-monitor setups
+  can't skew it.
 - **Smart Skip, made visible**: `Smart-Deploy` now returns a distinct
   `AlreadyCurrent` flag alongside `Status='Success'` (never renamed
   `Status` itself — several existing call sites checked `-eq 'Success'`
