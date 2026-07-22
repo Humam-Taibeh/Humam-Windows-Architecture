@@ -15,6 +15,30 @@ GUI version, with core changes called out explicitly.
 ## [Unreleased]
 
 ### Changed
+- **Software Management unified with the Developer Hub pattern** — every
+  `apps` catalog card (Essential Apps, Gaming Launchers, Hardware
+  Diagnostics, Core API Runtimes, Teams & OneDrive) now opens the same
+  elite selector the Dev Hub uses: identical rows (checkbox + per-tool
+  "⋯" install-options wizard offering **winget / official website /
+  local installer file**), a Select All / Deselect All toolbar with a
+  live "n selected" counter, and a "Deploy Selected (n)" primary
+  action. Catalog entries gained GUI-only description + official-URL
+  metadata (4-tuples, legacy 2-tuples still accepted); the backend
+  contract is untouched — core.ps1 still receives only the ticked
+  winget IDs, and a wizard's local-file pick routes through the
+  existing InstallLocalFile task exactly like the Dev Hub.
+- **Responsive card grid** — category pages no longer force 3 columns:
+  column count follows the viewport (1 col under ~680px of content
+  width, 2 at the default window size, 3 maximized on widescreen), so
+  cards keep a ≥340px footprint, descriptions never clip, and the
+  default view reads as a spacious 2-column layout instead of three
+  cramped slivers. Verified live on the Windows platform at
+  1020/1180/1860px → 1/2/3 columns.
+- **Breathing-room pass** — body/sidebar/content margins, card padding
+  (20×16, min height 132), grid gutters (18px), dialog padding (28×24)
+  and the type scale (title 20px, body 13px, desc/tagline 12px) all
+  moved one comfortable step up; long card titles now wrap instead of
+  clipping.
 - **Full dual-theme re-grade (frontend only — zero backend changes).**
   Dark mode moved from saturated navy + neon cyan to a deep
   charcoal/slate register (Linear / GitHub-dark territory): `#0f1115`
@@ -39,6 +63,23 @@ GUI version, with core changes called out explicitly.
   elegant violet **BETA** channel pill (`APP_CHANNEL` in `main.py`).
 
 ### Fixed
+- **Caption-button hitbox (critical)** — closing the window demanded a
+  pixel-perfect hit on the 40×30 glyph. WM_NCHITTEST now maps
+  generously expanded non-client zones over minimize/maximize/close
+  (HTMINBUTTON/HTMAXBUTTON/HTCLOSEBUTTON): the strip from the window's
+  top edge to below the buttons, from the minimize button's left edge
+  to the window's right edge, split at gap midpoints — so clicking
+  anywhere in the top-right corner region registers, exactly like a
+  native app, and the literal screen corner closes a maximized window
+  (Fitts corner-slam). Clicks are re-injected from WM_NCLBUTTONUP with
+  hover mirrored per-button; a swept probe confirmed zero dead pixels
+  across the entire strip. Resize borders keep priority while floating,
+  matching native ordering.
+- **Text bleed-through in overlays** — dialog surfaces were 98–99%
+  opaque, so the card grid/console underneath ghosted through as
+  overlapping text when selectors and wizards opened. Dialog
+  backgrounds are now fully opaque (toasts 99%), and card titles wrap
+  rather than overflow.
 - **Maximized click-through corners (critical)** — on a frameless
   per-pixel-alpha window, the corner pixels DWM rounds away are alpha-0
   and clicks fell straight through to whatever app sat behind Pulse.

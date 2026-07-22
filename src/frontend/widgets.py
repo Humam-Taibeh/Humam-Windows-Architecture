@@ -81,7 +81,7 @@ class TitleBar(QWidget):
     Snap Layouts contract (Windows 11): main.nativeEvent answers
     WM_NCHITTEST with HTMAXBUTTON over `btn_max`, which makes Windows
     show its Snap Layouts flyout on hover — but also means Qt no longer
-    receives mouse events for that button. `set_max_hover()` mirrors the
+    receives mouse events for that button. `set_nc_hover()` mirrors the
     hover visual and the click is re-injected from WM_NCLBUTTONUP.
     """
 
@@ -103,7 +103,6 @@ class TitleBar(QWidget):
         self._window = window
         self._drag_offset: QPoint | None = None
         self._press_gp: QPoint | None = None
-        self._max_nchover = False
         self._icon_font = _caption_icon_font()
         self.setFixedHeight(50)
 
@@ -168,16 +167,31 @@ class TitleBar(QWidget):
         self._btn_theme.setToolTip(
             "Switch to light theme" if t["name"] == "dark" else "Switch to dark theme")
 
-    # -- Snap Layouts support (driven by main.nativeEvent) ------
+    # -- non-client caption support (driven by main.nativeEvent) --
+    # Windows owns the mouse events for all three caption buttons while
+    # WM_NCHITTEST maps their (generously expanded) zones to HTMINBUTTON /
+    # HTMAXBUTTON / HTCLOSEBUTTON — that's what makes the top-right corner
+    # region clickable like a native app instead of demanding a
+    # pixel-perfect hit on the 40×30 glyph. Qt therefore never sees
+    # Enter/Leave there; hover visuals are mirrored via property flips.
+    def caption_buttons(self) -> dict[str, QPushButton]:
+        """The NC-hit-tested caption buttons, keyed by role."""
+        return {"min": self._btn_min, "max": self.btn_max,
+                "close": self._btn_close}
+
+    def set_nc_hover(self, key: str | None):
+        """Highlight exactly the caption button under the non-client
+        cursor (`None` clears all). Cheap no-op unless a state flips."""
+        for name, btn in self.caption_buttons().items():
+            on = (name == key)
+            if bool(btn.property("nchover")) != on:
+                btn.setProperty("nchover", on)
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+
     def set_max_hover(self, on: bool):
-        """Mirror :hover on the maximize button while Windows owns its
-        mouse events (HTMAXBUTTON). Cheap no-op unless the state flips."""
-        if on == self._max_nchover:
-            return
-        self._max_nchover = on
-        self.btn_max.setProperty("nchover", on)
-        self.btn_max.style().unpolish(self.btn_max)
-        self.btn_max.style().polish(self.btn_max)
+        """Back-compat shim over set_nc_hover."""
+        self.set_nc_hover("max" if on else None)
 
     # -- maximize / restore -----------------------------------
     def _toggle_max(self):
@@ -296,7 +310,7 @@ class GlassCard(QFrame):
         self._accent = accent
         self._danger = bool(item.get("danger"))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(118)
+        self.setMinimumHeight(132)
         self.setProperty("running", False)
 
         glow_color = t["err"] if self._danger else accent
@@ -313,7 +327,7 @@ class GlassCard(QFrame):
         self._press_anim.valueChanged.connect(self._on_press_frame)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setContentsMargins(20, 16, 20, 16)
         lay.setSpacing(14)
 
         self._icon = QLabel(item["icon"])
@@ -330,11 +344,13 @@ class GlassCard(QFrame):
         lay.addWidget(self._icon)
 
         col = QVBoxLayout()
-        col.setSpacing(6)
+        col.setSpacing(7)
         head = QHBoxLayout()
         head.setSpacing(8)
         self._title = QLabel(item["title"])
-        head.addWidget(self._title)
+        # Long titles wrap instead of clipping at narrow card widths.
+        self._title.setWordWrap(True)
+        head.addWidget(self._title, 1)
         self._badge: QLabel | None = None
         if item.get("note"):
             self._badge = QLabel(item["note"])
@@ -579,7 +595,7 @@ class ConfirmDialog(QDialog):
         outer.addWidget(panel)
 
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setContentsMargins(28, 24, 28, 22)
         lay.setSpacing(10)
 
         head = QLabel(f"{item['icon']}  {item['title']}")
@@ -819,56 +835,48 @@ class StatusDot(QLabel):
 
 
 # ============================================================
-#  APP ROW — one checkbox entry inside the multi-selector overlay
-# ============================================================
-class AppRow(QFrame):
-    def __init__(self, app_id: str, app_name: str, t: dict):
-        super().__init__()
-        self.app_id = app_id
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(8)
-
-        self.checkbox = QCheckBox(app_name)
-        self.checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.checkbox.setChecked(True)
-        lay.addWidget(self.checkbox)
-        lay.addStretch()
-
-        self._id_label = QLabel(app_id)
-        lay.addWidget(self._id_label)
-
-        self.apply_theme(t)
-
-    def apply_theme(self, t: dict):
-        self.setStyleSheet(TH.app_row_qss(t))
-        self.checkbox.setStyleSheet(TH.checkbox_qss(t, t["accent"]))
-        self._id_label.setStyleSheet(TH.label_qss(t, "caption"))
-
-    def is_checked(self) -> bool:
-        return self.checkbox.isChecked()
-
-
-# ============================================================
-#  APP SELECTOR DIALOG — checkbox multi-selector overlay
+#  APP SELECTOR DIALOG — unified with the Dev Hub pattern
 # ============================================================
 class AppSelectorDialog(QDialog):
-    """Frameless glass overlay listing every app in a Software Management
-    category as a checkbox, so the user picks exactly which winget IDs get
-    deployed instead of the whole category running blind. `selected_ids`
-    holds the AppId list after an Accepted exec()."""
+    """The selector for every `apps` catalog card (Essential Apps, Gaming
+    Launchers, Diagnostics, Runtimes, Teams & OneDrive…).
+
+    v6.2: rebuilt on the exact same components and layout grammar as the
+    Developer & University Hub — the same DevHubRow (checkbox + per-tool
+    '⋯' install-options wizard), the same Select All / Deselect All
+    toolbar with a live '<n> selected' counter, and the same
+    'Deploy Selected (n)' primary action — so every section of Software
+    Management reads as one product, not two generations of UI. Rows here
+    arrive pre-checked (the card promised a curated pack); the Dev Hub
+    stays manual-first.
+
+    After Accepted, exactly one of these is populated:
+      `selected_ids`     ticked AppIds for the bulk winget deploy
+      `local_installer`  (app_name, file_path) from a row wizard's Path C,
+                          for a single InstallLocalFile run
+    """
 
     def __init__(self, parent: QWidget, item: dict, t: dict):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(True)
-        self.setFixedWidth(460)
+        self.setFixedWidth(560)
 
+        self._t = t
         self.selected_ids: list[str] = []
-        self._rows: list[AppRow] = []
-        apps: list[tuple[str, str]] = item.get("apps", [])
+        self.local_installer: tuple[str, str] | None = None
+        self._rows: dict[str, DevHubRow] = {}
+        self._tool_meta: dict[str, tuple[str, str]] = {}  # id -> (name, url)
         accent = t["accent"]
+
+        # Normalize catalog entries: (id, name[, desc[, url]]) → 4-tuple.
+        apps: list[tuple[str, str, str, str]] = []
+        for entry in item.get("apps", []):
+            app_id, app_name = entry[0], entry[1]
+            desc = entry[2] if len(entry) > 2 else ""
+            url = entry[3] if len(entry) > 3 else ""
+            apps.append((app_id, app_name, desc, url))
 
         panel = DepthCard(radius=18, parent=self)
         panel.setStyleSheet(TH.dialog_panel_qss(t, accent))
@@ -877,18 +885,20 @@ class AppSelectorDialog(QDialog):
         outer.addWidget(panel)
 
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(24, 22, 24, 20)
-        lay.setSpacing(10)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(12)
 
         head = QLabel(f"{item['icon']}  {item['title']}")
         head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
         lay.addWidget(head)
 
-        sub = QLabel(f"Choose exactly which of these {len(apps)} apps to deploy.")
+        sub = QLabel(f"All {len(apps)} apps are pre-selected — untick anything "
+                     "you don't want, or use a row's ⋯ for more install options.")
+        sub.setWordWrap(True)
         sub.setStyleSheet(TH.label_qss(t, "body"))
         lay.addWidget(sub)
 
-        # -- select-all / select-none shortcuts -----------------
+        # -- select-all / select-none + live counter -------------
         toolbar = QHBoxLayout()
         toolbar.setSpacing(16)
         all_btn = QPushButton("Select All")
@@ -897,29 +907,36 @@ class AppSelectorDialog(QDialog):
         all_btn.clicked.connect(lambda: self._set_all(True))
         toolbar.addWidget(all_btn)
 
-        none_btn = QPushButton("Select None")
+        none_btn = QPushButton("Deselect All")
         none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         none_btn.setStyleSheet(TH.link_button_qss(t, accent))
         none_btn.clicked.connect(lambda: self._set_all(False))
         toolbar.addWidget(none_btn)
         toolbar.addStretch()
+
+        self._count_label = QLabel("")
+        self._count_label.setStyleSheet(TH.label_qss(t, "caption"))
+        toolbar.addWidget(self._count_label)
         lay.addLayout(toolbar)
 
-        # -- scrollable checkbox list -----------------------------
+        # -- scrollable row list ----------------------------------
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(TH.scroll_area_qss(t))
-        scroll.setMaximumHeight(320)
+        scroll.setMaximumHeight(360)
 
         host = QWidget()
         host.setStyleSheet("background: transparent;")
         host_lay = QVBoxLayout(host)
-        host_lay.setContentsMargins(0, 0, 4, 0)
+        host_lay.setContentsMargins(0, 0, 6, 0)
         host_lay.setSpacing(8)
-        for app_id, app_name in apps:
-            row = AppRow(app_id, app_name, t)
-            self._rows.append(row)
+        for app_id, app_name, desc, url in apps:
+            row = DevHubRow(app_id, app_name, desc, None, None, t, checked=True)
+            row.checkbox.toggled.connect(self._update_count)
+            row.options_requested.connect(self._open_tool_wizard)
+            self._rows[app_id] = row
+            self._tool_meta[app_id] = (app_name, url)
             host_lay.addWidget(row)
         host_lay.addStretch()
         scroll.setWidget(host)
@@ -930,27 +947,51 @@ class AppSelectorDialog(QDialog):
         row.addStretch()
 
         cancel = QPushButton("Cancel")
-        cancel.setFixedSize(96, 34)
+        cancel.setFixedSize(96, 36)
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel.setStyleSheet(TH.dialog_cancel_qss(t))
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
 
-        deploy = QPushButton("Deploy")
-        deploy.setFixedSize(110, 34)
-        deploy.setCursor(Qt.CursorShape.PointingHandCursor)
-        deploy.setStyleSheet(TH.dialog_go_qss(t, accent))
-        deploy.clicked.connect(self._accept_selection)
-        row.addWidget(deploy)
+        self._deploy_btn = QPushButton("Deploy Selected")
+        self._deploy_btn.setFixedSize(160, 36)
+        self._deploy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._deploy_btn.setStyleSheet(TH.dialog_go_qss(t, accent))
+        self._deploy_btn.clicked.connect(self._accept_selection)
+        row.addWidget(self._deploy_btn)
         lay.addLayout(row)
 
+        self._update_count()
+
+    # -- selection state ------------------------------------------
     def _set_all(self, checked: bool):
-        for row in self._rows:
+        for row in self._rows.values():
             row.checkbox.setChecked(checked)
 
+    def _update_count(self, _checked: bool = False):
+        count = sum(1 for r in self._rows.values() if r.is_checked())
+        self._count_label.setText(f"{count} selected")
+        self._deploy_btn.setText(
+            f"Deploy Selected ({count})" if count else "Deploy Selected")
+
     def _accept_selection(self):
-        self.selected_ids = [row.app_id for row in self._rows if row.is_checked()]
+        self.selected_ids = [aid for aid, row in self._rows.items() if row.is_checked()]
         self.accept()
+
+    # -- per-tool wizard --------------------------------------------
+    def _open_tool_wizard(self, app_id: str):
+        name, url = self._tool_meta.get(app_id, (app_id, ""))
+        desc = self._rows[app_id].checkbox.toolTip()
+        wizard = ToolInstallWizardDialog(self, app_id, name, desc, url, self._t)
+        if wizard.exec() != QDialog.DialogCode.Accepted:
+            return
+        if wizard.mode == "winget":
+            self._set_all(False)
+            self._rows[app_id].checkbox.setChecked(True)
+            self._accept_selection()
+        elif wizard.mode == "local" and wizard.local_path:
+            self.local_installer = (name, wizard.local_path)
+            self.accept()
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1158,7 +1199,7 @@ class OfficeWizardDialog(QDialog):
         outer.addWidget(panel)
 
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setContentsMargins(28, 24, 28, 22)
         lay.setSpacing(14)
 
         head = QHBoxLayout()
@@ -1696,7 +1737,7 @@ class ToolInstallWizardDialog(QDialog):
         outer.addWidget(panel)
 
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setContentsMargins(28, 24, 28, 22)
         lay.setSpacing(12)
 
         head = QLabel(f"⚙️  {app_name}")
@@ -1783,20 +1824,23 @@ class DevHubRow(QFrame):
     options_requested = Signal(str)  # app_id
 
     def __init__(self, app_id: str, app_name: str, desc: str,
-                 requires_id: str | None, requires_name: str | None, t: dict):
+                 requires_id: str | None, requires_name: str | None, t: dict,
+                 checked: bool = False):
         super().__init__()
         self.app_id = app_id
         self.requires_id = requires_id
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 8, 12, 8)
+        outer.setContentsMargins(14, 10, 14, 10)
         outer.setSpacing(2)
 
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(10)
         self.checkbox = QCheckBox(app_name)
         self.checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.checkbox.setChecked(False)  # manual-first: clean slate
+        # Dev Hub is manual-first (False); curated app packs arrive
+        # pre-selected (True) — the card already promised "the pack".
+        self.checkbox.setChecked(checked)
         if desc:
             self.checkbox.setToolTip(desc)
         row.addWidget(self.checkbox)
@@ -1878,7 +1922,7 @@ class DevHubSelectorDialog(QDialog):
         outer.addWidget(panel)
 
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setContentsMargins(28, 24, 28, 22)
         lay.setSpacing(10)
 
         head = QLabel("🎓  Developer Toolkit")

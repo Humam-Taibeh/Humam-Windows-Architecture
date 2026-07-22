@@ -28,13 +28,17 @@ Item schema:
     confirm  bool  show a confirmation dialog before running   (default False)
     danger   bool  style the card/confirm dialog as destructive (default False)
     note     str   small badge, e.g. "Windows 11 only"          (default "")
-    apps     list[tuple[str, str]]  (AppId, DisplayName) pairs - when present,
-             the GUI opens the checkbox multi-selector overlay instead of a
-             plain confirm dialog, and only the ticked AppIds are sent to
-             core.ps1 via -AppIds. MUST mirror the corresponding $Apps_* /
-             $Runtimes array in src/backend/modules/01-Catalogs.ps1 exactly
-             (same IDs, same order) - the backend is the source of truth for
-             what winget ID each entry installs; this list is only the GUI's
+    apps     list[tuple]  (AppId, DisplayName, Description, OfficialUrl)
+             4-tuples - when present, the GUI opens the unified selector
+             overlay (same elite row pattern as the Developer Hub: checkbox
+             + per-tool "..." install-options wizard) and only the ticked
+             AppIds are sent to core.ps1 via -AppIds. Description/Url are
+             GUI-only metadata (tooltip + the wizard's official-site link);
+             legacy 2-tuples (AppId, DisplayName) are still accepted. The
+             AppId list MUST mirror the corresponding $Apps_* / $Runtimes
+             array in src/backend/modules/01-Catalogs.ps1 exactly (same
+             IDs, same order) - the backend is the source of truth for what
+             winget ID each entry installs; this list is only the GUI's
              mirror of it.
     wizard   str   when present, the GUI opens a dedicated multi-step wizard
              dialog instead of the app selector / confirm dialog (checked
@@ -151,21 +155,39 @@ CATEGORIES = [
         "icon": "📦",
         "title": "Software Management",
         "tagline": "Deploy apps, runtimes and audit startup programs",
-        "accent": "#4cc2ff",
+        "accent": "#58a6ff",
         "items": [
             {"icon": "🧰", "title": "Essential Apps",
              "desc": "Install the essential daily-driver pack (browsers, archivers, media tools) via winget.",
              "task": "InstallEssentialApps", "timeout": 3600, "confirm": True,
              "apps": [
-                 ("Google.Chrome", "Google Chrome"),
-                 ("Spotify.Spotify", "Spotify (Win32)"),
-                 ("Discord.Discord", "Discord"),
-                 ("9NKSQCEZVDDB", "WhatsApp (Store)"),
-                 ("9PKTQ5699M62", "iCloud (Store)"),
-                 ("Apple.iTunes", "iTunes"),
-                 ("7zip.7zip", "7-Zip"),
-                 ("VideoLAN.VLC", "VLC Media Player"),
-                 ("TheDocumentFoundation.LibreOffice", "LibreOffice"),
+                 ("Google.Chrome", "Google Chrome",
+                  "Fast, secure web browser from Google.",
+                  "https://www.google.com/chrome/"),
+                 ("Spotify.Spotify", "Spotify (Win32)",
+                  "Music and podcast streaming client.",
+                  "https://www.spotify.com/download/windows/"),
+                 ("Discord.Discord", "Discord",
+                  "Voice, video and text chat for friends and communities.",
+                  "https://discord.com/download"),
+                 ("9NKSQCEZVDDB", "WhatsApp (Store)",
+                  "Official WhatsApp messenger for the desktop.",
+                  "https://www.whatsapp.com/download"),
+                 ("9PKTQ5699M62", "iCloud (Store)",
+                  "Access iCloud Photos, Drive and Passwords on Windows.",
+                  "https://www.apple.com/icloud/"),
+                 ("Apple.iTunes", "iTunes",
+                  "Media library and Apple device sync.",
+                  "https://www.apple.com/itunes/"),
+                 ("7zip.7zip", "7-Zip",
+                  "Open-source archiver with best-in-class compression.",
+                  "https://www.7-zip.org/"),
+                 ("VideoLAN.VLC", "VLC Media Player",
+                  "Plays practically every audio and video format ever made.",
+                  "https://www.videolan.org/vlc/"),
+                 ("TheDocumentFoundation.LibreOffice", "LibreOffice",
+                  "Free office suite — Writer, Calc, Impress and more.",
+                  "https://www.libreoffice.org/download/download-libreoffice/"),
              ]},
             {"icon": "🎓", "title": "Developer & University Hub",
              "desc": "Runtimes, compilers, IDEs, AI tools, databases and containers — pick exactly what you need.",
@@ -177,30 +199,58 @@ CATEGORIES = [
              "desc": "Steam, Epic and the other launchers you actually use, in one pass.",
              "task": "InstallGamingApps", "timeout": 3600, "confirm": True,
              "apps": [
-                 ("Valve.Steam", "Steam"),
-                 ("EpicGames.EpicGamesLauncher", "Epic Games"),
-                 ("RockstarGames.Launcher", "Rockstar Games"),
-                 ("BlueStacks.BlueStacks", "BlueStacks 5"),
+                 ("Valve.Steam", "Steam",
+                  "The largest PC game store and launcher.",
+                  "https://store.steampowered.com/about/"),
+                 ("EpicGames.EpicGamesLauncher", "Epic Games",
+                  "Epic's store and launcher — free weekly games included.",
+                  "https://store.epicgames.com/en-US/download"),
+                 ("RockstarGames.Launcher", "Rockstar Games",
+                  "Rockstar's launcher for GTA, Red Dead and more.",
+                  "https://socialclub.rockstargames.com/rockstar-games-launcher"),
+                 ("BlueStacks.BlueStacks", "BlueStacks 5",
+                  "Android app player — run mobile games on Windows.",
+                  "https://www.bluestacks.com/download.html"),
              ]},
             {"icon": "🔬", "title": "Hardware Diagnostics",
              "desc": "Monitoring and diagnostic utilities for CPU, GPU, RAM and disks.",
              "task": "InstallDiagnosticApps", "timeout": 3600, "confirm": True,
              "apps": [
-                 ("CPUID.CPU-Z", "CPU-Z"),
-                 ("TechPowerUp.GPU-Z", "GPU-Z"),
-                 ("CPUID.HWMonitor", "HWMonitor"),
-                 ("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo"),
-                 ("Guru3D.Afterburner", "MSI Afterburner"),
-                 ("Notion.Notion", "Notion"),
+                 ("CPUID.CPU-Z", "CPU-Z",
+                  "CPU, motherboard and memory identification tool.",
+                  "https://www.cpuid.com/softwares/cpu-z.html"),
+                 ("TechPowerUp.GPU-Z", "GPU-Z",
+                  "Graphics card information, sensors and BIOS tools.",
+                  "https://www.techpowerup.com/gpuz/"),
+                 ("CPUID.HWMonitor", "HWMonitor",
+                  "Live voltages, temperatures and fan speeds.",
+                  "https://www.cpuid.com/softwares/hwmonitor.html"),
+                 ("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo",
+                  "Drive health and S.M.A.R.T. monitoring.",
+                  "https://crystalmark.info/en/software/crystaldiskinfo/"),
+                 ("Guru3D.Afterburner", "MSI Afterburner",
+                  "GPU overclocking and on-screen performance monitoring.",
+                  "https://www.msi.com/Landing/afterburner"),
+                 ("Notion.Notion", "Notion",
+                  "All-in-one notes, docs and project workspace.",
+                  "https://www.notion.com/desktop"),
              ]},
             {"icon": "🧩", "title": "Core API Runtimes",
              "desc": "DirectX, Visual C++, .NET and Java runtimes — the bulk install.",
              "task": "InstallRuntimes", "timeout": 3600, "confirm": True,
              "apps": [
-                 ("Microsoft.DirectX", "DirectX End-User Runtime"),
-                 ("Microsoft.VCRedist.2015+.x64", "Visual C++ Redistributables"),
-                 ("Microsoft.DotNet.DesktopRuntime.8", ".NET Desktop Runtime"),
-                 ("Oracle.JavaRuntimeEnvironment", "Java Runtime Environment"),
+                 ("Microsoft.DirectX", "DirectX End-User Runtime",
+                  "Legacy DirectX libraries that older games still need.",
+                  "https://www.microsoft.com/en-us/download/details.aspx?id=35"),
+                 ("Microsoft.VCRedist.2015+.x64", "Visual C++ Redistributables",
+                  "C++ runtime DLLs required by countless Windows apps.",
+                  "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"),
+                 ("Microsoft.DotNet.DesktopRuntime.8", ".NET Desktop Runtime",
+                  "Runs modern .NET desktop applications.",
+                  "https://dotnet.microsoft.com/en-us/download/dotnet/8.0"),
+                 ("Oracle.JavaRuntimeEnvironment", "Java Runtime Environment",
+                  "Runs Java desktop applications.",
+                  "https://www.java.com/en/download/"),
              ]},
             {"icon": "📄", "title": "Microsoft Office Suite",
              "desc": "Word, Excel, PowerPoint, Outlook and more — via the official Deployment Tool wizard.",
@@ -209,8 +259,12 @@ CATEGORIES = [
              "desc": "Microsoft Teams and OneDrive — real standalone winget packages.",
              "task": "InstallOfficeApps", "timeout": 3600, "confirm": True,
              "apps": [
-                 ("Microsoft.Teams", "Microsoft Teams"),
-                 ("Microsoft.OneDrive", "Microsoft OneDrive"),
+                 ("Microsoft.Teams", "Microsoft Teams",
+                  "Meetings, chat and collaboration.",
+                  "https://www.microsoft.com/en-us/microsoft-teams/download-app"),
+                 ("Microsoft.OneDrive", "Microsoft OneDrive",
+                  "Cloud file sync client for OneDrive.",
+                  "https://www.microsoft.com/en-us/microsoft-365/onedrive/download"),
              ]},
             {"icon": "🚀", "title": "Startup Report",
              "desc": "Audit everything that launches at boot (Run keys + Startup folders).",

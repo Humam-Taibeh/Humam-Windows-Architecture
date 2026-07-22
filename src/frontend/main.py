@@ -72,8 +72,8 @@ DEFAULT_TIMEOUT = 900
 # Body-layout margins: comfortable while floating, collapsed to a slim
 # comfort gap when maximized/flush so the (now border-less, radius-less)
 # shell doesn't leave a dead-space frame around the sidebar/content.
-_FLOAT_MARGINS = (18, 6, 18, 14)
-_FLUSH_MARGINS = (8, 4, 8, 8)
+_FLOAT_MARGINS = (20, 8, 20, 16)
+_FLUSH_MARGINS = (10, 6, 10, 10)
 
 
 def _locate_icon() -> str | None:
@@ -278,9 +278,16 @@ class WelcomePage(QWidget):
 
 
 class CategoryPage(QWidget):
-    """One category: header (back · title · home) + scrollable card grid."""
+    """One category: header (back · title · home) + scrollable card grid.
 
-    COLUMNS = 3
+    The grid is responsive: column count follows the viewport width so a
+    card never drops below MIN_CARD_W and clips its copy. Floating at the
+    default size reads as a spacious 2-column layout; maximized widescreen
+    gets 3 columns; a small floating window falls back to a single,
+    fully-readable column."""
+
+    MAX_COLUMNS = 3
+    MIN_CARD_W = 340   # narrower than this and descriptions start clipping
 
     back_requested = Signal()
     home_requested = Signal()
@@ -290,10 +297,11 @@ class CategoryPage(QWidget):
         super().__init__()
         self.category = category
         self.cards: list[GlassCard] = []
+        self._cols = 0
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 4, 6, 4)
-        lay.setSpacing(14)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(16)
 
         # -- header -------------------------------------------
         head = QHBoxLayout()
@@ -324,26 +332,44 @@ class CategoryPage(QWidget):
 
         grid_host = QWidget()
         grid_host.setStyleSheet("background: transparent;")
-        grid = QGridLayout(grid_host)
-        grid.setContentsMargins(2, 2, 10, 2)
-        grid.setSpacing(16)
+        self._grid = QGridLayout(grid_host)
+        self._grid.setContentsMargins(2, 4, 12, 4)
+        self._grid.setSpacing(18)
 
-        for i, item in enumerate(category["items"]):
+        for item in category["items"]:
             card = GlassCard(item, category["accent"], t)
             card.clicked.connect(
                 lambda it=item, c=card: self.task_requested.emit(it, c))
             self.cards.append(card)
-            grid.addWidget(card, i // self.COLUMNS, i % self.COLUMNS)
-
-        for col in range(self.COLUMNS):
-            grid.setColumnStretch(col, 1)
-        grid.setRowStretch(grid.rowCount(), 1)
+        self._relayout(2)   # safe default; the first resize event corrects it
 
         self._scroll.setWidget(grid_host)
         self._scroll.viewport().setStyleSheet("background: transparent;")
         lay.addWidget(self._scroll, 1)
 
         self.apply_theme(t)
+
+    # -- responsive grid ------------------------------------------
+    def _columns_for(self, viewport_w: int) -> int:
+        return max(1, min(self.MAX_COLUMNS, viewport_w // self.MIN_CARD_W))
+
+    def _relayout(self, cols: int):
+        if cols == self._cols:
+            return
+        self._cols = cols
+        for card in self.cards:
+            self._grid.removeWidget(card)
+        for col in range(self.MAX_COLUMNS):
+            self._grid.setColumnStretch(col, 1 if col < cols else 0)
+        for row in range(self._grid.rowCount()):
+            self._grid.setRowStretch(row, 0)
+        for i, card in enumerate(self.cards):
+            self._grid.addWidget(card, i // cols, i % cols)
+        self._grid.setRowStretch((len(self.cards) + cols - 1) // cols, 1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout(self._columns_for(self._scroll.viewport().width()))
 
     def apply_theme(self, t: dict):
         self._back.apply_theme(t)
@@ -438,17 +464,17 @@ class PulseApp(QMainWindow):
 
         body = QHBoxLayout()
         body.setContentsMargins(*_FLOAT_MARGINS)
-        body.setSpacing(18)
+        body.setSpacing(20)
         root.addLayout(body, 1)
         self._body = body  # margins flip to _FLUSH_MARGINS in changeEvent
                            # when maximized (native edge-to-edge fit)
 
         # -- sidebar ------------------------------------------
         self._sidebar = QFrame()
-        self._sidebar.setFixedWidth(240)
+        self._sidebar.setFixedWidth(250)
         side = QVBoxLayout(self._sidebar)
-        side.setContentsMargins(14, 24, 14, 20)
-        side.setSpacing(9)
+        side.setContentsMargins(16, 24, 16, 18)
+        side.setSpacing(8)
 
         self._section = QLabel("MODULES")
         self._section.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -473,8 +499,8 @@ class PulseApp(QMainWindow):
         # -- content ------------------------------------------
         self._content = QFrame()
         content = QVBoxLayout(self._content)
-        content.setContentsMargins(18, 16, 18, 12)
-        content.setSpacing(10)
+        content.setContentsMargins(24, 18, 24, 16)
+        content.setSpacing(12)
 
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
@@ -686,10 +712,17 @@ class PulseApp(QMainWindow):
             selector = AppSelectorDialog(self, item, self.theme.t)
             if selector.exec() != QDialog.DialogCode.Accepted:
                 return
-            if not selector.selected_ids:
+            if selector.local_installer:
+                # A per-app "⋯" wizard resolved to Path C (a local file) —
+                # run the generic single-installer task instead of the
+                # bulk winget deploy. Same contract as the Dev Hub branch.
+                local_installer = selector.local_installer
+                item = {**item, "task": "InstallLocalFile"}
+            elif selector.selected_ids:
+                app_ids = selector.selected_ids
+            else:
                 self.toasts.show("info", "No apps were selected — nothing to deploy.", 3500)
                 return
-            app_ids = selector.selected_ids
         elif item.get("confirm"):
             dialog = ConfirmDialog(self, item, self.theme.t)
             if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -909,45 +942,71 @@ class PulseApp(QMainWindow):
     # Win32 hit-test codes for the native resize border (WM_NCHITTEST)
     _HT = {"L": 10, "R": 11, "T": 12, "TL": 13, "TR": 14,
            "B": 15, "BL": 16, "BR": 17}
-    _HTMAXBUTTON = 9          # WM_NCHITTEST verdict that summons Snap Layouts
+    # Non-client caption-button verdicts. HTMAXBUTTON also summons the
+    # Windows 11 Snap Layouts flyout.
+    _HT_CAPTION = {"min": 8, "max": 9, "close": 20}
+    _HTMAXBUTTON = 9
     _WM_NCHITTEST = 0x0084
     _WM_NCLBUTTONDOWN = 0x00A1
     _WM_NCLBUTTONUP = 0x00A2
     _WM_NCMOUSELEAVE = 0x02A2
 
-    def _max_button_hit(self, hwnd: int, gx: int, gy: int) -> bool:
-        """Is the (physical-pixel, screen-space) point over the maximize
-        button? Computed window-relative so mixed-DPI multi-monitor
+    def _caption_hit(self, rect, gx: int, gy: int) -> str | None:
+        """Which caption button owns the (physical-pixel, screen-space)
+        point — with Fitts-friendly expanded zones, not the bare 40×30
+        glyph rects: the strip from the top of the window down to the
+        bottom of the buttons, from the minimize button's left edge all
+        the way to the window's right edge, split at the midpoints of the
+        gaps. Slamming the cursor into the top-right corner region and
+        clicking now behaves exactly like a native Windows app.
+        Physical-pixel math is window-relative so mixed-DPI multi-monitor
         setups can't skew the mapping."""
-        titlebar = getattr(self, "titlebar", None)
-        if titlebar is None or not titlebar.btn_max.isVisible():
-            return False
-        rect = ctypes.wintypes.RECT()
-        if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            return False
+        titlebar = self.titlebar
+        if not titlebar.isVisible():
+            return None
+        buttons = titlebar.caption_buttons()
         dpr = self.devicePixelRatioF()
-        btn = titlebar.btn_max
-        top_left = btn.mapTo(self, QPoint(0, 0))
-        left = rect.left + round(top_left.x() * dpr)
-        top = rect.top + round(top_left.y() * dpr)
-        return (left <= gx < left + round(btn.width() * dpr)
-                and top <= gy < top + round(btn.height() * dpr))
+
+        def phys(btn):
+            top_left = btn.mapTo(self, QPoint(0, 0))
+            left = rect.left + round(top_left.x() * dpr)
+            top = rect.top + round(top_left.y() * dpr)
+            return (left, top, left + round(btn.width() * dpr),
+                    top + round(btn.height() * dpr))
+
+        min_l, _, min_r, min_b = phys(buttons["min"])
+        max_l, _, max_r, max_b = phys(buttons["max"])
+        close_l, _, _, close_b = phys(buttons["close"])
+
+        zone_bottom = max(min_b, max_b, close_b) + round(4 * dpr)
+        if not (rect.top <= gy < zone_bottom):
+            return None
+        if gx >= (max_r + close_l) // 2:
+            return "close" if gx < rect.right else None
+        if gx >= (min_r + max_l) // 2:
+            return "max"
+        if gx >= min_l - round(2 * dpr):
+            return "min"
+        return None
 
     def nativeEvent(self, eventType, message):
         """Native window integration, in two parts:
 
-        1. Snap Layouts (Windows 11): answering WM_NCHITTEST with
-           HTMAXBUTTON over the maximize button makes Windows show its
-           Snap Layouts flyout on hover — the definitive 'this is a real
-           native app' signal. Windows then owns that button's mouse
-           events, so hover is mirrored via titlebar.set_max_hover() and
-           the click is re-injected from WM_NCLBUTTONUP (the sequence
-           Microsoft's own custom-titlebar guidance prescribes).
-        2. Native resize borders: the outer 8px goes back to Windows so
+        1. Native resize borders: the outer 8px goes back to Windows so
            edge/corner resizing uses real cursors, the OS size loop,
            min-size clamping and snap behavior. Everything inside stays
            HTCLIENT. A maximized window has no resize border, matching
-           native apps.
+           native apps — which also means the caption zones then reach
+           the literal top-right screen corner (Fitts corner-slam close).
+        2. Non-client caption buttons: WM_NCHITTEST maps generously
+           expanded zones over minimize/maximize/close to HTMINBUTTON /
+           HTMAXBUTTON / HTCLOSEBUTTON, so a click anywhere in the
+           top-right corner region lands — no pixel-perfect aiming.
+           HTMAXBUTTON additionally summons the Windows 11 Snap Layouts
+           flyout. Windows owns those buttons' mouse events from then on:
+           hover is mirrored via titlebar.set_nc_hover() and clicks are
+           re-injected from WM_NCLBUTTONUP (the sequence Microsoft's own
+           custom-titlebar guidance prescribes).
         """
         if sys.platform == "win32" and eventType == b"windows_generic_MSG":
             # Native messages can arrive while the window is still being
@@ -960,51 +1019,63 @@ class PulseApp(QMainWindow):
             if msg.message == self._WM_NCHITTEST:
                 x = ctypes.c_short(msg.lParam & 0xFFFF).value
                 y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                rect = ctypes.wintypes.RECT()
+                if not ctypes.windll.user32.GetWindowRect(msg.hWnd, ctypes.byref(rect)):
+                    return super().nativeEvent(eventType, message)
 
-                over_max = self._max_button_hit(msg.hWnd, x, y)
-                titlebar.set_max_hover(over_max)
-                if over_max:
-                    return True, self._HTMAXBUTTON
-
+                # resize borders first (floating only) — same priority
+                # order as native windows
                 if not self.isMaximized():
-                    rect = ctypes.wintypes.RECT()
-                    if ctypes.windll.user32.GetWindowRect(msg.hWnd, ctypes.byref(rect)):
-                        border = max(4, int(8 * self.devicePixelRatioF()))
-                        left = x < rect.left + border
-                        right = x >= rect.right - border
-                        top = y < rect.top + border
-                        bottom = y >= rect.bottom - border
-                        code = 0
-                        if top and left:
-                            code = self._HT["TL"]
-                        elif top and right:
-                            code = self._HT["TR"]
-                        elif bottom and left:
-                            code = self._HT["BL"]
-                        elif bottom and right:
-                            code = self._HT["BR"]
-                        elif left:
-                            code = self._HT["L"]
-                        elif right:
-                            code = self._HT["R"]
-                        elif top:
-                            code = self._HT["T"]
-                        elif bottom:
-                            code = self._HT["B"]
-                        if code:
-                            return True, code
+                    border = max(4, int(8 * self.devicePixelRatioF()))
+                    left = x < rect.left + border
+                    right = x >= rect.right - border
+                    top = y < rect.top + border
+                    bottom = y >= rect.bottom - border
+                    code = 0
+                    if top and left:
+                        code = self._HT["TL"]
+                    elif top and right:
+                        code = self._HT["TR"]
+                    elif bottom and left:
+                        code = self._HT["BL"]
+                    elif bottom and right:
+                        code = self._HT["BR"]
+                    elif left:
+                        code = self._HT["L"]
+                    elif right:
+                        code = self._HT["R"]
+                    elif top:
+                        code = self._HT["T"]
+                    elif bottom:
+                        code = self._HT["B"]
+                    if code:
+                        titlebar.set_nc_hover(None)
+                        return True, code
+
+                # expanded caption-button zones
+                hit = self._caption_hit(rect, x, y)
+                titlebar.set_nc_hover(hit)
+                if hit is not None:
+                    return True, self._HT_CAPTION[hit]
 
             elif (msg.message == self._WM_NCLBUTTONDOWN
-                    and msg.wParam == self._HTMAXBUTTON):
+                    and msg.wParam in self._HT_CAPTION.values()):
                 return True, 0   # consume — no default non-client flicker
 
-            elif (msg.message == self._WM_NCLBUTTONUP
-                    and msg.wParam == self._HTMAXBUTTON):
-                titlebar._toggle_max()
-                return True, 0
+            elif msg.message == self._WM_NCLBUTTONUP:
+                if msg.wParam == self._HT_CAPTION["min"]:
+                    titlebar.set_nc_hover(None)
+                    self.showMinimized()
+                    return True, 0
+                if msg.wParam == self._HT_CAPTION["max"]:
+                    titlebar._toggle_max()
+                    return True, 0
+                if msg.wParam == self._HT_CAPTION["close"]:
+                    self.close()
+                    return True, 0
 
             elif msg.message == self._WM_NCMOUSELEAVE:
-                titlebar.set_max_hover(False)
+                titlebar.set_nc_hover(None)
 
         return super().nativeEvent(eventType, message)
 

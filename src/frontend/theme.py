@@ -89,8 +89,11 @@ _DARK = {
     "card_hover":  "rgba(88, 166, 255, 0.06)",
     "card_line":   "rgba(255, 255, 255, 0.085)",
     "card_sheen":  "rgba(255, 255, 255, 0.04)",   # top stop of the glass gradient
-    "dialog_bg":   "rgba(17, 19, 24, 0.985)",
-    "toast_bg":    "rgba(22, 25, 31, 0.97)",
+    # Dialogs and toasts sit OVER dense text (card grids, the console):
+    # fully/near-fully opaque, or the content underneath bleeds through
+    # and reads as overlapping text.
+    "dialog_bg":   "rgba(17, 19, 24, 1.0)",
+    "toast_bg":    "rgba(22, 25, 31, 0.99)",
 
     # brand — calm azure + soft violet (interactive states only)
     "accent":      "#58a6ff",
@@ -137,8 +140,9 @@ _LIGHT = {
     "card_hover":  "rgba(0, 103, 192, 0.06)",
     "card_line":   "rgba(22, 28, 38, 0.11)",
     "card_sheen":  "rgba(255, 255, 255, 0.80)",   # top stop of the glass gradient
-    "dialog_bg":   "rgba(247, 249, 252, 0.99)",
-    "toast_bg":    "rgba(252, 253, 255, 0.98)",
+    # Same opacity rule as dark: overlays never let text bleed through.
+    "dialog_bg":   "rgba(247, 249, 252, 1.0)",
+    "toast_bg":    "rgba(252, 253, 255, 0.99)",
 
     # brand — Fluent blue + muted violet
     "accent":      "#0067c0",
@@ -251,7 +255,7 @@ def nav_button_qss(t: dict) -> str:
             border-radius: 13px;
             color: {t['text_soft']};
             font-size: 13px; font-weight: 500;
-            text-align: left; padding-left: 16px;
+            text-align: left; padding-left: 18px;
         }}
         QPushButton:hover {{
             background-color: {t['card_hover']};
@@ -356,13 +360,17 @@ def titlebar_button_qss(t: dict, hover: str) -> str:
 def titlebar_close_qss(t: dict) -> str:
     """The close button gets the native Win11 treatment: solid caption-red
     fill with a white glyph on hover — the one affordance every Windows
-    user's muscle memory expects to look exactly this way."""
+    user's muscle memory expects to look exactly this way. `nchover`
+    mirrors :hover while Windows owns the button's mouse events (the
+    HTCLOSEBUTTON non-client zone — see main.nativeEvent)."""
     return f"""
         QPushButton {{
             background: transparent; border: none; border-radius: 7px;
             color: {t['text_muted']}; font-size: 13px;
         }}
-        QPushButton:hover {{ background: {t['close_hover']}; color: #ffffff; }}
+        QPushButton:hover, QPushButton[nchover="true"] {{
+            background: {t['close_hover']}; color: #ffffff;
+        }}
         QPushButton:pressed {{ background: #b12417; color: #ffffff; }}
     """
 
@@ -572,17 +580,6 @@ def checkbox_qss(t: dict, accent: str) -> str:
     """
 
 
-def app_row_qss(t: dict) -> str:
-    return f"""
-        QFrame {{
-            background: {t['card']};
-            border: 1px solid {t['card_line']};
-            border-radius: 10px;
-        }}
-        QFrame:hover {{ border: 1px solid {alpha(t['accent'], 0.35)}; }}
-    """
-
-
 def wizard_link_qss(t: dict, accent: str) -> str:
     """Full-width clickable link row — the Office wizard's 'open this URL'
     / 'browse for a folder' actions, styled like an inert app_row until
@@ -620,9 +617,10 @@ def warning_banner_qss(t: dict) -> str:
 
 
 def dev_hub_row_qss(t: dict) -> str:
-    """Dev Hub selector row — like app_row_qss but with a 'suggested'
-    state: a soft amber highlight when this tool is a checked-off IDE's
-    unmet runtime dependency (see widgets.DevHubRow / DevHubSelectorDialog's
+    """Selector row (Dev Hub AND every Software Management app pack — the
+    one unified row style) with a 'suggested' state: a soft amber
+    highlight when this tool is a checked-off IDE's unmet runtime
+    dependency (see widgets.DevHubRow / DevHubSelectorDialog's
     dependency-hint nudge — 'subtly suggests', never auto-forces a check)."""
     return f"""
         QFrame {{
@@ -724,19 +722,22 @@ def dialog_go_qss(t: dict, accent: str) -> str:
 
 
 # -- label roles ---------------------------------------------
+# v6.2 typographic scale: one step more air across the board — reading
+# sizes (body/desc/tagline) moved off the 11px floor, which read as
+# "cramped and cheap" at typical laptop DPI.
 _LABEL_ROLES = {
     "hero":     ("32px", "650", "text",       "letter-spacing: 6px;"),
-    "title":    ("19px", "650", "text",       ""),
+    "title":    ("20px", "650", "text",       ""),
     "version":  ("11px", "500", "text_faint", ""),
     "card":     ("14px", "600", "text",       ""),
-    "body":     ("12px", "400", "text_muted", ""),
-    "desc":     ("11px", "400", "text_muted", ""),
-    "tagline":  ("11px", "400", "text_muted", ""),
+    "body":     ("13px", "400", "text_muted", ""),
+    "desc":     ("12px", "400", "text_muted", ""),
+    "tagline":  ("12px", "400", "text_muted", ""),
     "status":   ("11px", "500", "text_muted", ""),
     "faint":    ("12px", "400", "text_faint", ""),
     "section":  ("10px", "700", "text_faint", "letter-spacing: 4px;"),
     "brand":    ("11px", "600", "text_muted", "letter-spacing: 2px;"),
-    "value":    ("15px", "650", "text",       ""),
+    "value":    ("16px", "650", "text",       ""),
     "caption":  ("10px", "500", "text_faint", "letter-spacing: 1px;"),
 }
 
