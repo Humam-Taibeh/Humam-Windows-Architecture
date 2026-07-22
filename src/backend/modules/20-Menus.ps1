@@ -151,7 +151,7 @@ function Show-AppDeploymentHub {
         Write-Banner "APP DEPLOYMENT HUB"
         Write-ModulePreview -Items @(
             "Essential Apps: $($Apps_Basic.Count) items - Chrome, Spotify, Discord, WhatsApp, iTunes, 7-Zip, VLC...",
-            "Programming & AI Core: $($Apps_Dev.Count) items - Cursor, VS Code, PyCharm, NetBeans, MSYS2, Ollama...",
+            "Developer & University Hub: $($Apps_DevHubAll.Count) items - runtimes, IDEs, AI stack, databases, containers...",
             "Gaming Launchers: $($Apps_Gaming.Count) items - Steam, Epic, Rockstar, BlueStacks + auto GPU app",
             "Hardware Diagnostics: $($Apps_Tools.Count) items - CPU-Z, GPU-Z, HWMonitor... + auto motherboard app",
             "Microsoft Teams & OneDrive: $($Apps_OfficeCompanions.Count) items - real standalone winget packages",
@@ -160,7 +160,7 @@ function Show-AppDeploymentHub {
         do {
             Write-Banner "APP DEPLOYMENT HUB"
             Write-Host "   [A]  Essential Apps" -ForegroundColor White
-            Write-Host "   [B]  Programming & AI Core" -ForegroundColor White
+            Write-Host "   [B]  Developer & University Hub" -ForegroundColor White
             Write-Host "   [C]  Gaming Launchers" -ForegroundColor White
             Write-Host "   [D]  Hardware Diagnostics" -ForegroundColor White
             Write-Host "   [E]  Microsoft Teams & OneDrive" -ForegroundColor White
@@ -177,7 +177,7 @@ function Show-AppDeploymentHub {
                 if ($status -eq "BACK" -and $RunAll) { break }
             }
             if ($AppMenu.ToUpper() -eq 'B' -or $RunAll) {
-                $status = Process-AppCategory $Apps_Dev "Programming & AI Core"
+                $status = Process-AppCategory $Apps_DevHubAll "Developer & University Hub"
                 if ($status -eq "QUIT" -and $RunAll) { break }
                 if ($status -eq "BACK" -and $RunAll) { break }
             }
@@ -224,7 +224,7 @@ function Show-SoftwareManagementMenu {
     do {
         Write-Banner "📦 SOFTWARE MANAGEMENT"
         Write-ModulePreview -Items @(
-            "App Deployment Hub: Essential Apps, Programming & AI Core, Gaming Launchers, Hardware Diagnostics",
+            "App Deployment Hub: Essential Apps, Developer & University Hub, Gaming Launchers, Hardware Diagnostics",
             "Core API Runtimes: DirectX, VC++, .NET, Java (bulk or individual)",
             "Startup Program Manager: control which programs launch at boot",
             "Microsoft Office Deployment: auto-install or manual guide",

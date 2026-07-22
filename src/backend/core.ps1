@@ -39,6 +39,9 @@
       core.ps1 -Task InstallOfficeODT -OfficeSetupPath <p> -OfficeConfigPath <p>
                                      runs the Office Deployment Tool wizard's
                                      resolved setup.exe / configuration.xml
+      core.ps1 -Task InstallLocalFile -LocalInstallerPath <p>
+                                     runs an installer the Tool Install
+                                     Wizard's Path C pointed at
       core.ps1 [...] -WhatIf        DRY-RUN: full simulation, zero mutations
 
     CHANGELOG v4.0 (Modular Architecture Release):
@@ -68,6 +71,7 @@ param(
     [string]$AppIds,
     [string]$OfficeSetupPath,
     [string]$OfficeConfigPath,
+    [string]$LocalInstallerPath,
     [switch]$WhatIf
 )
 

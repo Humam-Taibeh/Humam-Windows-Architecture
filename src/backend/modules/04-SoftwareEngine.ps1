@@ -142,6 +142,52 @@ function Open-FallbackUrl {
 }
 
 # ============================================================
+#  LOCAL INSTALLER RUNNER (Path C of the generic Tool Install Wizard)
+# ============================================================
+function Invoke-GuiLocalInstall {
+    <#
+    .SYNOPSIS
+        Runs an installer file the user already downloaded and picked
+        through widgets.ToolInstallWizardDialog's Path C (task
+        InstallLocalFile). Generic by design - unlike Office's ODT flow,
+        "run this installer the user pointed at" needs no tool-specific
+        knowledge: .msi goes through msiexec /i, everything else runs
+        directly. Most installers self-elevate via their own manifest if
+        they need to (Windows shows that UAC prompt regardless of this
+        hidden/no-window parent process), so this never forces elevation
+        itself - exactly like a user double-clicking the file manually.
+    #>
+    param([Parameter(Mandatory = $true)][string]$FilePath)
+
+    if (-not (Test-Path -Path $FilePath -PathType Leaf)) {
+        Write-ErrorX "Installer file not found: $FilePath"
+        return $false
+    }
+
+    if (Test-DryRun "Run local installer '$FilePath'") { return $true }
+
+    Write-Info "Running installer: $FilePath"
+    try {
+        $Ext = [System.IO.Path]::GetExtension($FilePath).ToLowerInvariant()
+        if ($Ext -eq ".msi") {
+            $Proc = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", ('"' + $FilePath + '"')) -Wait -PassThru
+        } else {
+            $Proc = Start-Process -FilePath $FilePath -Wait -PassThru
+        }
+        if ($Proc.ExitCode -eq 0 -or $Proc.ExitCode -eq 3010) {
+            Write-Success "Installer finished (exit code $($Proc.ExitCode))."
+            return $true
+        } else {
+            Write-ErrorX "Installer exited with code $($Proc.ExitCode)."
+            return $false
+        }
+    } catch {
+        Write-ErrorX "Could not run the installer: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+# ============================================================
 #  SMART DEPLOY (the one true install path)
 # ============================================================
 function Smart-Deploy {

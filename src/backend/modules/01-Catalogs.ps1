@@ -50,13 +50,8 @@ $Apps_Basic = @(
     @("Google.Chrome", "Google Chrome"), @("Spotify.Spotify", "Spotify (Win32)"),
     @("Discord.Discord", "Discord"), @("9NKSQCEZVDDB", "WhatsApp (Store)"),
     @("9PKTQ5699M62", "iCloud (Store)"), @("Apple.iTunes", "iTunes"),
-    @("7zip.7zip", "7-Zip"), @("VideoLAN.VLC", "VLC Media Player")
-)
-$Apps_Dev = @(
-    @("Anysphere.Cursor", "Cursor IDE"), @("Microsoft.VisualStudioCode", "VS Code"),
-    @("JetBrains.PyCharm.Community", "PyCharm"), @("Apache.NetBeans", "NetBeans IDE"),
-    @("MSYS2.MSYS2", "GCC Compiler"), @("Ollama.Ollama", "Ollama AI"),
-    @("TheDocumentFoundation.LibreOffice", "LibreOffice"), @("Git.Git", "Git")
+    @("7zip.7zip", "7-Zip"), @("VideoLAN.VLC", "VLC Media Player"),
+    @("TheDocumentFoundation.LibreOffice", "LibreOffice")
 )
 $Apps_Gaming = @(
     @("Valve.Steam", "Steam"), @("EpicGames.EpicGamesLauncher", "Epic Games"),
@@ -87,6 +82,69 @@ $Runtimes = @(
 )
 
 # ============================================================
+#  DEVELOPER & UNIVERSITY HUB CATALOG
+#  Precisely separated from every other app list above - zero hardware
+#  drivers, zero general-purpose apps. Grouped into five sections purely
+#  for the Dev Hub selector's section headers; $Apps_DevHubAll (the flat
+#  concatenation, order preserved) is what Smart-Deploy/bulk-install
+#  actually iterates. Mirrored group-for-group by DEV_HUB_GROUPS in
+#  menu_structure.py.
+# ============================================================
+$Apps_DevRuntimes = @(
+    @("Python.Python.3.12", "Python 3.12"),
+    @("EclipseAdoptium.Temurin.21.JDK", "Java JDK (Temurin 21)"),
+    @("OpenJS.NodeJS.LTS", "Node.js (LTS)"),
+    @("Git.Git", "Git / Git Bash"),
+    @("MSYS2.MSYS2", "GCC / MinGW-w64 Compiler")
+)
+$Apps_DevIDEs = @(
+    @("Microsoft.VisualStudioCode", "VS Code"),
+    @("Anysphere.Cursor", "Cursor IDE"),
+    @("JetBrains.PyCharm.Community", "PyCharm Community"),
+    @("JetBrains.IntelliJIDEA.Community", "IntelliJ IDEA Community"),
+    @("Apache.NetBeans", "NetBeans IDE")
+)
+$Apps_DevAI = @(
+    @("Ollama.Ollama", "Ollama (Local LLM Runner)"),
+    @("OpenWebUI.OpenWebUI", "Open WebUI (Local Chat Interface)")
+)
+$Apps_DevData = @(
+    @("DBeaver.DBeaver.Community", "DBeaver (Database Client)"),
+    @("Postman.Postman", "Postman (API Client)"),
+    @("Bruno.Bruno", "Bruno (Open-Source API Client)")
+)
+# Leading comma is deliberate, not a typo: `@( @("id","name") )` - a
+# single inner array as the ONLY content of the outer @() - is a classic
+# PowerShell flattening pitfall; PowerShell unwraps it to a flat 2-element
+# array instead of a 1-element array containing a 2-tuple. `,@(...)` (the
+# unary comma/array-construction operator) forces it to stay nested.
+$Apps_DevContainers = ,@("Docker.DockerDesktop", "Docker Desktop")
+$Apps_DevHubAll = @() + $Apps_DevRuntimes + $Apps_DevIDEs + $Apps_DevAI + $Apps_DevData + $Apps_DevContainers
+
+# Pre-configured quick-select bundles for the Dev Hub's checkbox selector -
+# each just ticks the listed AppIds; nothing is forced, the user can still
+# deselect any of them before deploying. Mirrored by DEV_HUB_BUNDLES.
+$Script:DevHubBundles = @(
+    @{ Key = "java-university"; Icon = "🎓"; Title = "Java / University Stack"
+       AppIds = @("EclipseAdoptium.Temurin.21.JDK", "Apache.NetBeans", "JetBrains.IntelliJIDEA.Community", "Git.Git", "Microsoft.VisualStudioCode") }
+    @{ Key = "ai-python"; Icon = "🧠"; Title = "AI / Python Stack"
+       AppIds = @("Python.Python.3.12", "Ollama.Ollama", "OpenWebUI.OpenWebUI", "Microsoft.VisualStudioCode") }
+    @{ Key = "web-dev"; Icon = "🌐"; Title = "Web Dev Stack"
+       AppIds = @("OpenJS.NodeJS.LTS", "Git.Git", "Microsoft.VisualStudioCode", "Postman.Postman") }
+)
+
+# Smart dependency hints for the Dev Hub selector UI (surfaced as a caption
+# under the IDE's row - "subtly suggests", never auto-forces a checkbox).
+# Distinct from $Script:DevDependencyMap below, which is the POST-INSTALL
+# offer console/GUI tasks make after a successful deploy - this one drives
+# the selector's UI before anything is installed.
+$Script:DevHubDependencyHints = @{
+    "JetBrains.PyCharm.Community"     = @{ RequiresId = "Python.Python.3.12";            RequiresName = "Python 3.12" }
+    "JetBrains.IntelliJIDEA.Community" = @{ RequiresId = "EclipseAdoptium.Temurin.21.JDK"; RequiresName = "Java JDK" }
+    "Apache.NetBeans"                 = @{ RequiresId = "EclipseAdoptium.Temurin.21.JDK"; RequiresName = "Java JDK" }
+}
+
+# ============================================================
 #  APP DOWNLOAD FALLBACK URLS
 # ============================================================
 $Script:DownloadUrls = @{
@@ -114,6 +172,17 @@ $Script:DownloadUrls = @{
     "VideoLAN.VLC"                  = "https://www.videolan.org/vlc/"
     "Microsoft.Teams"               = "https://www.microsoft.com/microsoft-teams/download-app"
     "Microsoft.OneDrive"            = "https://www.microsoft.com/microsoft-365/onedrive/download"
+    "TheDocumentFoundation.LibreOffice" = "https://www.libreoffice.org/download/download/"
+    "Python.Python.3.12"            = "https://www.python.org/downloads/"
+    "EclipseAdoptium.Temurin.21.JDK" = "https://adoptium.net/temurin/releases/"
+    "OpenJS.NodeJS.LTS"              = "https://nodejs.org/en/download"
+    "Git.Git"                        = "https://git-scm.com/downloads"
+    "JetBrains.IntelliJIDEA.Community" = "https://www.jetbrains.com/idea/download/"
+    "OpenWebUI.OpenWebUI"            = "https://openwebui.com/"
+    "DBeaver.DBeaver.Community"      = "https://dbeaver.io/download/"
+    "Postman.Postman"                = "https://www.postman.com/downloads/"
+    "Bruno.Bruno"                    = "https://www.usebruno.com/downloads"
+    "Docker.DockerDesktop"           = "https://www.docker.com/products/docker-desktop/"
 }
 
 # ============================================================
@@ -127,6 +196,7 @@ $Script:LockProcessMap = @{
     "Valve.Steam"                = @("steam", "steamwebhelper")
     "Microsoft.Teams"            = @("Teams", "ms-teams")
     "Microsoft.OneDrive"         = @("OneDrive")
+    "Docker.DockerDesktop"       = @("Docker Desktop", "com.docker.backend", "com.docker.build")
 }
 
 # ============================================================
@@ -244,6 +314,6 @@ $Script:AdminRequiredTasks = @(
     "DisableHibernation","EnableHibernation","DisableTelemetry","DisableActivityHistory",
     "NetworkOptimization","UltimatePowerPlan","RemoveOneDrive","RemoveEdge","ReinstallEdge",
     "CreateRestorePoint","DriverBackup","RestoreServices","RestoreEdge","ApplyAllPrivacy",
-    "ResetTweaks","InstallEssentialApps","InstallDevApps","InstallGamingApps",
+    "ResetTweaks","InstallEssentialApps","InstallDevHub","InstallGamingApps",
     "InstallDiagnosticApps","InstallRuntimes","InstallOfficeODT","InstallOfficeODTAuto"
 )

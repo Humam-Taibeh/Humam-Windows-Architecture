@@ -1586,3 +1586,386 @@ class OfficeWizardDialog(QDialog):
     def showEvent(self, e):
         super().showEvent(e)
         _animate_dialog_entrance(self)
+
+
+# ============================================================
+#  TOOL INSTALL WIZARD — generic 3-path single-tool dialog
+# ============================================================
+class ToolInstallWizardDialog(QDialog):
+    """Path A / B / C for exactly one tool. Unlike OfficeWizardDialog (which
+    branches because Office genuinely has no per-app winget installer),
+    every tool this dialog is used for already has a working winget
+    package — Path A here just narrows the caller's normal bulk-deploy
+    selection down to this one AppId, reusing 100% of the existing
+    Smart-Deploy pipeline. Path B opens the vendor's official page and
+    closes (nothing left for Pulse to do). Path C hands back a picked
+    installer file for the generic InstallLocalFile task.
+
+    Three flat, terminal choices — no sub-navigation needed, unlike the
+    Office wizard's multi-step flow.
+
+    After exec():
+      Accepted + mode == "winget" -> caller should deploy just this AppId.
+      Accepted + mode == "local"  -> `local_path` holds the picked installer.
+      Rejected                    -> nothing to do (Cancel, or Path B was
+                                      opened in the browser and that's it).
+    """
+
+    def __init__(self, parent: QWidget, app_id: str, app_name: str,
+                 desc: str, url: str, t: dict):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self.setFixedWidth(460)
+
+        self.app_id = app_id
+        self.mode: str | None = None
+        self.local_path: str | None = None
+
+        panel = DepthCard(radius=18, parent=self)
+        panel.setStyleSheet(TH.dialog_panel_qss(t, t["accent"]))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(panel)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setSpacing(12)
+
+        head = QLabel(f"⚙️  {app_name}")
+        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        lay.addWidget(head)
+
+        if desc:
+            sub = QLabel(desc)
+            sub.setWordWrap(True)
+            sub.setStyleSheet(TH.label_qss(t, "body"))
+            lay.addWidget(sub)
+
+        path_a = GlassCard({
+            "icon": "🚀", "title": "One-Click Automated Install",
+            "desc": "Silently installs via winget — the same reliable path Pulse uses everywhere.",
+        }, t["accent"], t)
+        path_a.setMinimumHeight(84)
+        path_a.clicked.connect(self._choose_winget)
+        lay.addWidget(path_a)
+
+        path_b = GlassCard({
+            "icon": "🌐", "title": "Official Download Link",
+            "desc": f"Opens {app_name}'s official website in your browser." if url
+                    else "Opens a web search for the official download page.",
+        }, t["accent"], t)
+        path_b.setMinimumHeight(84)
+        path_b.clicked.connect(lambda: self._choose_url(url, app_name))
+        lay.addWidget(path_b)
+
+        path_c = GlassCard({
+            "icon": "📁", "title": "Local File / Manual Selection",
+            "desc": "Already downloaded the installer? Pick the file and Pulse will run it.",
+        }, t["accent"], t)
+        path_c.setMinimumHeight(84)
+        path_c.clicked.connect(self._choose_local)
+        lay.addWidget(path_c)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.setFixedSize(96, 34)
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.setStyleSheet(TH.dialog_cancel_qss(t))
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        lay.addLayout(row)
+
+    def _choose_winget(self):
+        self.mode = "winget"
+        self.accept()
+
+    def _choose_url(self, url: str, app_name: str):
+        target = url or f"https://www.google.com/search?q={app_name} download"
+        QDesktopServices.openUrl(QUrl(target))
+        self.reject()
+
+    def _choose_local(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select the installer", str(Path.home() / "Desktop"),
+            "Installers (*.exe *.msi)")
+        if not path:
+            return
+        self.mode = "local"
+        self.local_path = path
+        self.accept()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _animate_dialog_entrance(self)
+
+
+# ============================================================
+#  DEV HUB ROW — checkbox + dependency hint + per-tool "..." wizard
+# ============================================================
+class DevHubRow(QFrame):
+    """One tool inside DevHubSelectorDialog. Manual-first: unchecked by
+    default. `requires_name`, when given, renders a small "needs X" caption
+    — a passive hint, never an auto-check. The "⋯" button opens
+    ToolInstallWizardDialog for just this tool, independent of the
+    checkbox — picking Path A there short-circuits straight to "select
+    only this row and deploy" (see DevHubSelectorDialog._open_tool_wizard),
+    Path C hands back a local installer instead."""
+
+    options_requested = Signal(str)  # app_id
+
+    def __init__(self, app_id: str, app_name: str, desc: str,
+                 requires_id: str | None, requires_name: str | None, t: dict):
+        super().__init__()
+        self.app_id = app_id
+        self.requires_id = requires_id
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 8, 12, 8)
+        outer.setSpacing(2)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.checkbox = QCheckBox(app_name)
+        self.checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.checkbox.setChecked(False)  # manual-first: clean slate
+        if desc:
+            self.checkbox.setToolTip(desc)
+        row.addWidget(self.checkbox)
+        row.addStretch()
+
+        self.options_btn = QPushButton("⋯")
+        self.options_btn.setFixedSize(28, 24)
+        self.options_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.options_btn.setToolTip("Install options for this tool (winget / official link / local file)")
+        self.options_btn.clicked.connect(lambda: self.options_requested.emit(self.app_id))
+        row.addWidget(self.options_btn)
+        outer.addLayout(row)
+
+        self._hint_label: QLabel | None = None
+        if requires_name:
+            hint = QLabel(f"↳ needs {requires_name}")
+            outer.addWidget(hint)
+            self._hint_label = hint
+
+        self.apply_theme(t)
+
+    def apply_theme(self, t: dict):
+        self.setStyleSheet(TH.dev_hub_row_qss(t))
+        self.checkbox.setStyleSheet(TH.checkbox_qss(t, t["accent"]))
+        self.options_btn.setStyleSheet(TH.icon_ghost_button_qss(t, t["accent"]))
+        if self._hint_label is not None:
+            self._hint_label.setStyleSheet(TH.label_qss(t, "caption"))
+
+    def is_checked(self) -> bool:
+        return self.checkbox.isChecked()
+
+    def set_suggested(self, on: bool):
+        """Soft amber nudge: a checked-off tool elsewhere needs this one."""
+        self.setProperty("suggested", on)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+
+# ============================================================
+#  DEV HUB SELECTOR — sections, bundles, master toggle, dependency hints
+# ============================================================
+class DevHubSelectorDialog(QDialog):
+    """The Developer & University Hub's tool picker: section-grouped
+    checkboxes (Core Runtimes, IDEs, AI, Databases, Containers), one-click
+    quick-select bundles, a master Select All/Deselect All, live dependency
+    hints, and a per-row "⋯" that opens ToolInstallWizardDialog for a
+    single tool. Manual-first throughout — nothing is pre-checked.
+
+    `groups` / `bundles` are passed in rather than imported, keeping this
+    file a pure component library (see the module docstring) — the caller
+    (main.py) sources them from menu_structure.DEV_HUB_GROUPS/BUNDLES.
+
+    After Accepted, exactly one of these is populated:
+      `selected_ids`     bulk InstallDevHub deploy (checkbox selection, or
+                          a single-tool Path A short-circuit from the wizard)
+      `local_installer`  (app_name, file_path) for a single InstallLocalFile
+                          run, from a per-row wizard's Path C
+    """
+
+    def __init__(self, parent: QWidget, t: dict,
+                 groups: list[tuple[str, list[tuple]]], bundles: list[dict]):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self.setFixedWidth(560)
+
+        self._t = t
+        self.selected_ids: list[str] = []
+        self.local_installer: tuple[str, str] | None = None
+        self._rows: dict[str, DevHubRow] = {}
+        self._tool_meta: dict[str, tuple[str, str]] = {}  # id -> (name, url)
+        self._dependents: dict[str, list[str]] = {}        # requires_id -> [dependent ids]
+
+        panel = DepthCard(radius=18, parent=self)
+        panel.setStyleSheet(TH.dialog_panel_qss(t, t["accent"]))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(panel)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setSpacing(10)
+
+        head = QLabel("🎓  Developer Toolkit")
+        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        lay.addWidget(head)
+
+        sub = QLabel("Nothing is pre-selected — tick exactly what you need, "
+                      "or start from a bundle below.")
+        sub.setWordWrap(True)
+        sub.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(sub)
+
+        # -- quick-select bundles --------------------------------
+        bundle_row = QHBoxLayout()
+        bundle_row.setSpacing(8)
+        for bundle in bundles:
+            btn = QPushButton(f"{bundle['icon']}  {bundle['title']}")
+            btn.setFixedHeight(38)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(TH.wizard_link_qss(t, t["accent"]))
+            btn.clicked.connect(lambda checked=False, ids=bundle["app_ids"]: self._apply_bundle(ids))
+            bundle_row.addWidget(btn)
+        lay.addLayout(bundle_row)
+
+        # -- master select all/none -------------------------------
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(16)
+        all_btn = QPushButton("Select All")
+        all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        all_btn.setStyleSheet(TH.link_button_qss(t, t["accent"]))
+        all_btn.clicked.connect(lambda: self._set_all(True))
+        toolbar.addWidget(all_btn)
+
+        none_btn = QPushButton("Deselect All")
+        none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        none_btn.setStyleSheet(TH.link_button_qss(t, t["accent"]))
+        none_btn.clicked.connect(lambda: self._set_all(False))
+        toolbar.addWidget(none_btn)
+        toolbar.addStretch()
+
+        self._count_label = QLabel("0 selected")
+        self._count_label.setStyleSheet(TH.label_qss(t, "caption"))
+        toolbar.addWidget(self._count_label)
+        lay.addLayout(toolbar)
+
+        # -- scrollable, section-grouped checkbox list -------------
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(TH.scroll_area_qss(t))
+        scroll.setMaximumHeight(380)
+
+        host = QWidget()
+        host.setStyleSheet("background: transparent;")
+        host_lay = QVBoxLayout(host)
+        host_lay.setContentsMargins(0, 0, 4, 0)
+        host_lay.setSpacing(10)
+
+        for group_title, tools in groups:
+            section = QLabel(group_title)
+            section.setStyleSheet(TH.label_qss(t, "section"))
+            host_lay.addWidget(section)
+            for app_id, app_name, desc, url, req_id, req_name in tools:
+                row = DevHubRow(app_id, app_name, desc, req_id, req_name, t)
+                row.checkbox.toggled.connect(
+                    lambda checked, aid=app_id: self._on_row_toggled(aid, checked))
+                row.options_requested.connect(self._open_tool_wizard)
+                self._rows[app_id] = row
+                self._tool_meta[app_id] = (app_name, url)
+                if req_id:
+                    self._dependents.setdefault(req_id, []).append(app_id)
+                host_lay.addWidget(row)
+        host_lay.addStretch()
+        scroll.setWidget(host)
+        lay.addWidget(scroll)
+
+        lay.addSpacing(4)
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.setFixedSize(96, 34)
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.setStyleSheet(TH.dialog_cancel_qss(t))
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+
+        self._deploy_btn = QPushButton("Deploy Selected")
+        self._deploy_btn.setFixedSize(150, 34)
+        self._deploy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._deploy_btn.setStyleSheet(TH.dialog_go_qss(t, t["accent"]))
+        self._deploy_btn.clicked.connect(self._accept_selection)
+        row.addWidget(self._deploy_btn)
+        lay.addLayout(row)
+
+    # -- selection state ------------------------------------------
+    def _set_all(self, checked: bool):
+        for row in self._rows.values():
+            row.checkbox.setChecked(checked)
+
+    def _apply_bundle(self, app_ids: list[str]):
+        for app_id in app_ids:
+            row = self._rows.get(app_id)
+            if row is not None:
+                row.checkbox.setChecked(True)
+
+    def _refresh_runtime_suggestion(self, runtime_id: str):
+        """Recompute a runtime row's highlight from scratch: on whenever
+        it's unchecked AND at least one of its (possibly several — e.g.
+        both NetBeans and IntelliJ need Java) dependents is checked.
+        Recomputing fresh rather than reacting to just the row that
+        changed is what keeps this correct when more than one dependent
+        shares the same runtime."""
+        runtime_row = self._rows.get(runtime_id)
+        if runtime_row is None:
+            return
+        dependents = self._dependents.get(runtime_id, [])
+        needs_it = (not runtime_row.is_checked()) and any(
+            self._rows[d].is_checked() for d in dependents if d in self._rows)
+        runtime_row.set_suggested(needs_it)
+
+    def _on_row_toggled(self, app_id: str, checked: bool):
+        # Live dependency nudge: checking an IDE softly highlights its
+        # still-unchecked runtime; unchecking it (or the runtime getting
+        # checked) clears the highlight. Never touches another checkbox.
+        row = self._rows.get(app_id)
+        if row is not None and row.requires_id:
+            self._refresh_runtime_suggestion(row.requires_id)
+        if app_id in self._dependents:
+            self._refresh_runtime_suggestion(app_id)
+
+        count = sum(1 for r in self._rows.values() if r.is_checked())
+        self._count_label.setText(f"{count} selected")
+        self._deploy_btn.setText(f"Deploy Selected ({count})" if count else "Deploy Selected")
+
+    def _accept_selection(self):
+        self.selected_ids = [aid for aid, row in self._rows.items() if row.is_checked()]
+        self.accept()
+
+    # -- per-tool wizard --------------------------------------------
+    def _open_tool_wizard(self, app_id: str):
+        name, url = self._tool_meta.get(app_id, (app_id, ""))
+        desc = self._rows[app_id].checkbox.toolTip()
+        wizard = ToolInstallWizardDialog(self, app_id, name, desc, url, self._t)
+        if wizard.exec() != QDialog.DialogCode.Accepted:
+            return
+        if wizard.mode == "winget":
+            self._set_all(False)
+            self._rows[app_id].checkbox.setChecked(True)
+            self._accept_selection()
+        elif wizard.mode == "local" and wizard.local_path:
+            self.local_installer = (name, wizard.local_path)
+            self.accept()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _animate_dialog_entrance(self)

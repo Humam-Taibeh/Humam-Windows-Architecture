@@ -15,6 +15,42 @@ GUI version, with core changes called out explicitly.
 ## [Unreleased]
 
 ### Added
+- **Developer & University Hub** — a new top-level category, precisely
+  separated from every other app list (zero hardware drivers, zero
+  general-purpose apps): 16 tools across five sections (Core Runtimes &
+  Compilers, IDEs & Editors, AI & Local LLM Stack, Databases & API Tools,
+  Containerization), all new to the catalog except the six migrated from
+  the retired "Programming & AI Core" card. New entries: IntelliJ IDEA
+  Community, Docker Desktop, DBeaver, Postman, Bruno, Open WebUI, Node.js
+  and Java JDK promoted from PATH-doctor-only to directly installable,
+  Python promoted the same way. Every winget ID was verified live via
+  `winget show` before being added — nothing here is guessed.
+  - **`DevHubSelectorDialog`** — manual-first (nothing pre-checked), with
+    a master Select All/Deselect All, three quick-select bundles (Java/
+    University Stack, AI/Python Stack, Web Dev Stack) that tick their
+    tools without forcing anything, live dependency hints (checking
+    NetBeans/IntelliJ/PyCharm softly highlights its still-unchecked
+    runtime — correctly handles two IDEs sharing one runtime, verified
+    with an explicit test), and a per-tool "⋯" button.
+  - **`ToolInstallWizardDialog`** — the "⋯" button's generic 3-path
+    dialog: Path A narrows the normal bulk winget deploy to just that one
+    tool (no new backend code — it's the existing selection/deploy
+    pipeline with one AppId), Path B opens the vendor's official page,
+    Path C hands a picked local installer to the new generic
+    `InstallLocalFile` task (`Invoke-GuiLocalInstall` in
+    `04-SoftwareEngine.ps1`: msiexec for `.msi`, direct run otherwise, no
+    forced elevation — installers that need it self-elevate via their own
+    UAC manifest, same as a manual double-click).
+  - **PATH Doctor**, promoted to its own prominent card in the new hub
+    (moved out of Software Management). Runs at user scope
+    (`[Environment]::SetEnvironmentVariable(..., "User")`) — genuinely no
+    elevation required for a per-user PATH/JAVA_HOME repair; over-elevating
+    a user-scope operation would be a step backward, not a feature.
+  - Fixed a real bug caught during verification: `,@("id","name")`, not
+    `@(@("id","name"))`, for a single-tool catalog array — PowerShell
+    silently flattens the latter (`@( @(x,y) )` unwraps to a flat 2-element
+    array when it's the ONLY item), which broke Docker Desktop's entry
+    until an explicit array-shape test caught it.
 - **Three-path Office wizard** — `OfficeWizardDialog`'s single "locate your
   files" flow is now three up-front paths:
   - **Path A: Automated Cloud Download** (task `InstallOfficeODTAuto`,

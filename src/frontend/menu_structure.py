@@ -42,7 +42,102 @@ Item schema:
              which resolves a setup.exe/configuration.xml pair and passes
              them to core.ps1 as -OfficeSetupPath/-OfficeConfigPath. A task
              using "wizard" should not also set "apps" or "confirm".
+    devhub   bool   when True, the GUI opens widgets.DevHubSelectorDialog
+             (section-grouped checkboxes, quick-select bundles, dependency
+             hints, per-tool "..." install-options button) instead of the
+             plain app selector. Checked before "wizard"/"apps"/"confirm".
+             Sourced from DEV_HUB_GROUPS/DEV_HUB_BUNDLES below, which mirror
+             $Apps_DevRuntimes/DevIDEs/DevAI/DevData/DevContainers and
+             $Script:DevHubBundles/DevHubDependencyHints in 01-Catalogs.ps1.
 """
+
+# ============================================================
+#  DEVELOPER & UNIVERSITY HUB DATA
+#  Mirrors 01-Catalogs.ps1's $Apps_DevRuntimes / DevIDEs / DevAI / DevData /
+#  DevContainers (same IDs, same order, group-for-group) plus
+#  $Script:DevHubBundles / DevHubDependencyHints. The backend is still the
+#  source of truth for what winget ID each entry installs and which task
+#  name runs the bulk deploy (InstallDevHub) - this is the GUI's mirror,
+#  extended with the description/URL/dependency-hint metadata the richer
+#  DevHubSelectorDialog needs that a plain (AppId, DisplayName) pair can't
+#  carry.
+#
+#  Each tool entry: (AppId, DisplayName, WhyYouNeedIt, OfficialUrl,
+#                     RequiresAppId | None, RequiresDisplayName | None)
+# ============================================================
+DEV_HUB_GROUPS = [
+    ("🧩 Core Runtimes & Compilers", [
+        ("Python.Python.3.12", "Python 3.12",
+         "General-purpose language for scripting, data science and AI/ML projects.",
+         "https://www.python.org/downloads/", None, None),
+        ("EclipseAdoptium.Temurin.21.JDK", "Java JDK (Temurin 21)",
+         "The Java Development Kit — compiles and runs Java projects; NetBeans and IntelliJ both need this.",
+         "https://adoptium.net/temurin/releases/", None, None),
+        ("OpenJS.NodeJS.LTS", "Node.js (LTS)",
+         "JavaScript runtime for web backends, build tools and npm packages.",
+         "https://nodejs.org/en/download", None, None),
+        ("Git.Git", "Git / Git Bash",
+         "Version control — track changes and collaborate on any codebase.",
+         "https://git-scm.com/downloads", None, None),
+        ("MSYS2.MSYS2", "GCC / MinGW-w64 Compiler",
+         "C/C++ compiler toolchain for native Windows builds.",
+         "https://www.msys2.org/", None, None),
+    ]),
+    ("🛠️ IDEs & Editors", [
+        ("Microsoft.VisualStudioCode", "VS Code",
+         "Lightweight, extensible code editor — the daily driver for most languages.",
+         "https://code.visualstudio.com/download", None, None),
+        ("Anysphere.Cursor", "Cursor IDE",
+         "AI-native code editor built on VS Code, with built-in AI pair programming.",
+         "https://cursor.sh/", None, None),
+        ("JetBrains.PyCharm.Community", "PyCharm Community",
+         "Full-featured Python IDE with debugging, refactoring and test tools.",
+         "https://www.jetbrains.com/pycharm/download/",
+         "Python.Python.3.12", "Python 3.12"),
+        ("JetBrains.IntelliJIDEA.Community", "IntelliJ IDEA Community",
+         "Full-featured Java IDE with deep code intelligence and refactoring.",
+         "https://www.jetbrains.com/idea/download/",
+         "EclipseAdoptium.Temurin.21.JDK", "Java JDK"),
+        ("Apache.NetBeans", "NetBeans IDE",
+         "Java IDE popular in university courses — project templates and a visual GUI builder.",
+         "https://netbeans.apache.org/download/index.html",
+         "EclipseAdoptium.Temurin.21.JDK", "Java JDK"),
+    ]),
+    ("🧠 AI & Local LLM Stack", [
+        ("Ollama.Ollama", "Ollama (Local LLM Runner)",
+         "Run open-source LLMs (Llama, Mistral, etc.) locally — no cloud required.",
+         "https://ollama.com/download", None, None),
+        ("OpenWebUI.OpenWebUI", "Open WebUI (Local Chat Interface)",
+         "A ChatGPT-style web interface for models running in Ollama.",
+         "https://openwebui.com/", None, None),
+    ]),
+    ("🗄️ Databases & API Tools", [
+        ("DBeaver.DBeaver.Community", "DBeaver (Database Client)",
+         "Universal SQL client — browse and query almost any database.",
+         "https://dbeaver.io/download/", None, None),
+        ("Postman.Postman", "Postman (API Client)",
+         "Build, test and document REST/GraphQL APIs.",
+         "https://www.postman.com/downloads/", None, None),
+        ("Bruno.Bruno", "Bruno (Open-Source API Client)",
+         "A fast, open-source Postman alternative that stores collections as local files.",
+         "https://www.usebruno.com/downloads", None, None),
+    ]),
+    ("🐳 Containerization", [
+        ("Docker.DockerDesktop", "Docker Desktop",
+         "Build and run containers — package an app with everything it needs to run anywhere.",
+         "https://www.docker.com/products/docker-desktop/", None, None),
+    ]),
+]
+
+DEV_HUB_BUNDLES = [
+    {"key": "java-university", "icon": "🎓", "title": "Java / University Stack",
+     "app_ids": ["EclipseAdoptium.Temurin.21.JDK", "Apache.NetBeans",
+                 "JetBrains.IntelliJIDEA.Community", "Git.Git", "Microsoft.VisualStudioCode"]},
+    {"key": "ai-python", "icon": "🧠", "title": "AI / Python Stack",
+     "app_ids": ["Python.Python.3.12", "Ollama.Ollama", "OpenWebUI.OpenWebUI", "Microsoft.VisualStudioCode"]},
+    {"key": "web-dev", "icon": "🌐", "title": "Web Dev Stack",
+     "app_ids": ["OpenJS.NodeJS.LTS", "Git.Git", "Microsoft.VisualStudioCode", "Postman.Postman"]},
+]
 
 # ============================================================
 #  CATEGORIES  (rendered top-to-bottom in the sidebar)
@@ -70,19 +165,7 @@ CATEGORIES = [
                  ("Apple.iTunes", "iTunes"),
                  ("7zip.7zip", "7-Zip"),
                  ("VideoLAN.VLC", "VLC Media Player"),
-             ]},
-            {"icon": "👨‍💻", "title": "Programming & AI Core",
-             "desc": "Developer toolchain — languages, editors and AI tooling — deployed silently.",
-             "task": "InstallDevApps", "timeout": 3600, "confirm": True,
-             "apps": [
-                 ("Anysphere.Cursor", "Cursor IDE"),
-                 ("Microsoft.VisualStudioCode", "VS Code"),
-                 ("JetBrains.PyCharm.Community", "PyCharm"),
-                 ("Apache.NetBeans", "NetBeans IDE"),
-                 ("MSYS2.MSYS2", "GCC Compiler"),
-                 ("Ollama.Ollama", "Ollama AI"),
                  ("TheDocumentFoundation.LibreOffice", "LibreOffice"),
-                 ("Git.Git", "Git"),
              ]},
             {"icon": "🎮", "title": "Gaming Launchers",
              "desc": "Steam, Epic and the other launchers you actually use, in one pass.",
@@ -126,13 +209,28 @@ CATEGORIES = [
             {"icon": "🚀", "title": "Startup Report",
              "desc": "Audit everything that launches at boot (Run keys + Startup folders).",
              "task": "StartupReport", "timeout": 300},
-            {"icon": "🧭", "title": "Verify Dev Environment",
-             "desc": "PATH doctor — audit Git, Python, Java, VS Code, GCC, Node & Ollama and auto-repair missing PATH/JAVA_HOME entries.",
+        ],
+    },
+    # --------------------------------------------------------
+    #  2. DEVELOPER & UNIVERSITY HUB
+    # --------------------------------------------------------
+    {
+        "id": "devhub",
+        "icon": "🎓",
+        "title": "Developer & University Hub",
+        "tagline": "Runtimes, compilers, IDEs and study tools — zero drivers, zero clutter",
+        "accent": "#a78bfa",
+        "items": [
+            {"icon": "🧰", "title": "Developer Toolkit",
+             "desc": "Runtimes, IDEs, AI tools, databases and containers — pick exactly what you need.",
+             "task": "InstallDevHub", "timeout": 3600, "devhub": True},
+            {"icon": "🧭", "title": "PATH Doctor (Auto-Fix Environment)",
+             "desc": "Audits Git, Python, Java, VS Code, GCC, Node & Ollama and repairs missing PATH/JAVA_HOME entries — user-scope, no elevation needed.",
              "task": "VerifyEnvironment", "timeout": 300},
         ],
     },
     # --------------------------------------------------------
-    #  2. SYSTEM OPTIMIZATION
+    #  3. SYSTEM OPTIMIZATION
     # --------------------------------------------------------
     {
         "id": "optimization",
@@ -174,7 +272,7 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  3. MAINTENANCE & REPAIR
+    #  4. MAINTENANCE & REPAIR
     # --------------------------------------------------------
     {
         "id": "maintenance",
@@ -207,7 +305,7 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  4. PRIVACY & SECURITY
+    #  5. PRIVACY & SECURITY
     # --------------------------------------------------------
     {
         "id": "privacy",
@@ -234,7 +332,7 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  5. INFORMATION & UTILITIES
+    #  6. INFORMATION & UTILITIES
     # --------------------------------------------------------
     {
         "id": "information",
@@ -261,7 +359,7 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  6. SAFETY & RECOVERY
+    #  7. SAFETY & RECOVERY
     # --------------------------------------------------------
     {
         "id": "safety",

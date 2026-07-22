@@ -50,11 +50,13 @@ if _SRC_DIR not in sys.path:
 from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
-from frontend.menu_structure import CATEGORIES, total_operations  # noqa: E402
+from frontend.menu_structure import (  # noqa: E402
+    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, total_operations,
+)
 from frontend.widgets import (  # noqa: E402
-    AppSelectorDialog, BreathingIcon, CommandPalette, ConfirmDialog, DepthCard,
-    GlassCard, LiveConsole, NavButton, NavPill, OfficeWizardDialog, StatePill,
-    StatusDot, TitleBar,
+    AppSelectorDialog, BreathingIcon, CommandPalette, ConfirmDialog,
+    DepthCard, DevHubSelectorDialog, GlassCard, LiveConsole, NavButton,
+    NavPill, OfficeWizardDialog, StatePill, StatusDot, TitleBar,
 )
 
 # ============================================================
@@ -625,7 +627,24 @@ class PulseApp(QMainWindow):
 
         app_ids: list[str] | None = None
         office_paths: tuple[str, str] | None = None
-        if item.get("wizard") == "office":
+        local_installer: tuple[str, str] | None = None
+        if item.get("devhub"):
+            dialog = DevHubSelectorDialog(self, self.theme.t, DEV_HUB_GROUPS, DEV_HUB_BUNDLES)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            if dialog.local_installer:
+                # A per-tool "⋯" wizard resolved to Path C (a local file) —
+                # run the generic single-installer task instead of the bulk
+                # InstallDevHub deploy.
+                local_installer = dialog.local_installer
+                item = {**item, "task": "InstallLocalFile"}
+            elif dialog.selected_ids:
+                app_ids = dialog.selected_ids
+            else:
+                self.toasts.show(
+                    "info", "No tools were selected — nothing to deploy.", 3500)
+                return
+        elif item.get("wizard") == "office":
             wizard = OfficeWizardDialog(self, self.theme.t)
             if wizard.exec() != QDialog.DialogCode.Accepted:
                 return
@@ -653,11 +672,12 @@ class PulseApp(QMainWindow):
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
 
-        self._start_task(item, card, app_ids, office_paths)
+        self._start_task(item, card, app_ids, office_paths, local_installer)
 
     def _start_task(self, item: dict, card: GlassCard | None,
                      app_ids: list[str] | None = None,
-                     office_paths: tuple[str, str] | None = None):
+                     office_paths: tuple[str, str] | None = None,
+                     local_installer: tuple[str, str] | None = None):
         self._running_card = card
         if card is not None:
             card.set_running(True)
@@ -675,7 +695,8 @@ class PulseApp(QMainWindow):
             self.ps1_path, item["task"], timeout=item.get("timeout", DEFAULT_TIMEOUT),
             app_ids=app_ids,
             office_setup=office_paths[0] if office_paths else None,
-            office_config=office_paths[1] if office_paths else None)
+            office_config=office_paths[1] if office_paths else None,
+            local_installer_path=local_installer[1] if local_installer else None)
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run)

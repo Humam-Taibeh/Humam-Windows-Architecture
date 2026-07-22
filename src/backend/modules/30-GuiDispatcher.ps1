@@ -135,7 +135,21 @@ function Invoke-GuiTask {
 
             # ============ 1. SOFTWARE MANAGEMENT ============
             "InstallEssentialApps"   { Invoke-GuiBulkDeploy $Apps_Basic "Essential Apps" -SelectedIds $Script:SelectedAppIds; break }
-            "InstallDevApps"         { Invoke-GuiBulkDeploy $Apps_Dev "Programming & AI Core" -SelectedIds $Script:SelectedAppIds; break }
+            "InstallDevHub"          { Invoke-GuiBulkDeploy $Apps_DevHubAll "Developer & University Hub" -SelectedIds $Script:SelectedAppIds; break }
+            "InstallLocalFile" {
+                if ([string]::IsNullOrWhiteSpace($LocalInstallerPath)) {
+                    Write-Output "##PULSE##ERROR|No installer file was supplied."
+                    break
+                }
+                $Ok = Invoke-GuiLocalInstall -FilePath $LocalInstallerPath
+                if ($Ok) {
+                    $Prefix = if ($Script:DryRun) { "[DRY-RUN] " } else { "" }
+                    Write-Output "##PULSE##SUCCESS|${Prefix}Installer finished. Verify the app is present."
+                } else {
+                    Write-Output "##PULSE##ERROR|The installer failed. See the Pulse log (Information > View Operation Log)."
+                }
+                break
+            }
             "InstallGamingApps" {
                 $HW = Hardware-Check
                 if ($HW.GPUApp) {

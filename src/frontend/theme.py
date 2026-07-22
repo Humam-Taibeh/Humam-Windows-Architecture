@@ -548,6 +548,41 @@ def warning_banner_qss(t: dict) -> str:
     """
 
 
+def dev_hub_row_qss(t: dict) -> str:
+    """Dev Hub selector row — like app_row_qss but with a 'suggested'
+    state: a soft amber highlight when this tool is a checked-off IDE's
+    unmet runtime dependency (see widgets.DevHubRow / DevHubSelectorDialog's
+    dependency-hint nudge — 'subtly suggests', never auto-forces a check)."""
+    return f"""
+        QFrame {{
+            background: {t['card']};
+            border: 1px solid {t['card_line']};
+            border-radius: 10px;
+        }}
+        QFrame:hover {{ border: 1px solid {alpha(t['accent'], 0.35)}; }}
+        QFrame[suggested="true"] {{
+            border: 1px solid {alpha(t['warn'], 0.55)};
+            background: {alpha(t['warn'], 0.07)};
+        }}
+    """
+
+
+def icon_ghost_button_qss(t: dict, accent: str) -> str:
+    """Small ghost icon-only button — the Dev Hub row's per-tool '⋯'
+    install-options trigger."""
+    return f"""
+        QPushButton {{
+            background: transparent; border: 1px solid {t['card_line']};
+            border-radius: 6px; color: {t['text_muted']}; font-size: 13px; font-weight: 700;
+        }}
+        QPushButton:hover {{
+            background: {alpha(accent, 0.14)}; border: 1px solid {alpha(accent, 0.45)};
+            color: {accent};
+        }}
+        QPushButton:pressed {{ background: {alpha(accent, 0.24)}; }}
+    """
+
+
 def link_button_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
