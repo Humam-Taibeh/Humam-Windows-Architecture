@@ -50,11 +50,28 @@ function Get-InstalledVersion {
     foreach ($Line in $Lines) {
         $Trimmed = $Line.Trim()
         if ([string]::IsNullOrWhiteSpace($Trimmed)) { continue }
-        $Cols = [regex]::Split($Trimmed, '\s{2,}')
-        if ($Cols.Count -ge 3) {
-            if ($Cols[1] -eq $AppId -or $Cols[1] -eq $AppName) {
-                return $Cols[2]
-            }
+        # NOT a `\s{2,}` column split: winget only right-pads columns to
+        # align them for a real interactive console. The instant Pulse
+        # captures its output (every call site here does), that alignment
+        # can collapse to single spaces, so a 2+-space split silently
+        # merges the Id/Version/Source columns into the Name column and
+        # this always returned null - the "instant skip" fast path quietly
+        # never firing, every deploy falling through to a live winget
+        # upgrade call it didn't need to make. IDs and versions never
+        # contain spaces, so instead: split on ANY whitespace and read the
+        # token AFTER an exact AppId match as the version.
+        $Tokens = [regex]::Split($Trimmed, '\s+')
+        # AppId match takes strict priority and is checked in its own pass:
+        # winget package IDs (e.g. "Git.Git") never collide with a Name
+        # column value, whereas Pulse's own catalog display name
+        # occasionally could (e.g. "7-Zip") if it's a single word AND
+        # happens to precede the real Id token - checking AppId first,
+        # fully, before ever falling back to AppName avoids that.
+        for ($i = 0; $i -lt $Tokens.Count - 1; $i++) {
+            if ($Tokens[$i] -eq $AppId) { return $Tokens[$i + 1] }
+        }
+        for ($i = 0; $i -lt $Tokens.Count - 1; $i++) {
+            if ($Tokens[$i] -eq $AppName) { return $Tokens[$i + 1] }
         }
     }
     return $null
@@ -107,18 +124,55 @@ function Invoke-Chocolatey {
     }
 }
 
+# Winget exit codes that mean "nothing needed to change" - all three
+# resolve to Success + AlreadyCurrent below. Kept as one list so the
+# pre-retry gate in Smart-Deploy (never force-retry a no-op result) and
+# Resolve-WingetExitCode read from the same source of truth.
+$Script:WingetAlreadyCurrentCodes = @(-1978335212, -1978335153, -1978335189)
+
 function Resolve-WingetExitCode {
+    <#
+    .SYNOPSIS
+        Translates a winget process exit code into Success/AlreadyCurrent/
+        Message. Every non-generic code below was cross-checked against
+        winget-cli's own AppInstallerErrors.h (FACILITY_WINGET, 0x8A15xxxx)
+        - a prior version of this function had three of these mapped to the
+        wrong meaning (copied from an unverified forum post, near as we can
+        tell), including treating an installer HASH MISMATCH as a silent
+        success. That is a security-relevant bug (a corrupted or tampered
+        download reported as "completed successfully"), not just a wording
+        nitpick, so it's called out explicitly rather than folded in quietly.
+    #>
     param([int]$Code)
     switch ($Code) {
-        0            { return @{ Success = $true;  Message = "Completed successfully." } }
-        3010         { return @{ Success = $true;  Message = "Completed successfully. A reboot is recommended." } }
-        -1978335212  { return @{ Success = $true;  Message = "Already up to date." } }
-        -1978335215  { return @{ Success = $true;  Message = "No applicable upgrade was found." } }
-        -1978335189  { return @{ Success = $false; Message = "Package not found in configured sources." } }
-        -1978335153  { return @{ Success = $false; Message = "Target file is in use by another process." } }
-        1602         { return @{ Success = $false; Message = "Installer was cancelled." } }
-        1            { return @{ Success = $false; Message = "Generic failure (Exit Code 1)." } }
-        default      { return @{ Success = $false; Message = "Unhandled exit code ($Code)." } }
+        0            { return @{ Success = $true;  AlreadyCurrent = $false; Message = "Completed successfully." } }
+        3010         { return @{ Success = $true;  AlreadyCurrent = $false; Message = "Completed successfully. A reboot is recommended." } }
+        # 0x8A150014 NO_APPLICATIONS_FOUND - `winget upgrade --id X --exact`
+        # searches the AVAILABLE-UPGRADES list; an up-to-date package isn't
+        # in it, so the id lookup finds nothing. The common real-world
+        # "already current" signal for upgrades.
+        -1978335212  { return @{ Success = $true;  AlreadyCurrent = $true;  Message = "Already up to date." } }
+        # 0x8A15004F UPGRADE_VERSION_NOT_NEWER - resolved candidate isn't
+        # newer than what's installed. Also "already current", not a file
+        # lock (that was this code's previous, incorrect label).
+        -1978335153  { return @{ Success = $true;  AlreadyCurrent = $true;  Message = "Already up to date." } }
+        # 0x8A15002B UPDATE_NOT_APPLICABLE - same "nothing to do" family.
+        # Also not "package not found" (that was this code's previous,
+        # incorrect label).
+        -1978335189  { return @{ Success = $true;  AlreadyCurrent = $true;  Message = "Already up to date." } }
+        # 0x8A150011 INSTALLER_HASH_MISMATCH - the downloaded installer's
+        # hash didn't match the manifest. A real failure (possible
+        # corruption or tampering) - previously mislabeled "no applicable
+        # upgrade" and treated as a silent success.
+        -1978335215  { return @{ Success = $false; AlreadyCurrent = $false; Message = "Installer hash didn't match the expected value (corrupted or tampered download). Try again." } }
+        # 0x8A150006 SHELLEXEC_INSTALL_FAILED - winget launched the
+        # installer, but the installer itself exited non-zero. Common with
+        # MSYS2 when a previous MSYS2/MinGW terminal is still open (locked
+        # files) - Stop-LockingProcesses now covers it (see LockProcessMap).
+        -1978335226  { return @{ Success = $false; AlreadyCurrent = $false; Message = "The installer itself reported a failure - often caused by a previous install still open (close any MSYS2/MinGW terminals for GCC, for example) or a locked file. Try again after closing related apps." } }
+        1602         { return @{ Success = $false; AlreadyCurrent = $false; Message = "Installer was cancelled." } }
+        1            { return @{ Success = $false; AlreadyCurrent = $false; Message = "Generic failure (Exit Code 1)." } }
+        default      { return @{ Success = $false; AlreadyCurrent = $false; Message = "Unhandled exit code ($Code)." } }
     }
 }
 
@@ -211,8 +265,8 @@ function Smart-Deploy {
 
         $InstalledVer = Get-InstalledVersion -AppId $AppId -AppName $AppName
         if ($InstalledVer) {
-            Write-Success "$AppName is already installed (version $InstalledVer)."
-            return @{Status='Success'; Message='Already installed'}
+            Write-AlreadyOK "$AppName -> already installed (v$InstalledVer) - skipped."
+            return @{Status='Success'; AlreadyCurrent=$true; Message='Already installed'}
         }
 
         if ($Script:DryRun) {
@@ -264,8 +318,8 @@ function Smart-Deploy {
 
     if ($CurrentVersion) {
         if ($CurrentVersion -eq $LatestVersion -or $LatestVersion -eq "Unknown") {
-            Write-Success "$AppName is already current (v$CurrentVersion)."
-            return @{Status='Success'; Message='Already current'}
+            Write-AlreadyOK "$AppName -> already up to date (v$CurrentVersion) - skipped."
+            return @{Status='Success'; AlreadyCurrent=$true; Message='Already up to date'}
         }
         Write-Warn "$AppName update available: $CurrentVersion -> $LatestVersion"
     } else {
@@ -325,7 +379,9 @@ function Smart-Deploy {
         $Code = Invoke-Winget -ArgList @("install", "--id", $AppId, "--exact", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity")
     }
 
-    if ($Code -ne 0 -and $Code -ne -1978335212) {
+    if ($Code -ne 0 -and $Script:WingetAlreadyCurrentCodes -notcontains $Code) {
+        # Never force-retry a code that just means "nothing to do" - that
+        # would force an unnecessary reinstall instead of honoring the skip.
         Write-Warn "First attempt failed. Retrying with force flags..."
         Start-Sleep -Seconds 3
         if ($CurrentVersion) {
@@ -338,12 +394,16 @@ function Smart-Deploy {
     $Result = Resolve-WingetExitCode -Code $Code
 
     if ($Result.Success) {
-        Write-Success "$AppName -> $($Result.Message)"
+        if ($Result.AlreadyCurrent) {
+            Write-AlreadyOK "$AppName -> $($Result.Message) - skipped."
+        } else {
+            Write-Success "$AppName -> $($Result.Message)"
+        }
         if ($Script:DevAppPaths.ContainsKey($AppId)) { Register-DevPath -AppId $AppId -AppName $AppName }
-        if ($Result.Message -notmatch '^Already') {
+        if (-not $Result.AlreadyCurrent) {
             Test-DevDependencySuggestion -AppId $AppId
         }
-        return @{Status='Success'; Message=$Result.Message}
+        return @{Status='Success'; AlreadyCurrent=$Result.AlreadyCurrent; Message=$Result.Message}
     } else {
         Write-ErrorX "$AppName failed: $($Result.Message)"
         if (-not $Bulk -and -not $Script:NonInteractive) {
@@ -423,14 +483,15 @@ function Process-AppCategory {
         foreach ($App in $AppList) {
             $res = Smart-Deploy -AppId $App[0] -AppName $App[1] -Bulk -BulkMethod $method
             if ($res.Status -eq 'Quit') { break }
-            $results[$App[1]] = $res.Status
+            $results[$App[1]] = $res
         }
 
         Write-Divider
-        $success = ($results.GetEnumerator() | Where-Object { $_.Value -eq 'Success' }).Count
-        $failed  = ($results.GetEnumerator() | Where-Object { $_.Value -eq 'Failed' }).Count
-        $skipped = ($results.GetEnumerator() | Where-Object { $_.Value -eq 'Skipped' }).Count
-        Write-Info "Bulk summary for '$CategoryName': $success succeeded, $failed failed, $skipped skipped."
+        $success = ($results.GetEnumerator() | Where-Object { $_.Value.Status -eq 'Success' -and -not $_.Value.AlreadyCurrent }).Count
+        $current = ($results.GetEnumerator() | Where-Object { $_.Value.Status -eq 'Success' -and $_.Value.AlreadyCurrent }).Count
+        $failed  = ($results.GetEnumerator() | Where-Object { $_.Value.Status -eq 'Failed' }).Count
+        $skipped = ($results.GetEnumerator() | Where-Object { $_.Value.Status -eq 'Skipped' }).Count
+        Write-Info "Bulk summary for '$CategoryName': $success installed, $current already up to date, $failed failed, $skipped skipped."
         return "OK"
     }
 

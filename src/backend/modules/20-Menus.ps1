@@ -505,8 +505,11 @@ function Show-MainMenu {
         Write-Host "   [WHATIF] DRY-RUN MODE ACTIVE - every operation is simulated only." -ForegroundColor DarkYellow
         Write-Divider
     }
-    if ($Script:SessionSuccessCount -gt 0 -or $Script:SessionFailCount -gt 0) {
-        Write-Host "   📈 Session so far: $Script:SessionSuccessCount succeeded / $Script:SessionFailCount failed" -ForegroundColor DarkGray
+    if ($Script:SessionSuccessCount -gt 0 -or $Script:SessionFailCount -gt 0 -or $Script:SessionSkipCount -gt 0) {
+        $SessionParts = @("$Script:SessionSuccessCount succeeded")
+        if ($Script:SessionSkipCount -gt 0) { $SessionParts += "$Script:SessionSkipCount already up to date" }
+        $SessionParts += "$Script:SessionFailCount failed"
+        Write-Host "   📈 Session so far: $($SessionParts -join ' / ')" -ForegroundColor DarkGray
         Write-Divider
     }
     if ($Script:PendingRestart) {

@@ -167,6 +167,12 @@ CATEGORIES = [
                  ("VideoLAN.VLC", "VLC Media Player"),
                  ("TheDocumentFoundation.LibreOffice", "LibreOffice"),
              ]},
+            {"icon": "🎓", "title": "Developer & University Hub",
+             "desc": "Runtimes, compilers, IDEs, AI tools, databases and containers — pick exactly what you need.",
+             "task": "InstallDevHub", "timeout": 3600, "devhub": True},
+            {"icon": "🧭", "title": "PATH Doctor (Auto-Fix Environment)",
+             "desc": "Makes sure Windows can find your dev tools by name in any terminal — checks Git, Python, Java, VS Code, GCC, Node & Ollama and fixes any that aren't wired up yet.",
+             "task": "VerifyEnvironment", "timeout": 300},
             {"icon": "🎮", "title": "Gaming Launchers",
              "desc": "Steam, Epic and the other launchers you actually use, in one pass.",
              "task": "InstallGamingApps", "timeout": 3600, "confirm": True,
@@ -212,25 +218,7 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  2. DEVELOPER & UNIVERSITY HUB
-    # --------------------------------------------------------
-    {
-        "id": "devhub",
-        "icon": "🎓",
-        "title": "Developer & University Hub",
-        "tagline": "Runtimes, compilers, IDEs and study tools — zero drivers, zero clutter",
-        "accent": "#a78bfa",
-        "items": [
-            {"icon": "🧰", "title": "Developer Toolkit",
-             "desc": "Runtimes, IDEs, AI tools, databases and containers — pick exactly what you need.",
-             "task": "InstallDevHub", "timeout": 3600, "devhub": True},
-            {"icon": "🧭", "title": "PATH Doctor (Auto-Fix Environment)",
-             "desc": "Audits Git, Python, Java, VS Code, GCC, Node & Ollama and repairs missing PATH/JAVA_HOME entries — user-scope, no elevation needed.",
-             "task": "VerifyEnvironment", "timeout": 300},
-        ],
-    },
-    # --------------------------------------------------------
-    #  3. SYSTEM OPTIMIZATION
+    #  2. SYSTEM OPTIMIZATION
     # --------------------------------------------------------
     {
         "id": "optimization",
@@ -272,7 +260,7 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  4. MAINTENANCE & REPAIR
+    #  3. MAINTENANCE & REPAIR
     # --------------------------------------------------------
     {
         "id": "maintenance",
@@ -305,7 +293,7 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  5. PRIVACY & SECURITY
+    #  4. PRIVACY & SECURITY
     # --------------------------------------------------------
     {
         "id": "privacy",
@@ -332,7 +320,7 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  6. INFORMATION & UTILITIES
+    #  5. INFORMATION & UTILITIES
     # --------------------------------------------------------
     {
         "id": "information",
@@ -359,7 +347,7 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  7. SAFETY & RECOVERY
+    #  6. SAFETY & RECOVERY
     # --------------------------------------------------------
     {
         "id": "safety",

@@ -74,6 +74,7 @@ $Script:RestorePointCreated = $false
 $Script:PendingRestart      = $false
 $Script:SessionSuccessCount = 0
 $Script:SessionFailCount    = 0
+$Script:SessionSkipCount    = 0
 $Script:LastBulkChoice      = $null
 
 # ---- SAFETY NET STATE (v3.3+) ---------------------------------------------
@@ -187,11 +188,22 @@ function Write-ModulePreview {
     Write-Host ""
 }
 
+# Strict status vocabulary - three colors, three meanings, everywhere:
+#   Green  (check) = succeeded, working, or already in the desired state
+#   Red    (cross)  = failed / critical error
+#   Yellow (!)      = warning, missing dependency, or a notice
+# Write-AlreadyOK intentionally shares Write-Success's green+check (the
+# color scheme groups "up to date" under success - see Write-AlreadyOK's
+# own note below); the wording is what tells the two apart, not the color.
 function Write-Info    { param($Text) Write-Host "   $Text" -ForegroundColor DarkGray; Write-Log $Text }
 function Write-Success { param($Text) Write-Host "   $Script:Check  $Text" -ForegroundColor Green; Write-Log "SUCCESS: $Text"; $Script:SessionSuccessCount++ }
 function Write-Warn    { param($Text) Write-Host "   !  $Text" -ForegroundColor Yellow; Write-Log "WARN: $Text" }
 function Write-ErrorX  { param($Text) Write-Host "   $Script:Cross  $Text" -ForegroundColor Red; Write-Log "ERROR: $Text"; $Script:SessionFailCount++ }
-function Write-AlreadyOK { param($Text) Write-Host "   $Script:Check  $Text" -ForegroundColor DarkCyan; Write-Log "ALREADY-OK: $Text" }
+# Smart-skip / "already done" status - same green+check as Write-Success by
+# design (previously a mismatched DarkCyan, which is exactly the kind of
+# inconsistency a strict 3-color scheme rules out), counted separately so
+# the session summary can distinguish "did work" from "nothing to do".
+function Write-AlreadyOK { param($Text) Write-Host "   $Script:Check  $Text" -ForegroundColor Green; Write-Log "ALREADY-OK: $Text"; $Script:SessionSkipCount++ }
 
 # ============================================================
 #  INTERACTIVE PROMPT PRIMITIVES (NonInteractive-guarded)

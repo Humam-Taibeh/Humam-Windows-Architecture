@@ -197,6 +197,12 @@ $Script:LockProcessMap = @{
     "Microsoft.Teams"            = @("Teams", "ms-teams")
     "Microsoft.OneDrive"         = @("OneDrive")
     "Docker.DockerDesktop"       = @("Docker Desktop", "com.docker.backend", "com.docker.build")
+    # MSYS2's installer is a shell-executed process (winget exit code
+    # -1978335226 / SHELLEXEC_INSTALL_FAILED when it fails) - a leftover
+    # MSYS2/MinGW terminal or pacman process holding files open is the most
+    # common real-world cause. Pre-emptively closing them avoids the
+    # conflict instead of just reporting a cryptic failure afterward.
+    "MSYS2.MSYS2"                = @("mintty", "bash", "pacman")
 }
 
 # ============================================================
@@ -237,20 +243,30 @@ $Script:DevDependencyMap = @{
 #  EnvVarName : optional companion variable (e.g. JAVA_HOME) set to the
 #            tool's home directory (parent of its bin dir) when absent.
 # ============================================================
+# `Why` is the plain-language reason PATH matters for this tool - shown by
+# Verify-Environment (03-Environment.ps1) so "PATH doctor" reads like a
+# helpful assistant explaining itself, not a cryptic systems tool.
 $Script:DevToolCatalog = @(
     @{ Command = "git";    Name = "Git";        WingetId = "Git.Git"
+       Why     = "so any terminal or IDE can run git for you - version control that just works, everywhere."
        Probes  = @("$env:ProgramFiles\Git\cmd", "${env:ProgramFiles(x86)}\Git\cmd", "$env:LOCALAPPDATA\Programs\Git\cmd") }
     @{ Command = "python"; Name = "Python";     WingetId = "Python.Python.3.12"
+       Why     = "so typing 'python' in any terminal runs it, instead of only from its install folder."
        Probes  = @("$env:LOCALAPPDATA\Programs\Python\Python3*", "$env:ProgramFiles\Python3*") }
     @{ Command = "javac";  Name = "Java JDK";   WingetId = "EclipseAdoptium.Temurin.21.JDK"; EnvVarName = "JAVA_HOME"
+       Why     = "so 'javac'/'java' work everywhere, and JAVA_HOME lets IDEs like NetBeans/IntelliJ find your JDK automatically."
        Probes  = @("$env:ProgramFiles\Eclipse Adoptium\jdk*\bin", "$env:ProgramFiles\Java\jdk*\bin", "$env:ProgramFiles\Microsoft\jdk*\bin") }
     @{ Command = "code";   Name = "VS Code";    WingetId = "Microsoft.VisualStudioCode"
+       Why     = "so typing 'code' in a terminal opens VS Code right there, instead of hunting through the Start menu."
        Probes  = @("$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin", "$env:ProgramFiles\Microsoft VS Code\bin") }
     @{ Command = "gcc";    Name = "GCC (MSYS2)"; WingetId = "MSYS2.MSYS2"
+       Why     = "so 'gcc' works from any terminal to compile C/C++ code."
        Probes  = @("C:\msys64\mingw64\bin", "C:\msys64\ucrt64\bin") }
     @{ Command = "node";   Name = "Node.js";    WingetId = "OpenJS.NodeJS.LTS"
+       Why     = "so 'node' and 'npm' work from any terminal to run JavaScript projects and install packages."
        Probes  = @("$env:ProgramFiles\nodejs") }
     @{ Command = "ollama"; Name = "Ollama";     WingetId = "Ollama.Ollama"
+       Why     = "so 'ollama' works from any terminal to run local AI models."
        Probes  = @("$env:LOCALAPPDATA\Programs\Ollama") }
 )
 

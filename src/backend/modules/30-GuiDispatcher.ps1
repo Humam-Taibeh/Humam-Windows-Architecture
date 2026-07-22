@@ -77,7 +77,7 @@ function Invoke-GuiBulkDeploy {
             return
         }
     }
-    $ok = 0; $failed = 0; $skipped = 0
+    $ok = 0; $current = 0; $failed = 0; $skipped = 0
     $Queue = @()
     foreach ($App in $AppList) {
         if ($SelectedIds.Count -gt 0 -and -not ($SelectedIds -contains $App[0])) { continue }
@@ -93,16 +93,25 @@ function Invoke-GuiBulkDeploy {
     foreach ($App in $Queue) {
         $res = Smart-Deploy -AppId $App[0] -AppName $App[1] -Bulk -BulkMethod 'auto'
         switch ($res.Status) {
-            'Success' { $ok++ }
+            'Success' { if ($res.AlreadyCurrent) { $current++ } else { $ok++ } }
             'Failed'  { $failed++ }
             default   { $skipped++ }
         }
     }
     $Prefix = if ($Script:DryRun) { "[DRY-RUN] " } else { "" }
+    # Precise, distinct buckets - "already up to date" is its own clause,
+    # not lumped into "installed" (the old wording papered over the
+    # difference with "installed or already current").
+    $Parts = @()
+    if ($ok)      { $Parts += "$ok installed" }
+    if ($current) { $Parts += "$current already up to date" }
+    if ($skipped) { $Parts += "$skipped skipped" }
+    if ($Parts.Count -eq 0) { $Parts += "nothing to do" }
+    $Summary = $Parts -join ', '
     if ($failed -eq 0) {
-        Write-Output "##PULSE##SUCCESS|$Prefix$CategoryName — $ok installed or already current, $skipped skipped."
+        Write-Output "##PULSE##SUCCESS|$Prefix$CategoryName — $Summary."
     } else {
-        Write-Output "##PULSE##ERROR|$CategoryName — $failed failed, $ok succeeded, $skipped skipped. See the Pulse log (Information > View Operation Log)."
+        Write-Output "##PULSE##ERROR|$CategoryName — $failed failed, $Summary. See the Pulse log (Information > View Operation Log)."
     }
 }
 
@@ -214,10 +223,14 @@ function Invoke-GuiTask {
                 $Report = Verify-Environment
                 $MissingTxt = ""
                 if ($Report.MissingCount -gt 0) {
-                    $MissingTxt = " Missing: $($Report.MissingNames -join ', ') (winget ids are in the log)."
+                    $MissingTxt = " Not installed yet: $($Report.MissingNames -join ', ') (winget ids are in the log)."
                 }
                 $Prefix = if ($Script:DryRun) { "[DRY-RUN] " } else { "" }
-                Write-Output "##PULSE##SUCCESS|${Prefix}Dev environment verified: $($Report.OkCount) tool(s) OK, $($Report.RepairedCount) PATH/env repair(s), $($Report.MissingCount) missing.$MissingTxt"
+                if ($Report.MissingCount -eq 0 -and $Report.RepairedCount -eq 0) {
+                    Write-Output "##PULSE##SUCCESS|${Prefix}Everything's wired up correctly - all $($Report.OkCount) dev tool(s) are ready to use from any terminal."
+                } else {
+                    Write-Output "##PULSE##SUCCESS|${Prefix}PATH doctor: $($Report.OkCount) already working, $($Report.RepairedCount) fixed automatically.$MissingTxt"
+                }
                 break
             }
 

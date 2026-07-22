@@ -14,7 +14,84 @@ GUI version, with core changes called out explicitly.
 
 ## [Unreleased]
 
+### Fixed
+- **Console UTF-8 output encoding** — `core.ps1`'s interactive console mode
+  never set `[Console]::OutputEncoding`, so on the default OEM code page
+  (437 on US-English Windows, confirmed live) every box-drawing character
+  and status glyph (✓/✗/═/║) rendered as mangled question marks and
+  garbage. The GUI's spawned subprocess already had this fix
+  (`helpers.PowerShellTask` sets it before invoking `core.ps1`); the
+  interactive console never did. This was very likely the actual cause of
+  "the UI looks chaotic" — verified before/after with the exact same
+  glyphs: garbage without the fix, clean boxes with it.
+- **Three winget exit codes were mislabeled** in `Resolve-WingetExitCode`,
+  cross-checked against winget-cli's own `AppInstallerErrors.h` (not
+  memory or a forum post): `-1978335215` was labeled "no applicable
+  upgrade" and treated as a **silent success** — it's actually
+  `INSTALLER_HASH_MISMATCH`, a corrupted-or-tampered-download failure that
+  was being reported as "completed successfully." `-1978335189` and
+  `-1978335153` were labeled "package not found" / "file in use" — both
+  are actually "nothing to update" signals and are now correctly treated
+  as an already-up-to-date skip instead of a failure. Added the exit code
+  from this request, `-1978335226` (`SHELLEXEC_INSTALL_FAILED` — the
+  wrapped installer itself failed, the common MSYS2 case), with a
+  specific, actionable message instead of a generic "unhandled exit code."
+- **`Get-InstalledVersion`'s column parsing was silently broken** for
+  every call site: it split `winget list` output on 2+ spaces, but winget
+  only pads columns for a real interactive console — the instant Pulse
+  captures the output (which is always), padding can collapse to a single
+  space and the split always failed, meaning the "already up to date"
+  fast-path check *always* fell through to a live `winget upgrade`
+  invocation it didn't need to make. Fixed to find the exact-match AppId
+  token and read the next token as the version — verified against a real
+  installed package (Git) confirming the instant-skip path now actually
+  fires, plus a constructed edge case where the display name collides
+  with winget's own Name column.
+- Retry-with-`--force` no longer fires on an "already current" exit code
+  it didn't recognize — the gate checked one hardcoded code, so the two
+  newly-recognized "nothing to update" codes would have forced an
+  unnecessary reinstall instead of honoring the skip.
+
 ### Added
+- **Smart Skip, made visible**: `Smart-Deploy` now returns a distinct
+  `AlreadyCurrent` flag alongside `Status='Success'` (never renamed
+  `Status` itself — several existing call sites checked `-eq 'Success'`
+  directly and would have silently broken from a rename). Already-current
+  results now print with `Write-AlreadyOK` (green ✓, same color as
+  `Write-Success` by design — see the color-scheme note below) and a
+  distinct "already up to date - skipped" message, and both
+  `Invoke-GuiBulkDeploy` (GUI) and `Process-AppCategory` (console) tally
+  them in their own bucket: "3 installed, 2 already up to date" instead of
+  the old blended "5 installed or already current."
+- **Strict 3-color status scheme, enforced**: `Write-AlreadyOK` used a
+  mismatched `DarkCyan` instead of `Write-Success`'s green — a real
+  inconsistency in exactly the way the request described. Green (✓) now
+  means success or already-current everywhere, uniformly; red (✗) means
+  failure; yellow (!) means warning/notice. Session summary
+  (`Show-MainMenu`) gained a `$Script:SessionSkipCount` tracked separately
+  from successes, shown as "N succeeded / N already up to date / N failed"
+  when non-zero.
+- **MSYS2 added to `LockProcessMap`** (`mintty`, `bash`, `pacman`) — a
+  leftover MSYS2/MinGW terminal holding files open is the most common
+  real-world cause of the `SHELLEXEC_INSTALL_FAILED` conflict above;
+  closing them before install/upgrade avoids it instead of just reporting
+  a cryptic failure afterward.
+- **Path Doctor, re-engineered for plain-language clarity**: opens with a
+  beginner-friendly explanation of what PATH actually is and why the check
+  is harmless (user-scope, no elevation). Each of the 7 tracked tools
+  (`$Script:DevToolCatalog`) gained a `Why` field — a one-line "why you'd
+  want this" reason surfaced both after "already working" confirmations
+  and next to "not installed yet" notices — and the closing summary
+  distinguishes "nothing to fix" from "N fixed, N still missing" instead
+  of a flat stats line. Mirrored in the GUI's toast message and the
+  Software Management card description.
+- **Developer & University Hub moved back inside Software Management** —
+  it was split out into its own top-level sidebar category last session;
+  per this request it's folded back in as two cards (Developer Toolkit,
+  PATH Doctor) right after Essential Apps, keeping the sidebar to the
+  original six categories. The underlying `DevHubSelectorDialog` /
+  `ToolInstallWizardDialog` / catalog data are unchanged — only where the
+  entry point lives moved.
 - **Developer & University Hub** — a new top-level category, precisely
   separated from every other app list (zero hardware drivers, zero
   general-purpose apps): 16 tools across five sections (Core Runtimes &

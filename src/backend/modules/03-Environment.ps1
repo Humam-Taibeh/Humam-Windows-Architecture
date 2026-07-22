@@ -214,7 +214,15 @@ function Open-UrlSafe {
 #  because it is the roadmap's contract name (task: VerifyEnvironment).
 # ============================================================
 function Verify-Environment {
-    Write-SectionHeader "Developer Environment Verification (PATH doctor)"
+    Write-SectionHeader "PATH Doctor - Developer Environment Check"
+    Write-Info "In plain English: Windows can only run a program by typing its name"
+    Write-Info "(like 'python' or 'git') if that program's folder is registered in a"
+    Write-Info "system list called PATH. This check confirms your dev tools are"
+    Write-Info "registered correctly, and quietly fixes it when one is installed but"
+    Write-Info "Windows just doesn't know where to find it yet - nothing scary, no"
+    Write-Info "elevation needed, and nothing changes for tools that are already fine."
+    Write-Host ""
+
     $Ok       = 0
     $Repaired = 0
     $Missing  = New-Object System.Collections.ArrayList
@@ -245,18 +253,20 @@ function Verify-Environment {
         }
 
         if ($OnPath) {
-            Write-AlreadyOK "$($Tool.Name): '$($Tool.Command)' is available on PATH."
+            $WhyText = if ($Tool.Why) { " - $($Tool.Why)" } else { "" }
+            Write-AlreadyOK "$($Tool.Name): '$($Tool.Command)' is ready to use$WhyText"
             $Ok++
         } elseif ($ResolvedDir) {
-            Write-Warn "$($Tool.Name) is installed at '$ResolvedDir' but missing from PATH - repairing."
+            Write-Warn "$($Tool.Name) is installed at '$ResolvedDir', Windows just didn't know to look there yet - fixing that now."
             if (Add-ToUserPath -Directory $ResolvedDir) {
-                Write-Success "$($Tool.Name) PATH entry registered -> $ResolvedDir"
+                Write-Success "$($Tool.Name) is now on PATH -> $ResolvedDir"
                 $Repaired++
             } else {
                 Write-ErrorX "Could not add '$ResolvedDir' to the user PATH for $($Tool.Name)."
             }
         } else {
-            Write-Warn "$($Tool.Name) not found ('$($Tool.Command)'). Install via winget id '$($Tool.WingetId)'."
+            $WhyText = if ($Tool.Why) { " Once it's installed, PATH doctor will wire it up automatically ($($Tool.Why))" } else { "" }
+            Write-Warn "$($Tool.Name) isn't installed yet ('$($Tool.Command)' not found). Get it via winget id '$($Tool.WingetId)'.$WhyText"
             Write-Log "VERIFY-ENV MISSING: $($Tool.Name) - winget install --id $($Tool.WingetId)"
             [void]$Missing.Add($Tool.Name)
         }
@@ -301,9 +311,14 @@ function Verify-Environment {
         }
     }
 
-    Write-Info "Environment verification complete: $Ok tool(s) OK, $Repaired PATH/env repair(s), $($Missing.Count) missing."
+    Write-Host ""
+    if ($Missing.Count -eq 0 -and $Repaired -eq 0) {
+        Write-Success "Everything's wired up correctly - all $Ok dev tool(s) are ready to use from any terminal. Nothing to fix!"
+    } else {
+        Write-Info "Summary: $Ok already working, $Repaired fixed automatically, $($Missing.Count) not installed yet."
+    }
     if ($Repaired -gt 0 -and -not $Script:DryRun) {
-        Write-Info "New PATH entries apply to NEW terminals/apps; already-open windows keep their old PATH."
+        Write-Info "Heads up: new PATH entries only apply to NEW terminals/apps you open from now on - anything already open keeps its old PATH until you restart it."
     }
 
     return [PSCustomObject]@{

@@ -89,6 +89,16 @@ if (-not $Task) {
     }
 }
 
+# UTF-8 output, unconditionally: Windows consoles default to the OEM code
+# page (437 on US-English installs, others elsewhere), which renders every
+# box-drawing character and glyph this file prints (=,|,check,cross - see
+# 00-Foundation.ps1's $Script:Box*/Check/Cross) as mangled question marks
+# and garbage - not a cosmetic quirk, a genuinely broken-looking console.
+# The GUI's spawned subprocess already sets this (helpers.PowerShellTask
+# prepends the same line); this covers the interactive console, which
+# never got it and was the real "chaotic UI" culprit, not color choices.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 # Console styling only makes sense when a human is looking at the console.
 # In GUI task mode stdout is a pipe and the console is hidden - skip it.
 if (-not $Task) {
