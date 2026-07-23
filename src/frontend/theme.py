@@ -420,7 +420,10 @@ def admin_badge_qss(t: dict) -> str:
             background: {alpha(t['warn'], 0.26)}; color: {t['text']};
             border: 1px solid {alpha(t['warn'], 0.60)};
         }}
-        QPushButton:pressed {{ background: {alpha(t['warn'], 0.36)}; }}
+        QPushButton:pressed {{
+            background: {alpha(t['warn'], 0.42)}; color: {t['text']};
+            border: 1px solid {t['warn']};
+        }}
     """
 
 

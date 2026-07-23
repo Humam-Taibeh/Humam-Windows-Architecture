@@ -25,6 +25,7 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
+import subprocess
 import sys
 
 if sys.platform == "win32":
@@ -1017,16 +1018,34 @@ class PulseApp(QMainWindow):
         instance once it's confirmed launched — never before, so declining
         the prompt (or the launch failing outright) leaves the user with
         the still-running unelevated app instead of no app at all."""
+        if sys.stdout is not None:
+            print("[Pulse] _relaunch_as_admin: elevate_requested received.")
         if self._worker is not None:
             self.toasts.show(
                 "info", "Wait for the current task to finish before restarting elevated.", 4000)
             return
         if sys.platform != "win32":
             return
+
         frozen = getattr(sys, "frozen", False)
+        # lpFile itself is a single path, never tokenized by ShellExecute -
+        # quoting IT would make Windows search for a file literally named
+        # with quote characters and fail. Only lpParameters is a command
+        # line the target process re-parses, so that's the piece that
+        # needs Win32 quoting - list2cmdline wraps any path containing
+        # spaces in quotes exactly the way CommandLineToArgvW expects.
+        # sys.argv[1:] rides along so a relaunch preserves whatever flags
+        # the current run was started with, not just the bare script.
         exe = sys.executable
-        params = "" if frozen else f'"{os.path.abspath(__file__)}"'
-        workdir = os.path.dirname(exe) if frozen else _FRONTEND_DIR
+        extra_args = sys.argv[1:]
+        if frozen:
+            arg_list = extra_args
+            workdir = os.path.dirname(exe)
+        else:
+            arg_list = [os.path.abspath(__file__), *extra_args]
+            workdir = _FRONTEND_DIR
+        params = subprocess.list2cmdline(arg_list)
+
         try:
             # SW_SHOWNORMAL=1. Return value is an HINSTANCE per the Win32
             # contract - values > 32 mean success, <= 32 is a specific
@@ -1035,6 +1054,9 @@ class PulseApp(QMainWindow):
                 None, "runas", exe, params, workdir, 1)
         except OSError:
             ret = 0
+        if sys.stdout is not None:
+            print(f"[Pulse] ShellExecuteW(runas) -> {ret} "
+                  f"(exe={exe!r} params={params!r})")
         if ret <= 32:
             self.toasts.show("info", "Elevation was cancelled.", 4000)
             return
@@ -1150,6 +1172,23 @@ class PulseApp(QMainWindow):
         return (left <= gx < left + round(btn.width() * dpr)
                 and top <= gy < top + round(btn.height() * dpr))
 
+    def _over_admin_badge(self, rect, gx: int, gy: int) -> bool:
+        """Same HTCLIENT carve-out as _over_theme_button, for the 'NOT
+        ELEVATED' badge — without this, the badge sits inside the
+        HTCAPTION strip and every click on it is consumed by Windows as a
+        title-bar drag before Qt's click ever fires (the bug: 'badge is
+        clicked, but nothing happens'). Returns False when running
+        elevated, where the badge doesn't exist."""
+        btn = self.titlebar.admin_badge()
+        if btn is None or not btn.isVisible():
+            return False
+        dpr = self.devicePixelRatioF()
+        top_left = btn.mapTo(self, QPoint(0, 0))
+        left = rect.left + round(top_left.x() * dpr)
+        top = rect.top + round(top_left.y() * dpr)
+        return (left <= gx < left + round(btn.width() * dpr)
+                and top <= gy < top + round(btn.height() * dpr))
+
     def nativeEvent(self, eventType, message):
         """Native window integration, in two parts:
 
@@ -1223,10 +1262,12 @@ class PulseApp(QMainWindow):
                 # OS-driven drag with Aero Snap, double-click maximize,
                 # right-click system menu — and, because it bypasses Qt's
                 # input routing, it stays LIVE while a modal dialog is
-                # open. Only the theme toggle keeps an HTCLIENT hole.
+                # open. Only the theme toggle and the (optional) admin
+                # badge keep an HTCLIENT hole.
                 dpr = self.devicePixelRatioF()
                 tb_bottom = rect.top + round(titlebar.height() * dpr)
-                if y < tb_bottom and not self._over_theme_button(rect, x, y):
+                if (y < tb_bottom and not self._over_theme_button(rect, x, y)
+                        and not self._over_admin_badge(rect, x, y)):
                     return True, 2   # HTCAPTION
 
             elif (msg.message == self._WM_NCLBUTTONDOWN

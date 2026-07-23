@@ -322,7 +322,7 @@ class TitleBar(QWidget):
             self._admin_badge.setToolTip(
                 "Some system-level actions need Administrator rights. "
                 "Click to relaunch Pulse elevated (you'll get a UAC prompt).")
-            self._admin_badge.clicked.connect(self.elevate_requested.emit)
+            self._admin_badge.clicked.connect(self._on_admin_badge_clicked)
             lay.addWidget(self._admin_badge)
         lay.addStretch()
 
@@ -388,6 +388,23 @@ class TitleBar(QWidget):
         """The theme toggle — the one title-bar button that stays a plain
         Qt button (HTCLIENT), so the HTCAPTION strip must carve it out."""
         return self._btn_theme
+
+    def admin_badge(self) -> QPushButton | None:
+        """The 'NOT ELEVATED' badge, when present — like theme_button(),
+        this is a plain Qt button sitting inside the otherwise-HTCAPTION
+        title-bar strip, so main.nativeEvent must carve out its rect too
+        or Windows swallows the click as a title-bar drag before Qt ever
+        sees it. None when running elevated (the badge doesn't exist)."""
+        return self._admin_badge
+
+    def _on_admin_badge_clicked(self):
+        # Cheap confirmation that the click actually reached Qt (vs. being
+        # eaten by the native HTCAPTION hit-test) — guarded because a
+        # windowed PyInstaller build (console=False) runs with sys.stdout
+        # as None, and print() on a None stream raises.
+        if sys.stdout is not None:
+            print("[Pulse] NOT ELEVATED badge clicked — requesting elevated relaunch.")
+        self.elevate_requested.emit()
 
     def set_nc_hover(self, key: str | None):
         """Highlight exactly the caption button under the non-client
