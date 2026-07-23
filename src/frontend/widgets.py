@@ -270,6 +270,7 @@ class TitleBar(QWidget):
     """
 
     theme_toggle_requested = Signal()
+    elevate_requested = Signal()
 
     # (caption-font glyph, text fallback)
     _ICONS = {
@@ -313,13 +314,15 @@ class TitleBar(QWidget):
         # toast — a user browsing categories before ever clicking anything
         # should already know why an elevated action will fail, instead of
         # finding out from a red error after the fact.
-        self._admin_badge: QLabel | None = None
+        self._admin_badge: QPushButton | None = None
         if not is_admin:
-            self._admin_badge = QLabel("⚠ NOT ELEVATED")
+            self._admin_badge = QPushButton("⚠ NOT ELEVATED")
+            self._admin_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._admin_badge.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._admin_badge.setToolTip(
                 "Some system-level actions need Administrator rights. "
-                "Close Pulse and re-launch it via right-click → "
-                "Run as administrator.")
+                "Click to relaunch Pulse elevated (you'll get a UAC prompt).")
+            self._admin_badge.clicked.connect(self.elevate_requested.emit)
             lay.addWidget(self._admin_badge)
         lay.addStretch()
 

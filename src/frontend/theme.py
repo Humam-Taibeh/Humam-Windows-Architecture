@@ -406,12 +406,21 @@ def admin_badge_qss(t: dict) -> str:
     knows up front (not after a system-level task fails) that admin-only
     actions won't run until Pulse is restarted elevated. Amber `warn`
     token, not `err`: this is a standing condition to be aware of, not a
-    failure that just happened."""
+    failure that just happened. A QPushButton, not a QLabel: clicking it
+    triggers the one-click 'restart elevated' UAC relaunch, so it needs
+    hover/pressed feedback like every other title-bar button."""
     return f"""
-        color: {t['warn']}; font-size: 9px; font-weight: 700;
-        background: {alpha(t['warn'], 0.12)};
-        border: 1px solid {alpha(t['warn'], 0.35)};
-        border-radius: 8px; padding: 2px 8px; letter-spacing: 1px;
+        QPushButton {{
+            color: {t['warn']}; font-size: 9px; font-weight: 700;
+            background: {alpha(t['warn'], 0.12)};
+            border: 1px solid {alpha(t['warn'], 0.35)};
+            border-radius: 8px; padding: 2px 8px; letter-spacing: 1px;
+        }}
+        QPushButton:hover {{
+            background: {alpha(t['warn'], 0.26)}; color: {t['text']};
+            border: 1px solid {alpha(t['warn'], 0.60)};
+        }}
+        QPushButton:pressed {{ background: {alpha(t['warn'], 0.36)}; }}
     """
 
 

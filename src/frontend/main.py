@@ -508,6 +508,7 @@ class PulseApp(QMainWindow):
         self.titlebar = TitleBar(self, t, APP_NAME, APP_VERSION, APP_CHANNEL,
                                   is_admin=self.is_admin)
         self.titlebar.theme_toggle_requested.connect(self._toggle_theme_animated)
+        self.titlebar.elevate_requested.connect(self._relaunch_as_admin)
         root.addWidget(self.titlebar)
 
         body = QHBoxLayout()
@@ -1007,7 +1008,38 @@ class PulseApp(QMainWindow):
             self.toasts.show(
                 "info",
                 "Not running as Administrator — system tasks may fail. "
-                "Right-click → Run as administrator.", 8000)
+                "Click the ⚠ NOT ELEVATED badge above to relaunch elevated.", 8000)
+
+    def _relaunch_as_admin(self):
+        """One-click UAC relaunch, triggered by the title bar's 'NOT
+        ELEVATED' badge. Spawns a second, elevated Pulse via the 'runas'
+        verb (which shows Windows' own UAC consent prompt) and quits this
+        instance once it's confirmed launched — never before, so declining
+        the prompt (or the launch failing outright) leaves the user with
+        the still-running unelevated app instead of no app at all."""
+        if self._worker is not None:
+            self.toasts.show(
+                "info", "Wait for the current task to finish before restarting elevated.", 4000)
+            return
+        if sys.platform != "win32":
+            return
+        frozen = getattr(sys, "frozen", False)
+        exe = sys.executable
+        params = "" if frozen else f'"{os.path.abspath(__file__)}"'
+        workdir = os.path.dirname(exe) if frozen else _FRONTEND_DIR
+        try:
+            # SW_SHOWNORMAL=1. Return value is an HINSTANCE per the Win32
+            # contract - values > 32 mean success, <= 32 is a specific
+            # SE_ERR_* failure code (declining the UAC prompt included).
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", exe, params, workdir, 1)
+        except OSError:
+            ret = 0
+        if ret <= 32:
+            self.toasts.show("info", "Elevation was cancelled.", 4000)
+            return
+        self.toasts.show("success", "Relaunching elevated…", 1500)
+        QTimer.singleShot(400, QApplication.instance().quit)
 
     # ============================================================
     #  WINDOW EVENTS — native glass, native resize, native corners

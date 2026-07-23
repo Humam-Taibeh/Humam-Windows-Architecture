@@ -129,7 +129,7 @@ function Invoke-GuiTask {
     param([string]$TaskName)
     try {
         if (($Script:AdminRequiredTasks -contains $TaskName) -and -not $Script:IsAdminSession) {
-            Write-Output "##PULSE##ERROR|'$TaskName' needs Administrator rights. Close the app and choose 'Run as administrator'."
+            Write-Output "##PULSE##ERROR|'$TaskName' needs Administrator rights. Click the NOT ELEVATED badge in the title bar to relaunch elevated."
             return
         }
 
