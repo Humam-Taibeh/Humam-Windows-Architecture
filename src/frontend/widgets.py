@@ -26,9 +26,10 @@ from PySide6.QtGui import (
     QTextCursor,
 )
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QPlainTextEdit, QPushButton,
-    QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout,
+    QWidget,
 )
 
 from frontend.animations import (
@@ -38,10 +39,72 @@ from frontend.animations import (
 from frontend import theme as TH
 
 
-def _animate_dialog_entrance(dialog: QDialog, duration_ms: int = 130):
-    """Premium dialog entrance: a quick window-level fade. windowOpacity is
-    compositor-side — no QGraphicsEffect, safe on frameless translucent
-    dialogs, and cleaned up implicitly when the dialog closes."""
+# Transparent gutter around every dialog panel — room for the painted
+# drop shadow to fall into. The panel keeps its intended content width;
+# the dialog window is simply this much larger on each side.
+_SHADOW_MARGIN = 26
+
+
+def _dialog_chrome(dialog: QDialog, t: dict, accent: str,
+                   width: int, radius: int = 18) -> "DepthCard":
+    """One shared construction path for every Pulse dialog: frameless
+    translucent window, the frosted DepthCard panel at exactly `width`,
+    and a soft elevation shadow into a transparent gutter. A drop-shadow
+    QGraphicsEffect is allowed here as the deliberate exception to the
+    animations.py doctrine: dialogs are small, transient surfaces that
+    repaint a handful of times — not steady-state 60fps chrome.
+
+    Returns the panel; the caller builds its content layout inside it."""
+    dialog.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+    dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    dialog.setModal(True)
+    dialog.setFixedWidth(width + 2 * _SHADOW_MARGIN)
+
+    panel = DepthCard(radius=radius, parent=dialog)
+    panel.setStyleSheet(TH.dialog_panel_qss(t, accent))
+    outer = QVBoxLayout(dialog)
+    outer.setContentsMargins(_SHADOW_MARGIN, _SHADOW_MARGIN,
+                             _SHADOW_MARGIN, _SHADOW_MARGIN)
+    outer.addWidget(panel)
+
+    shadow = QGraphicsDropShadowEffect(panel)
+    shadow.setBlurRadius(42)
+    shadow.setOffset(0, 12)
+    shadow.setColor(QColor(0, 0, 0, 150))
+    panel.setGraphicsEffect(shadow)
+    return panel
+
+
+def _present_dialog(dialog: QDialog, duration_ms: int = 130,
+                    anchor: str = "center"):
+    """Position + entrance for every dialog, called from showEvent.
+
+    Positioning contract (the fix for caption buttons vanishing under
+    modals): the dialog is placed inside its host window's BODY — always
+    fully below the title bar — so minimize/maximize/close stay visible
+    and reachable no matter what is open. `anchor="top"` gives the
+    command-palette placement; "center" centers within the body.
+
+    Entrance is a quick compositor-side windowOpacity fade — no
+    QGraphicsEffect involved in the animation itself."""
+    host = dialog.parentWidget()
+    if host is not None:
+        host = host.window()
+        # nested wizards are parented to another dialog — climb to the app
+        while isinstance(host, QDialog) and host.parentWidget() is not None:
+            host = host.parentWidget().window()
+    if host is not None:
+        titlebar_h = getattr(getattr(host, "titlebar", None), "height", lambda: 0)()
+        # the shadow gutter is visually empty — position by the PANEL edge
+        avail_top = host.y() + titlebar_h + 6 - _SHADOW_MARGIN
+        avail_h = host.height() - titlebar_h - 12
+        x = host.x() + (host.width() - dialog.width()) // 2
+        if anchor == "top":
+            y = avail_top + 34
+        else:
+            y = avail_top + max(0, (avail_h - dialog.height()) // 2)
+        dialog.move(x, max(avail_top, y))
+
     dialog.setWindowOpacity(0.0)
     anim = QPropertyAnimation(dialog, b"windowOpacity", dialog)
     anim.setDuration(duration_ms)
@@ -50,6 +113,75 @@ def _animate_dialog_entrance(dialog: QDialog, duration_ms: int = 130):
     anim.setEasingCurve(QEasingCurve.Type.OutCubic)
     anim.start()
     dialog._entrance_anim = anim  # keep alive for the run
+
+
+# ============================================================
+#  SCRIM — dense modal backdrop over the app body
+# ============================================================
+class Scrim(QWidget):
+    """A painted backdrop that masks the app body (everything below the
+    title bar) while a dialog is open, so the card grid and console can
+    never bleed through around a modal. Pure paintEvent + one transient
+    QVariantAnimation for the fade — no QGraphicsEffect. The title bar
+    is deliberately NOT covered: the window controls stay visible and
+    native-interactive at all times."""
+
+    FADE_MS = 140
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self._color = QColor(5, 7, 10, 195)
+        self._radius = 22          # follows the shell's rounded bottom
+        self._level = 0.0          # 0..1 fade multiplier
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(self.FADE_MS)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._on_frame)
+        self.hide()
+
+    def set_theme(self, t: dict):
+        self._color = QColor(*t["scrim"])
+        self.update()
+
+    def show_over(self, body_rect, flush: bool):
+        """Cover `body_rect` (parent coords); square corners when the
+        window is maximized (flush), rounded to match the floating shell
+        otherwise."""
+        self._radius = 0 if flush else 22
+        self.setGeometry(body_rect)
+        self.raise_()
+        self.show()
+        self._anim.stop()
+        self._anim.setStartValue(self._level)
+        self._anim.setEndValue(1.0)
+        self._anim.start()
+
+    def dismiss(self):
+        self._anim.stop()
+        self._level = 0.0
+        self.hide()
+
+    def _on_frame(self, value: float):
+        self._level = float(value)
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        color = QColor(self._color)
+        color.setAlpha(int(self._color.alpha() * self._level))
+        rect = QRectF(self.rect())
+        if self._radius:
+            # extend the path above the top edge so only the BOTTOM
+            # corners round — the top meets the title bar in a flat line
+            path = QPainterPath()
+            path.addRoundedRect(rect.adjusted(0, -self._radius, 0, 0),
+                                self._radius, self._radius)
+            p.setClipRect(rect)
+            p.fillPath(path, color)
+        else:
+            p.fillRect(rect, color)
+        p.end()
 
 
 # ============================================================
@@ -178,6 +310,11 @@ class TitleBar(QWidget):
         """The NC-hit-tested caption buttons, keyed by role."""
         return {"min": self._btn_min, "max": self.btn_max,
                 "close": self._btn_close}
+
+    def theme_button(self) -> QPushButton:
+        """The theme toggle — the one title-bar button that stays a plain
+        Qt button (HTCLIENT), so the HTCAPTION strip must carve it out."""
+        return self._btn_theme
 
     def set_nc_hover(self, key: str | None):
         """Highlight exactly the caption button under the non-client
@@ -580,19 +717,9 @@ class DepthCard(QFrame):
 class ConfirmDialog(QDialog):
     def __init__(self, parent: QWidget, item: dict, t: dict):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setModal(True)
-        self.setFixedWidth(430)
-
         danger = bool(item.get("danger"))
         accent = t["err"] if danger else t["accent"]
-
-        panel = DepthCard(radius=18, parent=self)
-        panel.setStyleSheet(TH.dialog_panel_qss(t, accent))
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(panel)
+        panel = _dialog_chrome(self, t, accent, width=440)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -620,14 +747,14 @@ class ConfirmDialog(QDialog):
         row.addStretch()
 
         cancel = QPushButton("Cancel")
-        cancel.setFixedSize(96, 34)
+        cancel.setFixedSize(96, 36)
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel.setStyleSheet(TH.dialog_cancel_qss(t))
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
 
         go = QPushButton("Proceed")
-        go.setFixedSize(96, 34)
+        go.setFixedSize(96, 36)
         go.setCursor(Qt.CursorShape.PointingHandCursor)
         go.setStyleSheet(TH.dialog_go_qss(t, accent))
         go.clicked.connect(self.accept)
@@ -636,7 +763,7 @@ class ConfirmDialog(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        _animate_dialog_entrance(self)
+        _present_dialog(self)
 
 
 # ============================================================
@@ -858,11 +985,6 @@ class AppSelectorDialog(QDialog):
 
     def __init__(self, parent: QWidget, item: dict, t: dict):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setModal(True)
-        self.setFixedWidth(560)
-
         self._t = t
         self.selected_ids: list[str] = []
         self.local_installer: tuple[str, str] | None = None
@@ -878,11 +1000,7 @@ class AppSelectorDialog(QDialog):
             url = entry[3] if len(entry) > 3 else ""
             apps.append((app_id, app_name, desc, url))
 
-        panel = DepthCard(radius=18, parent=self)
-        panel.setStyleSheet(TH.dialog_panel_qss(t, accent))
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(panel)
+        panel = _dialog_chrome(self, t, accent, width=560)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -995,7 +1113,7 @@ class AppSelectorDialog(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        _animate_dialog_entrance(self)
+        _present_dialog(self)
 
 
 # ============================================================
@@ -1034,19 +1152,10 @@ class CommandPalette(QDialog):
 
     def __init__(self, parent: QWidget, t: dict, entries: list[tuple[dict, str]]):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setModal(True)
-        self.setFixedWidth(560)
-
         self.chosen_item: dict | None = None
         self._entries = entries  # (item dict, category title) pairs
 
-        panel = DepthCard(radius=18, parent=self)
-        panel.setStyleSheet(TH.dialog_panel_qss(t, t["accent"]))
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(panel)
+        panel = _dialog_chrome(self, t, t["accent"], width=560)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(14, 14, 14, 10)
@@ -1123,7 +1232,7 @@ class CommandPalette(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        _animate_dialog_entrance(self, duration_ms=130)
+        _present_dialog(self, duration_ms=130, anchor="top")
         self._search.setFocus()
 
 
@@ -1179,11 +1288,6 @@ class OfficeWizardDialog(QDialog):
 
     def __init__(self, parent: QWidget, t: dict):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setModal(True)
-        self.setFixedWidth(560)
-
         self._t = t
         self.setup_path: str | None = None
         self.config_path: str | None = None
@@ -1192,11 +1296,7 @@ class OfficeWizardDialog(QDialog):
         # Path B was picked directly, "guide" if arriving via Path C.
         self._locate_origin = "choice"
 
-        panel = DepthCard(radius=18, parent=self)
-        panel.setStyleSheet(TH.dialog_panel_qss(t, t["accent"]))
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(panel)
+        panel = _dialog_chrome(self, t, t["accent"], width=560)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -1233,7 +1333,7 @@ class OfficeWizardDialog(QDialog):
     # -- small shared button factories --------------------------
     def _back_button(self, slot) -> QPushButton:
         b = QPushButton("‹  Back")
-        b.setFixedSize(90, 34)
+        b.setFixedSize(90, 36)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setStyleSheet(TH.dialog_cancel_qss(self._t))
         b.clicked.connect(slot)
@@ -1241,7 +1341,7 @@ class OfficeWizardDialog(QDialog):
 
     def _primary_button(self, text: str, slot, width: int = 130) -> QPushButton:
         b = QPushButton(text)
-        b.setFixedSize(width, 34)
+        b.setFixedSize(width, 36)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setStyleSheet(TH.dialog_go_qss(self._t, self._t["accent"]))
         b.clicked.connect(slot)
@@ -1320,7 +1420,7 @@ class OfficeWizardDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         cancel = QPushButton("Cancel")
-        cancel.setFixedSize(96, 34)
+        cancel.setFixedSize(96, 36)
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel.setStyleSheet(TH.dialog_cancel_qss(t))
         cancel.clicked.connect(self.reject)
@@ -1692,7 +1792,7 @@ class OfficeWizardDialog(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        _animate_dialog_entrance(self)
+        _present_dialog(self)
 
 
 # ============================================================
@@ -1721,20 +1821,11 @@ class ToolInstallWizardDialog(QDialog):
     def __init__(self, parent: QWidget, app_id: str, app_name: str,
                  desc: str, url: str, t: dict):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setModal(True)
-        self.setFixedWidth(460)
-
         self.app_id = app_id
         self.mode: str | None = None
         self.local_path: str | None = None
 
-        panel = DepthCard(radius=18, parent=self)
-        panel.setStyleSheet(TH.dialog_panel_qss(t, t["accent"]))
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(panel)
+        panel = _dialog_chrome(self, t, t["accent"], width=470)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -1778,7 +1869,7 @@ class ToolInstallWizardDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         cancel = QPushButton("Cancel")
-        cancel.setFixedSize(96, 34)
+        cancel.setFixedSize(96, 36)
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel.setStyleSheet(TH.dialog_cancel_qss(t))
         cancel.clicked.connect(self.reject)
@@ -1806,7 +1897,7 @@ class ToolInstallWizardDialog(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        _animate_dialog_entrance(self)
+        _present_dialog(self)
 
 
 # ============================================================
@@ -1903,11 +1994,6 @@ class DevHubSelectorDialog(QDialog):
     def __init__(self, parent: QWidget, t: dict,
                  groups: list[tuple[str, list[tuple]]], bundles: list[dict]):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setModal(True)
-        self.setFixedWidth(560)
-
         self._t = t
         self.selected_ids: list[str] = []
         self.local_installer: tuple[str, str] | None = None
@@ -1915,11 +2001,7 @@ class DevHubSelectorDialog(QDialog):
         self._tool_meta: dict[str, tuple[str, str]] = {}  # id -> (name, url)
         self._dependents: dict[str, list[str]] = {}        # requires_id -> [dependent ids]
 
-        panel = DepthCard(radius=18, parent=self)
-        panel.setStyleSheet(TH.dialog_panel_qss(t, t["accent"]))
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(panel)
+        panel = _dialog_chrome(self, t, t["accent"], width=560)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -2003,14 +2085,14 @@ class DevHubSelectorDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         cancel = QPushButton("Cancel")
-        cancel.setFixedSize(96, 34)
+        cancel.setFixedSize(96, 36)
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel.setStyleSheet(TH.dialog_cancel_qss(t))
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
 
         self._deploy_btn = QPushButton("Deploy Selected")
-        self._deploy_btn.setFixedSize(150, 34)
+        self._deploy_btn.setFixedSize(156, 36)
         self._deploy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._deploy_btn.setStyleSheet(TH.dialog_go_qss(t, t["accent"]))
         self._deploy_btn.clicked.connect(self._accept_selection)
@@ -2078,4 +2160,4 @@ class DevHubSelectorDialog(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        _animate_dialog_entrance(self)
+        _present_dialog(self)

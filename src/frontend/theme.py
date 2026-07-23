@@ -118,6 +118,9 @@ _DARK = {
     "shimmer_track": (255, 255, 255, 12),      # QColor args for painted widgets
     "titlebar_hover": "rgba(255, 255, 255, 0.06)",
     "close_hover":    "#c42b1c",               # native Win11 caption red
+    # modal backdrop — dense enough that the card grid underneath is
+    # fully masked while a dialog is open (QColor args, painted widget)
+    "scrim":          (5, 7, 10, 195),
 }
 
 # ============================================================
@@ -164,6 +167,8 @@ _LIGHT = {
     "shimmer_track": (22, 28, 38, 16),
     "titlebar_hover": "rgba(22, 28, 38, 0.06)",
     "close_hover":    "#c42b1c",               # native Win11 caption red
+    # modal backdrop — dark scrims read premium in light mode too
+    "scrim":          (18, 24, 33, 130),
 }
 
 _MODES = {"dark": _DARK, "light": _LIGHT}

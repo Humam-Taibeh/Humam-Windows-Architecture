@@ -15,6 +15,21 @@ GUI version, with core changes called out explicitly.
 ## [Unreleased]
 
 ### Changed
+- **Modal presentation system** — every dialog now shares one
+  construction path (`widgets._dialog_chrome`): frameless panel at its
+  exact content width inside a transparent shadow gutter, a soft
+  elevation drop shadow, and body-anchored positioning
+  (`_present_dialog`) that always places the panel fully below the
+  title bar (command palette top-anchored, everything else centered in
+  the body; nested wizards climb to the app window). Opening any dialog
+  raises a dense theme-aware **scrim** over the app body, so the card
+  grid and console are completely masked while a modal is up — and the
+  scrim deliberately stops at the title bar, which stays uncovered.
+  Dialog action buttons unified at 36px height.
+- **Title bar strip is now native HTCAPTION** — dragging, Aero Snap,
+  double-click-to-maximize and the right-click system menu are handled
+  by Windows itself (only the theme toggle keeps a client hole), which
+  also means the strip keeps working while a modal dialog is open.
 - **Software Management unified with the Developer Hub pattern** — every
   `apps` catalog card (Essential Apps, Gaming Launchers, Hardware
   Diagnostics, Core API Runtimes, Teams & OneDrive) now opens the same
@@ -63,6 +78,20 @@ GUI version, with core changes called out explicitly.
   elegant violet **BETA** channel pill (`APP_CHANNEL` in `main.py`).
 
 ### Fixed
+- **Window controls blocked while a modal was open (critical)** — the
+  old dialogs centered over the whole window, physically covering the
+  caption buttons, and Qt's application modality blocked title-bar
+  clicks besides. Dialogs are now always positioned below the title
+  bar, and because minimize/maximize/close run through the raw
+  non-client path (`WM_NCLBUTTONUP` in `nativeEvent`), they bypass
+  Qt's modal input blocking entirely — verified live with real window
+  messages while a selector was open: hit-testing answered
+  HTCLOSEBUTTON and a posted NC click minimized the window with the
+  modal still up. Closing during a modal settles open dialogs first
+  (reject) so no exec() loop is orphaned.
+- **Modal bleed-through, eliminated at the source** — beyond the opaque
+  panels, the new body scrim masks *everything* around an open dialog;
+  nothing underneath is legible anymore in either theme.
 - **Caption-button hitbox (critical)** — closing the window demanded a
   pixel-perfect hit on the 40×30 glyph. WM_NCHITTEST now maps
   generously expanded non-client zones over minimize/maximize/close

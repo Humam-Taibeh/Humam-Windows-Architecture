@@ -31,8 +31,8 @@ if sys.platform == "win32":
     import ctypes.wintypes  # MSG / RECT for native window hit-testing
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPropertyAnimation, Qt, QThread, QTimer,
-    Signal,
+    QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, Qt, QThread,
+    QTimer, Signal,
 )
 from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -57,7 +57,7 @@ from frontend.menu_structure import (  # noqa: E402
 from frontend.widgets import (  # noqa: E402
     AppSelectorDialog, BreathingIcon, CommandPalette, ConfirmDialog,
     DepthCard, DevHubSelectorDialog, GlassCard, LiveConsole, NavButton,
-    NavPill, OfficeWizardDialog, StatePill, StatusDot, TitleBar,
+    NavPill, OfficeWizardDialog, Scrim, StatePill, StatusDot, TitleBar,
 )
 
 # ============================================================
@@ -554,6 +554,9 @@ class PulseApp(QMainWindow):
         content.addLayout(status)
 
         body.addWidget(self._content, 1)
+        # Scrim before ToastManager: toasts re-raise themselves on show,
+        # so live notifications still surface above an active backdrop.
+        self._scrim = Scrim(self._shell)
         self.toasts = ToastManager(self._shell, t)
 
     # ============================================================
@@ -578,6 +581,7 @@ class PulseApp(QMainWindow):
         self.console.apply_theme(t)
         self.status_text.setStyleSheet(TH.label_qss(t, "status"))
         self.toasts.apply_theme(t)
+        self._scrim.set_theme(t)
         self._set_status(self._status_state, self.status_text.text())
 
     def _toggle_theme_animated(self):
@@ -650,13 +654,31 @@ class PulseApp(QMainWindow):
     def _open_command_palette(self):
         entries = [(item, cat["title"]) for cat in CATEGORIES for item in cat["items"]]
         palette = CommandPalette(self, self.theme.t, entries)
-        # Positioned explicitly (not default-centered): near the top of the
-        # window, VS Code / Slack quick-launcher style.
-        x = self.x() + (self.width() - palette.width()) // 2
-        y = self.y() + 110
-        palette.move(x, y)
-        if palette.exec() == QDialog.DialogCode.Accepted and palette.chosen_item is not None:
+        # Top-anchored VS Code / Slack quick-launcher placement comes from
+        # _present_dialog(anchor="top") in the palette's own showEvent.
+        if (self._exec_dialog(palette) == QDialog.DialogCode.Accepted
+                and palette.chosen_item is not None):
             self.request_task(palette.chosen_item, None)
+
+    # ============================================================
+    #  MODAL PRESENTATION — scrim under every dialog
+    # ============================================================
+    def _body_rect(self) -> QRect:
+        """The shell area below the title bar — what a scrim may cover.
+        The title bar itself is never covered: the window controls stay
+        visible and (via the non-client path) interactive during modals."""
+        tb_h = self.titlebar.height()
+        return QRect(0, tb_h, self._shell.width(), self._shell.height() - tb_h)
+
+    def _exec_dialog(self, dialog) -> int:
+        """exec() any Pulse dialog over a dense backdrop that fully masks
+        the card grid / console underneath — no more content bleeding
+        through around an open modal."""
+        self._scrim.show_over(self._body_rect(), self.isMaximized())
+        try:
+            return dialog.exec()
+        finally:
+            self._scrim.dismiss()
 
     # ============================================================
     #  TASK PIPELINE
@@ -679,7 +701,7 @@ class PulseApp(QMainWindow):
         local_installer: tuple[str, str] | None = None
         if item.get("devhub"):
             dialog = DevHubSelectorDialog(self, self.theme.t, DEV_HUB_GROUPS, DEV_HUB_BUNDLES)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
+            if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
                 return
             if dialog.local_installer:
                 # A per-tool "⋯" wizard resolved to Path C (a local file) —
@@ -695,7 +717,7 @@ class PulseApp(QMainWindow):
                 return
         elif item.get("wizard") == "office":
             wizard = OfficeWizardDialog(self, self.theme.t)
-            if wizard.exec() != QDialog.DialogCode.Accepted:
+            if self._exec_dialog(wizard) != QDialog.DialogCode.Accepted:
                 return
             if wizard.task_override:
                 # Path A (Automated Cloud Download): the backend resolves
@@ -710,7 +732,7 @@ class PulseApp(QMainWindow):
                 return
         elif item.get("apps"):
             selector = AppSelectorDialog(self, item, self.theme.t)
-            if selector.exec() != QDialog.DialogCode.Accepted:
+            if self._exec_dialog(selector) != QDialog.DialogCode.Accepted:
                 return
             if selector.local_installer:
                 # A per-app "⋯" wizard resolved to Path C (a local file) —
@@ -725,7 +747,7 @@ class PulseApp(QMainWindow):
                 return
         elif item.get("confirm"):
             dialog = ConfirmDialog(self, item, self.theme.t)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
+            if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
                 return
 
         self._start_task(item, card, app_ids, office_paths, local_installer)
@@ -913,6 +935,8 @@ class PulseApp(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.toasts.reposition()
+        if self._scrim.isVisible():
+            self._scrim.setGeometry(self._body_rect())
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -989,6 +1013,20 @@ class PulseApp(QMainWindow):
             return "min"
         return None
 
+    def _over_theme_button(self, rect, gx: int, gy: int) -> bool:
+        """The theme toggle stays an ordinary Qt button — the HTCAPTION
+        strip must leave a client hole over it or it becomes undraggable
+        dead chrome instead of a clickable control."""
+        btn = self.titlebar.theme_button()
+        if not btn.isVisible():
+            return False
+        dpr = self.devicePixelRatioF()
+        top_left = btn.mapTo(self, QPoint(0, 0))
+        left = rect.left + round(top_left.x() * dpr)
+        top = rect.top + round(top_left.y() * dpr)
+        return (left <= gx < left + round(btn.width() * dpr)
+                and top <= gy < top + round(btn.height() * dpr))
+
     def nativeEvent(self, eventType, message):
         """Native window integration, in two parts:
 
@@ -1058,6 +1096,16 @@ class PulseApp(QMainWindow):
                 if hit is not None:
                     return True, self._HT_CAPTION[hit]
 
+                # the rest of the title-bar strip = native HTCAPTION:
+                # OS-driven drag with Aero Snap, double-click maximize,
+                # right-click system menu — and, because it bypasses Qt's
+                # input routing, it stays LIVE while a modal dialog is
+                # open. Only the theme toggle keeps an HTCLIENT hole.
+                dpr = self.devicePixelRatioF()
+                tb_bottom = rect.top + round(titlebar.height() * dpr)
+                if y < tb_bottom and not self._over_theme_button(rect, x, y):
+                    return True, 2   # HTCAPTION
+
             elif (msg.message == self._WM_NCLBUTTONDOWN
                     and msg.wParam in self._HT_CAPTION.values()):
                 return True, 0   # consume — no default non-client flicker
@@ -1071,6 +1119,13 @@ class PulseApp(QMainWindow):
                     titlebar._toggle_max()
                     return True, 0
                 if msg.wParam == self._HT_CAPTION["close"]:
+                    # The close control works even while a modal dialog is
+                    # open (this path bypasses Qt's modal input blocking) —
+                    # settle any open dialogs first so their exec() loops
+                    # unwind instead of orphaning a floating panel.
+                    for widget in QApplication.topLevelWidgets():
+                        if isinstance(widget, QDialog) and widget.isVisible():
+                            widget.reject()
                     self.close()
                     return True, 0
 
