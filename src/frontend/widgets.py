@@ -396,7 +396,11 @@ class TitleBar(QWidget):
 # ============================================================
 class NavButton(QPushButton):
     def __init__(self, icon: str, title: str, accent: str, t: dict):
-        super().__init__(f"{icon}  {title}")
+        # QPushButton treats a lone "&" as a mnemonic marker (it vanishes
+        # and the following character gets an accelerator underline) —
+        # category titles like "Maintenance & Repair" need it escaped to
+        # "&&" or the button renders "Maintenance _Repair".
+        super().__init__(f"{icon}  {title}".replace("&", "&&"))
         self.setFixedHeight(46)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setProperty("selected", False)
@@ -2021,7 +2025,7 @@ class DevHubSelectorDialog(QDialog):
         bundle_row = QHBoxLayout()
         bundle_row.setSpacing(8)
         for bundle in bundles:
-            btn = QPushButton(f"{bundle['icon']}  {bundle['title']}")
+            btn = QPushButton(f"{bundle['icon']}  {bundle['title']}".replace("&", "&&"))
             btn.setFixedHeight(38)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(TH.wizard_link_qss(t, t["accent"]))

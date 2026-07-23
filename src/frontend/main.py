@@ -34,7 +34,7 @@ from PySide6.QtCore import (
     QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, Qt, QThread,
     QTimer, Signal,
 )
-from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
     QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea, QSizeGrip,
@@ -160,7 +160,7 @@ class WelcomePage(QWidget):
     """Landing view: breathing brand mark, system insight dashboard and
     the status chips grouped inside a unified glass dock."""
 
-    INSIGHT_W, INSIGHT_H = 200, 86   # mini-card footprint
+    INSIGHT_W, INSIGHT_H = 224, 86   # mini-card footprint
     INSIGHT_GAP = 14
     DOCK_H = 66
 
@@ -212,7 +212,17 @@ class WelcomePage(QWidget):
             icon_lbl = QLabel(icon)
             icon_lbl.setStyleSheet("font-size: 16px; background: transparent; border: none;")
             top.addWidget(icon_lbl)
-            value_lbl = QLabel(value)
+            # Long values ("Windows 11 Professional") must never clip
+            # mid-glyph against the fixed card width — elide with an
+            # ellipsis and keep the full string reachable as a tooltip.
+            value_font = QFont("Segoe UI")
+            value_font.setPixelSize(16)          # must match label_qss role "value"
+            value_font.setWeight(QFont.Weight.Bold)
+            budget = self.INSIGHT_W - 32 - 26 - top.spacing()
+            elided = QFontMetrics(value_font).elidedText(value, Qt.TextElideMode.ElideRight, budget)
+            value_lbl = QLabel(elided)
+            if elided != value:
+                value_lbl.setToolTip(value)
             top.addWidget(value_lbl)
             top.addStretch()
             card.addLayout(top)
@@ -304,12 +314,31 @@ class CategoryPage(QWidget):
         lay.setSpacing(16)
 
         # -- header -------------------------------------------
+        # Standardized action-bar cluster: Back + Home sit adjacent at the
+        # left edge (one nav group, not scattered corner-to-corner), a
+        # hairline divider separates "navigation" from "where you are",
+        # then the breadcrumb-style title/tagline. Every category page
+        # reads the same way — the pattern a File Explorer / VS Code
+        # breadcrumb bar already teaches users.
         head = QHBoxLayout()
-        head.setSpacing(14)
+        head.setSpacing(12)
 
-        self._back = NavPill("‹  Back", t)
+        nav_cluster = QHBoxLayout()
+        nav_cluster.setSpacing(6)
+        self._back = NavPill("‹  Back", t, width=84)
+        self._back.setToolTip("Back to modules")
         self._back.clicked.connect(self.back_requested)
-        head.addWidget(self._back)
+        nav_cluster.addWidget(self._back)
+        self._home = NavPill("⌂  Home", t, width=84)
+        self._home.setToolTip("Jump to the welcome screen")
+        self._home.clicked.connect(self.home_requested)
+        nav_cluster.addWidget(self._home)
+        head.addLayout(nav_cluster)
+
+        self._divider = QFrame()
+        self._divider.setFixedWidth(1)
+        self._divider.setFixedHeight(26)
+        head.addWidget(self._divider)
 
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
@@ -319,10 +348,6 @@ class CategoryPage(QWidget):
         title_col.addWidget(self._tagline)
         head.addLayout(title_col)
         head.addStretch()
-
-        self._home = NavPill("⌂  Home", t)
-        self._home.clicked.connect(self.home_requested)
-        head.addWidget(self._home)
         lay.addLayout(head)
 
         # -- card grid ----------------------------------------
@@ -371,9 +396,24 @@ class CategoryPage(QWidget):
         super().resizeEvent(event)
         self._relayout(self._columns_for(self._scroll.viewport().width()))
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # The very first resizeEvent after construction fires before the
+        # QScrollArea's child viewport has settled into its final width —
+        # that child layout pass lags the parent's by more than one
+        # event-loop tick, so a viewport-width read right after construction
+        # is unreliable and was previously locking the grid into 1 column
+        # forever (nothing resizes the page again after that). CategoryPage's
+        # OWN width is authoritative the instant it is shown (it's what
+        # triggered this very event), so derive the column count from that
+        # instead of the lagging viewport — sidestepping the race entirely.
+        own_w = self.width() - 16 - 8   # page margins (8+8) + scrollbar gutter
+        self._relayout(self._columns_for(own_w))
+
     def apply_theme(self, t: dict):
         self._back.apply_theme(t)
         self._home.apply_theme(t)
+        self._divider.setStyleSheet(f"background: {t['panel_line']}; border: none;")
         self._title.setStyleSheet(TH.label_qss(t, "title"))
         self._tagline.setStyleSheet(TH.label_qss(t, "tagline"))
         self._scroll.setStyleSheet(TH.scroll_area_qss(t))

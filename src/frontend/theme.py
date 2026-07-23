@@ -82,6 +82,10 @@ _DARK = {
     # surfaces — charcoal base, cards one perceptual step lighter
     "bg":          "rgba(15, 17, 21, 0.97)",
     "bg_solid":    "#0f1115",
+    # shell gradient stops — a faint top-to-bottom deepening (never a flat
+    # single tone) so the app reads as one lit surface, not a cutout.
+    "bg_grad_top":    "#161922",
+    "bg_grad_bottom": "#0a0b0e",
     "overlay":     "rgba(9, 11, 15, 0.50)",    # blur-backing layer behind card grids
     "panel":       "rgba(255, 255, 255, 0.032)",
     "panel_line":  "rgba(255, 255, 255, 0.065)",
@@ -136,6 +140,9 @@ _LIGHT = {
 
     "bg":          "rgba(236, 239, 244, 0.98)",
     "bg_solid":    "#eceff4",
+    # shell gradient stops — a whisper of depth instead of flat porcelain.
+    "bg_grad_top":    "#f4f6fa",
+    "bg_grad_bottom": "#e2e6ed",
     "overlay":     "rgba(255, 255, 255, 0.40)",
     "panel":       "rgba(255, 255, 255, 0.52)",
     "panel_line":  "rgba(22, 28, 38, 0.085)",
@@ -219,9 +226,11 @@ def shell_qss(t: dict) -> str:
     NOTE: the dynamic property is named `flush` (not `maximized`) because
     QWidget already exposes a built-in read-only `maximized` property —
     setProperty() on that name silently fails."""
+    grad = (f"qlineargradient(x1:0, y1:0, x2:0.3, y2:1, "
+            f"stop:0 {t['bg_grad_top']}, stop:1 {t['bg_grad_bottom']})")
     return f"""
         #shell {{
-            background-color: {t['bg']};
+            background: {grad};
             border: 1px solid {t['panel_line']};
             border-radius: 24px;
         }}
