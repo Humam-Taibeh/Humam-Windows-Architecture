@@ -31,7 +31,7 @@ if sys.platform == "win32":
     import ctypes.wintypes  # MSG / RECT for native window hit-testing
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, Qt, QThread,
+    QEasingCurve, QEvent, QPoint, QPropertyAnimation, Qt, QThread,
     QTimer, Signal,
 )
 from PySide6.QtGui import QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
@@ -55,9 +55,10 @@ from frontend.menu_structure import (  # noqa: E402
     CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, total_operations,
 )
 from frontend.widgets import (  # noqa: E402
-    AppSelectorDialog, BreathingIcon, CommandPalette, ConfirmDialog,
-    DepthCard, DevHubSelectorDialog, GlassCard, LiveConsole, NavButton,
-    NavPill, OfficeWizardDialog, Scrim, StatePill, StatusDot, TitleBar,
+    AmbientGlow, AppSelectorDialog, BreathingIcon, CommandPalette,
+    ConfirmDialog, DepthCard, DevHubSelectorDialog, GlassCard, LiveConsole,
+    NavButton, NavPill, OfficeWizardDialog, PulseDialog, StatePill,
+    StatusDot, TitleBar, refit_dialog,
 )
 
 # ============================================================
@@ -494,6 +495,11 @@ class PulseApp(QMainWindow):
         self._shell.setObjectName("shell")
         self.setCentralWidget(self._shell)
 
+        # Created first so later siblings (titlebar/sidebar/content, added
+        # below) stack above it — the ambient wash sits behind everything.
+        self._glow = AmbientGlow(self._shell)
+        self._glow.apply_theme(t)
+
         root = QVBoxLayout(self._shell)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -594,9 +600,6 @@ class PulseApp(QMainWindow):
         content.addLayout(status)
 
         body.addWidget(self._content, 1)
-        # Scrim before ToastManager: toasts re-raise themselves on show,
-        # so live notifications still surface above an active backdrop.
-        self._scrim = Scrim(self._shell)
         self.toasts = ToastManager(self._shell, t)
 
     # ============================================================
@@ -604,6 +607,7 @@ class PulseApp(QMainWindow):
     # ============================================================
     def _apply_theme(self, t: dict):
         self._shell.setStyleSheet(TH.shell_qss(t))
+        self._glow.apply_theme(t)
         self._sidebar.setStyleSheet(TH.sidebar_qss(t))
         self._content.setStyleSheet(TH.content_qss(t))
         self._section.setStyleSheet(TH.label_qss(t, "section"))
@@ -621,7 +625,6 @@ class PulseApp(QMainWindow):
         self.console.apply_theme(t)
         self.status_text.setStyleSheet(TH.label_qss(t, "status"))
         self.toasts.apply_theme(t)
-        self._scrim.set_theme(t)
         self._set_status(self._status_state, self.status_text.text())
 
     def _toggle_theme_animated(self):
@@ -701,24 +704,15 @@ class PulseApp(QMainWindow):
             self.request_task(palette.chosen_item, None)
 
     # ============================================================
-    #  MODAL PRESENTATION — scrim under every dialog
+    #  MODAL PRESENTATION
     # ============================================================
-    def _body_rect(self) -> QRect:
-        """The shell area below the title bar — what a scrim may cover.
-        The title bar itself is never covered: the window controls stay
-        visible and (via the non-client path) interactive during modals."""
-        tb_h = self.titlebar.height()
-        return QRect(0, tb_h, self._shell.width(), self._shell.height() - tb_h)
-
     def _exec_dialog(self, dialog) -> int:
-        """exec() any Pulse dialog over a dense backdrop that fully masks
-        the card grid / console underneath — no more content bleeding
-        through around an open modal."""
-        self._scrim.show_over(self._body_rect(), self.isMaximized())
-        try:
-            return dialog.exec()
-        finally:
-            self._scrim.dismiss()
+        """exec() any Pulse dialog. The dialog itself (PulseDialog) sizes
+        to the shell body and paints its own scrim backdrop in showEvent —
+        see widgets._present_dialog — so the card grid / console underneath
+        is fully masked and a click on the backdrop dismisses the dialog,
+        with no separate scrim widget to coordinate here."""
+        return dialog.exec()
 
     # ============================================================
     #  TASK PIPELINE
@@ -974,9 +968,11 @@ class PulseApp(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._glow.setGeometry(self._shell.rect())
         self.toasts.reposition()
-        if self._scrim.isVisible():
-            self._scrim.setGeometry(self._body_rect())
+        active = QApplication.activeModalWidget()
+        if isinstance(active, PulseDialog):
+            refit_dialog(active)
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -990,6 +986,7 @@ class PulseApp(QMainWindow):
             self._shell.setProperty("flush", flush)
             self._shell.style().unpolish(self._shell)
             self._shell.style().polish(self._shell)
+            self._glow.set_radius(0 if flush else 24)
             # Removing the border/radius alone just relocates the dead
             # space to the body margins instead of the shell edge — they
             # must collapse too, or "flush" still looks like a floating

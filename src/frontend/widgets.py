@@ -18,8 +18,8 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRectF, Qt,
-    QTimer, QUrl, QVariantAnimation, Signal,
+    QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QRectF,
+    Qt, QTimer, QUrl, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QPainter, QPainterPath, QRadialGradient,
@@ -39,33 +39,92 @@ from frontend.animations import (
 from frontend import theme as TH
 
 
-# Transparent gutter around every dialog panel — room for the painted
-# drop shadow to fall into. The panel keeps its intended content width;
-# the dialog window is simply this much larger on each side.
-_SHADOW_MARGIN = 26
+class PulseDialog(QDialog):
+    """Base for every frameless Pulse modal.
+
+    Unlike a plain QDialog sized to fit its content, THIS window covers
+    the app's full body (everything below the title bar) and paints the
+    dense scrim backdrop itself, with the frosted content `panel`
+    centered (or top-anchored) inside it. Because the backdrop is part of
+    the same top-level window as the panel — not a separate widget
+    sitting underneath — it keeps receiving mouse events while the dialog
+    is modal: clicking anywhere outside `panel` dismisses the dialog
+    exactly like pressing Escape or Cancel, the way a native Fluent/macOS
+    sheet behaves. Nested wizards (a PulseDialog opened from another
+    PulseDialog) get this for free — each paints its own full-body scrim
+    on top of whatever is behind it, so stacked modals just work."""
+
+    def __init__(self, parent: QWidget | None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self.panel: "DepthCard | None" = None
+        self._scrim_color = QColor(5, 7, 10, 195)
+        self._scrim_radius = 22
+
+    def _set_scrim(self, t: dict, radius: int):
+        self._scrim_color = QColor(*t["scrim"])
+        self._scrim_radius = radius
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(self.rect())
+        color = self._scrim_color
+        if self._scrim_radius:
+            # extend the path above the top edge so only the BOTTOM
+            # corners round — the top meets the title bar in a flat line
+            path = QPainterPath()
+            path.addRoundedRect(rect.adjusted(0, -self._scrim_radius, 0, 0),
+                                self._scrim_radius, self._scrim_radius)
+            p.setClipRect(rect)
+            p.fillPath(path, color)
+        else:
+            p.fillRect(rect, color)
+        p.end()
+
+    def mousePressEvent(self, e):
+        # A click that lands on the scrim itself (outside the panel) is
+        # the backdrop-dismiss gesture — everything inside the panel is
+        # ordinary child-widget input and reaches its own handlers first,
+        # so this only ever fires for genuine outside clicks.
+        if self.panel is not None and not self.panel.geometry().contains(e.position().toPoint()):
+            self.reject()
+            return
+        super().mousePressEvent(e)
 
 
-def _dialog_chrome(dialog: QDialog, t: dict, accent: str,
-                   width: int, radius: int = 18) -> "DepthCard":
-    """One shared construction path for every Pulse dialog: frameless
-    translucent window, the frosted DepthCard panel at exactly `width`,
-    and a soft elevation shadow into a transparent gutter. A drop-shadow
-    QGraphicsEffect is allowed here as the deliberate exception to the
-    animations.py doctrine: dialogs are small, transient surfaces that
-    repaint a handful of times — not steady-state 60fps chrome.
+def _dialog_chrome(dialog: PulseDialog, t: dict, accent: str,
+                   width: int, radius: int = 18, anchor: str = "center") -> "DepthCard":
+    """One shared construction path for every Pulse dialog: the frosted
+    DepthCard panel at exactly `width`, laid out centered (or top-anchored
+    for the command palette) inside the dialog's full-body scrim, plus a
+    soft elevation shadow. A drop-shadow QGraphicsEffect is allowed here
+    as the deliberate exception to the animations.py doctrine: dialogs
+    are small, transient surfaces that repaint a handful of times — not
+    steady-state 60fps chrome.
 
     Returns the panel; the caller builds its content layout inside it."""
-    dialog.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-    dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    dialog.setModal(True)
-    dialog.setFixedWidth(width + 2 * _SHADOW_MARGIN)
-
     panel = DepthCard(radius=radius, parent=dialog)
+    panel.setFixedWidth(width)
     panel.setStyleSheet(TH.dialog_panel_qss(t, accent))
+    dialog.panel = panel
+
     outer = QVBoxLayout(dialog)
-    outer.setContentsMargins(_SHADOW_MARGIN, _SHADOW_MARGIN,
-                             _SHADOW_MARGIN, _SHADOW_MARGIN)
-    outer.addWidget(panel)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(0)
+    if anchor == "top":
+        outer.addSpacing(34)
+    else:
+        outer.addStretch(1)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    row.addWidget(panel)
+    row.addStretch(1)
+    outer.addLayout(row)
+    outer.addStretch(1)
 
     shadow = QGraphicsDropShadowEffect(panel)
     shadow.setBlurRadius(42)
@@ -75,18 +134,13 @@ def _dialog_chrome(dialog: QDialog, t: dict, accent: str,
     return panel
 
 
-def _present_dialog(dialog: QDialog, duration_ms: int = 130,
-                    anchor: str = "center"):
-    """Position + entrance for every dialog, called from showEvent.
-
-    Positioning contract (the fix for caption buttons vanishing under
-    modals): the dialog is placed inside its host window's BODY — always
-    fully below the title bar — so minimize/maximize/close stay visible
-    and reachable no matter what is open. `anchor="top"` gives the
-    command-palette placement; "center" centers within the body.
-
-    Entrance is a quick compositor-side windowOpacity fade — no
-    QGraphicsEffect involved in the animation itself."""
+def refit_dialog(dialog: PulseDialog):
+    """Resize `dialog` to exactly cover its host window's BODY — always
+    fully below the title bar, so minimize/maximize/close stay visible
+    and reachable no matter what is open — and match its scrim radius to
+    the host's maximized state (square when flush, rounded otherwise,
+    matching the shell). Called from showEvent and again whenever the
+    host resizes while a dialog is open."""
     host = dialog.parentWidget()
     if host is not None:
         host = host.window()
@@ -95,16 +149,18 @@ def _present_dialog(dialog: QDialog, duration_ms: int = 130,
             host = host.parentWidget().window()
     if host is not None:
         titlebar_h = getattr(getattr(host, "titlebar", None), "height", lambda: 0)()
-        # the shadow gutter is visually empty — position by the PANEL edge
-        avail_top = host.y() + titlebar_h + 6 - _SHADOW_MARGIN
-        avail_h = host.height() - titlebar_h - 12
-        x = host.x() + (host.width() - dialog.width()) // 2
-        if anchor == "top":
-            y = avail_top + 34
-        else:
-            y = avail_top + max(0, (avail_h - dialog.height()) // 2)
-        dialog.move(x, max(avail_top, y))
+        body = QRect(0, titlebar_h, host.width(), host.height() - titlebar_h)
+        dialog.setGeometry(QRect(host.mapToGlobal(body.topLeft()), body.size()))
+        theme_mgr = getattr(host, "theme", None)
+        if theme_mgr is not None:
+            dialog._set_scrim(theme_mgr.t, 0 if host.isMaximized() else 22)
 
+
+def _present_dialog(dialog: PulseDialog, duration_ms: int = 130):
+    """Fit + entrance for every dialog, called from showEvent. Entrance is
+    a quick compositor-side windowOpacity fade — no QGraphicsEffect
+    involved in the animation."""
+    refit_dialog(dialog)
     dialog.setWindowOpacity(0.0)
     anim = QPropertyAnimation(dialog, b"windowOpacity", dialog)
     anim.setDuration(duration_ms)
@@ -113,75 +169,6 @@ def _present_dialog(dialog: QDialog, duration_ms: int = 130,
     anim.setEasingCurve(QEasingCurve.Type.OutCubic)
     anim.start()
     dialog._entrance_anim = anim  # keep alive for the run
-
-
-# ============================================================
-#  SCRIM — dense modal backdrop over the app body
-# ============================================================
-class Scrim(QWidget):
-    """A painted backdrop that masks the app body (everything below the
-    title bar) while a dialog is open, so the card grid and console can
-    never bleed through around a modal. Pure paintEvent + one transient
-    QVariantAnimation for the fade — no QGraphicsEffect. The title bar
-    is deliberately NOT covered: the window controls stay visible and
-    native-interactive at all times."""
-
-    FADE_MS = 140
-
-    def __init__(self, parent: QWidget):
-        super().__init__(parent)
-        self._color = QColor(5, 7, 10, 195)
-        self._radius = 22          # follows the shell's rounded bottom
-        self._level = 0.0          # 0..1 fade multiplier
-        self._anim = QVariantAnimation(self)
-        self._anim.setDuration(self.FADE_MS)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._anim.valueChanged.connect(self._on_frame)
-        self.hide()
-
-    def set_theme(self, t: dict):
-        self._color = QColor(*t["scrim"])
-        self.update()
-
-    def show_over(self, body_rect, flush: bool):
-        """Cover `body_rect` (parent coords); square corners when the
-        window is maximized (flush), rounded to match the floating shell
-        otherwise."""
-        self._radius = 0 if flush else 22
-        self.setGeometry(body_rect)
-        self.raise_()
-        self.show()
-        self._anim.stop()
-        self._anim.setStartValue(self._level)
-        self._anim.setEndValue(1.0)
-        self._anim.start()
-
-    def dismiss(self):
-        self._anim.stop()
-        self._level = 0.0
-        self.hide()
-
-    def _on_frame(self, value: float):
-        self._level = float(value)
-        self.update()
-
-    def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = QColor(self._color)
-        color.setAlpha(int(self._color.alpha() * self._level))
-        rect = QRectF(self.rect())
-        if self._radius:
-            # extend the path above the top edge so only the BOTTOM
-            # corners round — the top meets the title bar in a flat line
-            path = QPainterPath()
-            path.addRoundedRect(rect.adjusted(0, -self._radius, 0, 0),
-                                self._radius, self._radius)
-            p.setClipRect(rect)
-            p.fillPath(path, color)
-        else:
-            p.fillRect(rect, color)
-        p.end()
 
 
 # ============================================================
@@ -597,6 +584,72 @@ class GlassCard(QFrame):
 
 
 # ============================================================
+#  AMBIENT GLOW — static brand-pair light wash behind the shell
+# ============================================================
+class AmbientGlow(QWidget):
+    """Two large, very soft radial-gradient blobs of the brand accent
+    pair, painted once behind the sidebar/content frames (lowest widget
+    in the shell's z-order, transparent to mouse events). Pure static
+    paintEvent — repainted only on resize or theme change, never on a
+    timer — this is the 'rich luminescence' cue an otherwise flat
+    charcoal/porcelain canvas is missing at wide or maximized window
+    sizes. Opacity stays deliberately low (0.06–0.10): theme.py already
+    documents why the brand pair reads as neon past that on long
+    sessions, so this reuses the same restraint, just spread wide instead
+    of concentrated."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._c1 = QColor("#58a6ff")
+        self._c2 = QColor("#a78bfa")
+        self._radius = 24   # must track shell_qss's floating corner radius
+
+    def apply_theme(self, t: dict):
+        self._c1 = QColor(t["accent"])
+        self._c2 = QColor(t["accent2"])
+        self.update()
+
+    def set_radius(self, radius: int):
+        """Match the shell's current corner radius (24px floating, 0
+        maximized/flush) — the window behind this widget is translucent,
+        so an unclipped rectangle would paint square corners bleeding
+        past the shell's rounded edge."""
+        if radius != self._radius:
+            self._radius = radius
+            self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self._radius:
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), self._radius, self._radius)
+            p.setClipPath(path)
+        w, h = self.width(), self.height()
+        span = max(w, h)
+
+        top = QRadialGradient(w * 0.20, h * -0.08, span * 0.55)
+        c1 = QColor(self._c1)
+        c1.setAlphaF(0.10)
+        top.setColorAt(0.0, c1)
+        c1_out = QColor(self._c1)
+        c1_out.setAlphaF(0.0)
+        top.setColorAt(1.0, c1_out)
+        p.fillRect(self.rect(), top)
+
+        bottom = QRadialGradient(w * 0.92, h * 0.88, span * 0.50)
+        c2 = QColor(self._c2)
+        c2.setAlphaF(0.08)
+        bottom.setColorAt(0.0, c2)
+        c2_out = QColor(self._c2)
+        c2_out.setAlphaF(0.0)
+        bottom.setColorAt(1.0, c2_out)
+        p.fillRect(self.rect(), bottom)
+        p.end()
+
+
+# ============================================================
 #  BREATHING ICON — pure-paint pulsing brand glyph (no effects)
 # ============================================================
 class BreathingIcon(QWidget):
@@ -718,7 +771,7 @@ class DepthCard(QFrame):
 # ============================================================
 #  CONFIRM DIALOG — frameless glass confirmation
 # ============================================================
-class ConfirmDialog(QDialog):
+class ConfirmDialog(PulseDialog):
     def __init__(self, parent: QWidget, item: dict, t: dict):
         super().__init__(parent)
         danger = bool(item.get("danger"))
@@ -968,7 +1021,7 @@ class StatusDot(QLabel):
 # ============================================================
 #  APP SELECTOR DIALOG — unified with the Dev Hub pattern
 # ============================================================
-class AppSelectorDialog(QDialog):
+class AppSelectorDialog(PulseDialog):
     """The selector for every `apps` catalog card (Essential Apps, Gaming
     Launchers, Diagnostics, Runtimes, Teams & OneDrive…).
 
@@ -1143,7 +1196,7 @@ def _fuzzy_score(needle: str, haystack: str) -> int | None:
     return score
 
 
-class CommandPalette(QDialog):
+class CommandPalette(PulseDialog):
     """Ctrl+K quick launcher — fuzzy search over every task defined in
     menu_structure.py. Built fresh on each open (like ConfirmDialog /
     AppSelectorDialog: transient, no live re-theme needed) and driven
@@ -1159,7 +1212,7 @@ class CommandPalette(QDialog):
         self.chosen_item: dict | None = None
         self._entries = entries  # (item dict, category title) pairs
 
-        panel = _dialog_chrome(self, t, t["accent"], width=560)
+        panel = _dialog_chrome(self, t, t["accent"], width=560, anchor="top")
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(14, 14, 14, 10)
@@ -1236,14 +1289,14 @@ class CommandPalette(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        _present_dialog(self, duration_ms=130, anchor="top")
+        _present_dialog(self, duration_ms=130)
         self._search.setFocus()
 
 
 # ============================================================
 #  OFFICE WIZARD — step-by-step Office Deployment Tool flow
 # ============================================================
-class OfficeWizardDialog(QDialog):
+class OfficeWizardDialog(PulseDialog):
     """Multi-path Office Deployment Tool (ODT) wizard.
 
     Office ships as one Click-to-Run bundle with no per-app silent
@@ -1802,7 +1855,7 @@ class OfficeWizardDialog(QDialog):
 # ============================================================
 #  TOOL INSTALL WIZARD — generic 3-path single-tool dialog
 # ============================================================
-class ToolInstallWizardDialog(QDialog):
+class ToolInstallWizardDialog(PulseDialog):
     """Path A / B / C for exactly one tool. Unlike OfficeWizardDialog (which
     branches because Office genuinely has no per-app winget installer),
     every tool this dialog is used for already has a working winget
@@ -1977,7 +2030,7 @@ class DevHubRow(QFrame):
 # ============================================================
 #  DEV HUB SELECTOR — sections, bundles, master toggle, dependency hints
 # ============================================================
-class DevHubSelectorDialog(QDialog):
+class DevHubSelectorDialog(PulseDialog):
     """The Developer & University Hub's tool picker: section-grouped
     checkboxes (Core Runtimes, IDEs, AI, Databases, Containers), one-click
     quick-select bundles, a master Select All/Deselect All, live dependency
