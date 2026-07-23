@@ -209,14 +209,84 @@ function Invoke-GuiTask {
                 break
             }
             "StartupReport" {
-                $Items = @(Get-AllStartupItems)
-                $Enabled  = @($Items | Where-Object { $_.Enabled }).Count
-                $Disabled = @($Items | Where-Object { -not $_.Enabled }).Count
+                $Items = @(Get-StartupReportData)
+                Write-GuiData -Data $Items
+                $Enabled     = @($Items | Where-Object { $_.Enabled }).Count
+                $Disabled    = @($Items | Where-Object { -not $_.Enabled }).Count
+                $Recommended = @($Items | Where-Object { $_.Enabled -and $_.Recommendation -eq 'Disable' }).Count
                 foreach ($It in $Items) {
                     $State = if ($It.Enabled) { "ENABLED " } else { "DISABLED" }
-                    Write-Log ("STARTUP [{0}] ({1}) {2} -> {3}" -f $State, $It.Type, $It.Name, $It.Command)
+                    Write-Log ("STARTUP [{0}] ({1}) {2} -> {3} [{4}/{5}]" -f $State, $It.Type, $It.Name, $It.Command, $It.Recommendation, $It.Impact)
                 }
-                Write-Output "##PULSE##SUCCESS|Startup audit: $Enabled enabled, $Disabled disabled item(s). Full list saved to the operation log."
+                $Suffix = if ($Recommended -gt 0) { " — $Recommended recommended to disable." } else { " — nothing flagged." }
+                Write-Output "##PULSE##SUCCESS|Startup audit: $Enabled enabled, $Disabled disabled item(s)$Suffix"
+                break
+            }
+            "StartupDisableItem" {
+                if ($Script:SelectedAppIds.Count -eq 0) {
+                    Write-Output "##PULSE##ERROR|No startup item was specified."
+                    break
+                }
+                $Target = Resolve-StartupItemByEncodedId -EncodedId $Script:SelectedAppIds[0]
+                if (-not $Target) {
+                    Write-Output "##PULSE##ERROR|That startup item could not be found — the list may be stale. Rescan and try again."
+                    break
+                }
+                if (-not $Target.Enabled) {
+                    Write-Output "##PULSE##SUCCESS|'$($Target.Name)' is already disabled."
+                    break
+                }
+                Complete-GuiTask -Action { Disable-StartupItem -Item $Target } `
+                    -SuccessMessage "'$($Target.Name)' disabled — it will no longer launch at sign-in." `
+                    -FailureMessage "Could not disable '$($Target.Name)'."
+                break
+            }
+            "StartupEnableItem" {
+                if ($Script:SelectedAppIds.Count -eq 0) {
+                    Write-Output "##PULSE##ERROR|No startup item was specified."
+                    break
+                }
+                $Target = Resolve-StartupItemByEncodedId -EncodedId $Script:SelectedAppIds[0]
+                if (-not $Target) {
+                    Write-Output "##PULSE##ERROR|That startup item could not be found — the list may be stale. Rescan and try again."
+                    break
+                }
+                if ($Target.Enabled) {
+                    Write-Output "##PULSE##SUCCESS|'$($Target.Name)' is already enabled."
+                    break
+                }
+                Complete-GuiTask -Action { Enable-StartupItem -Item $Target } `
+                    -SuccessMessage "'$($Target.Name)' re-enabled — it will launch at next sign-in." `
+                    -FailureMessage "Could not re-enable '$($Target.Name)'."
+                break
+            }
+            "ScanForUpdates" {
+                if (-not $Script:DryRun -and -not (Ensure-Winget)) {
+                    Write-Output "##PULSE##ERROR|winget is unavailable and could not be bootstrapped. Install 'App Installer' from the Microsoft Store, then retry."
+                    break
+                }
+                $Updates = @(Get-WingetUpgradeList)
+                Write-GuiData -Data $Updates
+                if ($Updates.Count -eq 0) {
+                    Write-Output "##PULSE##SUCCESS|Everything is up to date — no updates found."
+                } else {
+                    Write-Output "##PULSE##SUCCESS|Found $($Updates.Count) update(s) available."
+                }
+                break
+            }
+            "UpdateSelectedApps" {
+                if (-not $Script:DryRun -and -not (Ensure-Winget)) {
+                    Write-Output "##PULSE##ERROR|winget is unavailable and could not be bootstrapped. Install 'App Installer' from the Microsoft Store, then retry."
+                    break
+                }
+                # Re-scan for the current Id -> Name pairs so Invoke-GuiBulkDeploy
+                # (and Smart-Deploy underneath it) get real display names instead
+                # of bare winget Ids — same live-progress, retry and exit-code
+                # handling as every other bulk deploy, just fed an "upgrade"
+                # queue instead of an "install" one.
+                $UpgList = @(Get-WingetUpgradeList)
+                $AppList = @($UpgList | ForEach-Object { , @($_.Id, $_.Name) })
+                Invoke-GuiBulkDeploy $AppList "App Updates" -SelectedIds $Script:SelectedAppIds
                 break
             }
             "VerifyEnvironment" {

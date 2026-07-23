@@ -57,8 +57,8 @@ from frontend.menu_structure import (  # noqa: E402
 from frontend.widgets import (  # noqa: E402
     AmbientGlow, AppSelectorDialog, BreathingIcon, CommandPalette,
     ConfirmDialog, DepthCard, DevHubSelectorDialog, GlassCard, LiveConsole,
-    NavButton, NavPill, OfficeWizardDialog, PulseDialog, StatePill,
-    StatusDot, TitleBar, refit_dialog,
+    NavButton, NavPill, OfficeWizardDialog, PulseDialog, StartupManagerDialog,
+    StatePill, StatusDot, TitleBar, UpdateCenterDialog, refit_dialog,
 )
 
 # ============================================================
@@ -733,7 +733,22 @@ class PulseApp(QMainWindow):
         app_ids: list[str] | None = None
         office_paths: tuple[str, str] | None = None
         local_installer: tuple[str, str] | None = None
-        if item.get("devhub"):
+        if item.get("startup_manager"):
+            # Fully self-contained: scans, groups by recommendation and
+            # flips items live via its own workers. Nothing to hand back —
+            # open it and move on, exactly like a plain informational card.
+            StartupManagerDialog(self, self.ps1_path, self.theme.t).exec()
+            return
+        if item.get("update_center"):
+            dialog = UpdateCenterDialog(self, self.ps1_path, self.theme.t)
+            if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
+                return
+            if dialog.selected_ids:
+                app_ids = dialog.selected_ids
+            else:
+                self.toasts.show("info", "No updates were selected — nothing to update.", 3500)
+                return
+        elif item.get("devhub"):
             dialog = DevHubSelectorDialog(self, self.theme.t, DEV_HUB_GROUPS, DEV_HUB_BUNDLES)
             if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
                 return

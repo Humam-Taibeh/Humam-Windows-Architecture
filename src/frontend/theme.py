@@ -718,6 +718,120 @@ def command_list_qss(t: dict) -> str:
     """
 
 
+def dialog_secondary_go_qss(t: dict, accent: str) -> str:
+    """A quieter CTA than dialog_go_qss's full brand-gradient treatment —
+    flat accent-tinted ghost fill, for a dialog's secondary action sitting
+    next to the primary one (e.g. 'Update Selected' beside 'Update All')."""
+    return f"""
+        QPushButton {{
+            background: {alpha(accent, 0.08)}; border: 1px solid {alpha(accent, 0.35)};
+            border-radius: 10px; color: {accent}; font-size: 12px; font-weight: 600;
+        }}
+        QPushButton:hover {{ background: {alpha(accent, 0.18)}; color: {t['text']}; }}
+        QPushButton:pressed {{ background: {alpha(accent, 0.28)}; color: {t['text']}; }}
+        QPushButton:disabled {{
+            background: {t['panel']}; border: 1px solid {t['panel_line']};
+            color: {t['text_faint']};
+        }}
+    """
+
+
+def stat_chip_qss(t: dict, tone: str = "neutral") -> str:
+    """Small rounded stat pill for a dialog's summary strip ('14 updates
+    found', '3 recommended'). `tone` picks the token the chip is built
+    from; 'neutral' stays a plain card chip."""
+    colors = {"neutral": t["text_soft"], "accent": t["accent"],
+              "warn": t["warn"], "ok": t["ok"], "err": t["err"]}
+    color = colors.get(tone, t["text_soft"])
+    if tone == "neutral":
+        bg, border = t["card"], t["card_line"]
+    else:
+        bg, border = alpha(color, 0.10), alpha(color, 0.35)
+    return f"""
+        color: {color}; font-size: 12px; font-weight: 600;
+        background: {bg}; border: 1px solid {border};
+        border-radius: 12px; padding: 7px 14px;
+    """
+
+
+def version_chip_qss(t: dict, accent: bool = False) -> str:
+    """Version number pill in an update row — muted for 'current', lit
+    with the accent for 'available' so the eye lands on what's new."""
+    if accent:
+        return f"""
+            color: {t['accent']}; font-size: 11px; font-weight: 700;
+            background: {alpha(t['accent'], 0.14)}; border: 1px solid {alpha(t['accent'], 0.40)};
+            border-radius: 7px; padding: 3px 9px;
+        """
+    return f"""
+        color: {t['text_muted']}; font-size: 11px; font-weight: 600;
+        background: {t['panel']}; border: 1px solid {t['panel_line']};
+        border-radius: 7px; padding: 3px 9px;
+    """
+
+
+def impact_badge_qss(t: dict, level: str) -> str:
+    """High/Medium/Low boot-impact badge on a startup row."""
+    color = {"High": t["err"], "Medium": t["warn"], "Low": t["ok"]}.get(level, t["text_faint"])
+    return f"""
+        color: {color}; font-size: 9px; font-weight: 700; letter-spacing: 1px;
+        background: {alpha(color, 0.12)}; border: 1px solid {alpha(color, 0.40)};
+        border-radius: 8px; padding: 2px 8px;
+    """
+
+
+def recommendation_badge_qss(t: dict, recommendation: str) -> str:
+    """Disable/Keep/Review recommendation tag on a startup row."""
+    color = {"Disable": t["warn"], "Keep": t["ok"], "Review": t["accent2"]}.get(
+        recommendation, t["text_faint"])
+    return f"""
+        color: {color}; font-size: 10px; font-weight: 700;
+        background: {alpha(color, 0.10)}; border: 1px solid {alpha(color, 0.35)};
+        border-radius: 9px; padding: 3px 10px;
+    """
+
+
+def update_row_qss(t: dict) -> str:
+    """One app row inside the Update Center's scroll list."""
+    return f"""
+        QFrame {{
+            background: {t['card']}; border: 1px solid {t['card_line']};
+            border-radius: 12px;
+        }}
+        QFrame:hover {{ border: 1px solid {alpha(t['accent'], 0.35)}; }}
+    """
+
+
+def startup_row_qss(t: dict) -> str:
+    """One item inside the Startup Manager's list — dims (via the
+    `disabled_item` dynamic property, deliberately not Qt's own `disabled`
+    name, which drives the unrelated :disabled pseudo-state) once its
+    toggle is switched off, so the eye reads enabled vs. disabled at a
+    glance without hunting for the switch state."""
+    return f"""
+        QFrame {{
+            background: {t['card']}; border: 1px solid {t['card_line']};
+            border-radius: 12px;
+        }}
+        QFrame:hover {{ border: 1px solid {alpha(t['accent'], 0.30)}; }}
+        QFrame[disabled_item="true"] {{
+            background: {t['panel']}; border: 1px solid {t['panel_line']};
+        }}
+    """
+
+
+def inline_status_qss(t: dict, tone: str = "ok") -> str:
+    """The Startup Manager's inline result strip (a dialog-local stand-in
+    for the app's ToastManager, whose toasts live behind a modal dialog's
+    own top-level window and would never be seen while it's open)."""
+    color = {"ok": t["ok"], "err": t["err"], "info": t["accent"]}.get(tone, t["text_soft"])
+    return f"""
+        color: {color}; font-size: 12px; font-weight: 600;
+        background: {alpha(color, 0.10)}; border: 1px solid {alpha(color, 0.32)};
+        border-radius: 10px; padding: 8px 14px;
+    """
+
+
 def dialog_go_qss(t: dict, accent: str) -> str:
     """Primary dialog action ('Proceed' / 'Deploy'). The two-tone brand
     sweep only applies when `accent` is the theme's normal accent — a

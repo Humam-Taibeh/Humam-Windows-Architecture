@@ -99,6 +99,116 @@ function Get-AllStartupItems {
     return @(Get-StartupRunKeyItems) + @(Get-StartupFolderItems) + @(Get-DisabledStartupItems)
 }
 
+# ============================================================
+#  STARTUP OPTIMIZER — recommendation engine (v6.3)
+#  Pattern-matched against "Name Command" (lowercased). Order matters:
+#  the disable list is checked first, so a known heavy app never gets
+#  shadowed by a coincidental keep-pattern match.
+# ============================================================
+$Script:StartupDisableRules = @(
+    @{ Pattern = 'onedrive';                              Impact = 'Medium'; Reason = "Cloud sync — keeps syncing in the background; launch it manually or sign in to files.com when you actually need it." }
+    @{ Pattern = 'dropbox';                                Impact = 'Medium'; Reason = "Cloud sync client — adds boot time for a service you can start on demand." }
+    @{ Pattern = 'steam';                                  Impact = 'High';   Reason = "Game launcher with background update checks — a common multi-second boot delay." }
+    @{ Pattern = 'epicgameslauncher|epic games';           Impact = 'High';   Reason = "Game launcher — heavy background process not needed until you actually play." }
+    @{ Pattern = 'battle\.net|blizzard';                   Impact = 'High';   Reason = "Game launcher with an always-on updater service." }
+    @{ Pattern = 'origin|ea desktop|eadesktop';            Impact = 'High';   Reason = "Game launcher — safe to start manually instead of at every boot." }
+    @{ Pattern = 'riot client|riotclient';                 Impact = 'Medium'; Reason = "Game launcher background updater." }
+    @{ Pattern = 'ubisoft connect|uplay';                  Impact = 'Medium'; Reason = "Game launcher background updater." }
+    @{ Pattern = 'discord';                                Impact = 'Medium'; Reason = "Chat client — convenient always-on, but it's pure boot-time overhead if you open it manually anyway." }
+    @{ Pattern = 'spotify';                                Impact = 'Medium'; Reason = "Music client — no reason to launch before you're ready to listen." }
+    @{ Pattern = 'skype';                                  Impact = 'Medium'; Reason = "Chat client that rarely needs to be running before sign-in finishes." }
+    @{ Pattern = 'teams|squirrel\.exe.*teams';             Impact = 'High';   Reason = "Electron-based chat app — one of the heaviest common boot-time offenders." }
+    @{ Pattern = 'slack';                                  Impact = 'Medium'; Reason = "Electron-based chat app — noticeable boot-time cost for a background presence." }
+    @{ Pattern = 'zoom';                                   Impact = 'Low';    Reason = "Meeting client — only needed right before a call." }
+    @{ Pattern = 'adobe.*(updater|arm\.exe|armsvc)|adobearm'; Impact = 'Low'; Reason = "Adobe's background updater — checks for updates you can trigger manually instead." }
+    @{ Pattern = 'itunes|applemobiledevicehelper|ituneshelper'; Impact = 'Medium'; Reason = "Apple device helper — only useful while an iPhone/iPad is actually connected." }
+    @{ Pattern = 'quicktime';                               Impact = 'Low';    Reason = "Legacy media helper rarely needed by modern apps." }
+    @{ Pattern = 'googleupdate|googlechromeautolaunch|gupdate'; Impact = 'Low'; Reason = "Chrome's background updater — Chrome updates itself fine when it launches." }
+    @{ Pattern = 'msedgeupdate|microsoftedgeupdate';        Impact = 'Low';    Reason = "Edge's background updater — Edge updates itself fine when it launches." }
+    @{ Pattern = 'cortana';                                 Impact = 'Low';    Reason = "Legacy Cortana shell integration — safe to disable on most modern setups." }
+    @{ Pattern = 'yourphone|phonelink';                     Impact = 'Low';    Reason = "Phone Link — only useful if you actively use phone/PC linking." }
+    @{ Pattern = 'creativecloud|cc[_ ]?library|coreSync';   Impact = 'High';   Reason = "Adobe Creative Cloud desktop — one of the heaviest known startup offenders." }
+    @{ Pattern = 'javaupdater|jusched';                      Impact = 'Low';    Reason = "Java's background updater — safe to check manually instead." }
+    @{ Pattern = 'nvidia.*(container|telemetry)|nvcontainer'; Impact = 'Low';  Reason = "NVIDIA telemetry/container helper — the display driver itself does not need it at boot." }
+)
+
+$Script:StartupKeepRules = @(
+    @{ Pattern = 'defender|windowssecurity|securityhealth|msmpeng'; Reason = "Windows Security — disabling weakens malware protection." }
+    @{ Pattern = 'realtek|rtkaud|audio.*service|nahimic';           Reason = "Audio driver tray helper — needed for sound device switching/effects to work correctly." }
+    @{ Pattern = 'synaptics|elan|touchpad|precision touchpad';       Reason = "Touchpad/precision-input driver — gestures and settings depend on it." }
+    @{ Pattern = 'nvidia.*(tray|settings)|nvtray|nvidia share';      Reason = "GPU control panel tray — lightweight and needed for display/overlay settings." }
+    @{ Pattern = 'radeon software|amd.*(tray|external)';             Reason = "GPU control panel tray — lightweight and needed for display/overlay settings." }
+    @{ Pattern = 'ctfmon';                                            Reason = "Windows input/IME subsystem — required for text input switching." }
+    @{ Pattern = 'securityagent|antivirus|endpoint protection|crowdstrike|sentinelone|malwarebytes'; Reason = "Security/endpoint-protection agent — should stay running from boot." }
+    @{ Pattern = 'wacom|huion';                                       Reason = "Graphics tablet driver — needed immediately for pen input to work." }
+)
+
+function Get-StartupRecommendation {
+    <# Returns @{ Recommendation='Disable'|'Keep'|'Review'; Impact='High'|
+       'Medium'|'Low'; Reason=<string> } for one Get-AllStartupItems entry. #>
+    param($Item)
+    $Hay = "$($Item.Name) $($Item.Command)".ToLowerInvariant()
+    foreach ($Rule in $Script:StartupDisableRules) {
+        if ($Hay -match $Rule.Pattern) {
+            return @{ Recommendation = 'Disable'; Impact = $Rule.Impact; Reason = $Rule.Reason }
+        }
+    }
+    foreach ($Rule in $Script:StartupKeepRules) {
+        if ($Hay -match $Rule.Pattern) {
+            return @{ Recommendation = 'Keep'; Impact = 'Low'; Reason = $Rule.Reason }
+        }
+    }
+    return @{
+        Recommendation = 'Review'
+        Impact         = 'Medium'
+        Reason         = "Not a recognized publisher — check what it is before disabling it."
+    }
+}
+
+$Script:StartupImpactRank = @{ High = 0; Medium = 1; Low = 2 }
+
+function Get-StartupReportData {
+    <# The Startup Manager's full dataset: every discovered item plus its
+       recommendation, sorted enabled-first then by impact severity - the
+       items most worth acting on land at the top of the GUI's list. Each
+       item carries a stable `Id` ("Type|||RegPath|||Name") that
+       Resolve-StartupItemByEncodedId uses to re-locate the exact same item
+       on a later toggle call (a fresh process, with no memory of this
+       scan). #>
+    $Result = @()
+    foreach ($It in @(Get-AllStartupItems)) {
+        $Rec = Get-StartupRecommendation -Item $It
+        $Result += [PSCustomObject]@{
+            Id              = "$($It.Type)|||$($It.RegPath)|||$($It.Name)"
+            Name            = $It.Name
+            Type            = $It.Type
+            Command         = $It.Command
+            Enabled         = [bool]$It.Enabled
+            Recommendation  = $Rec.Recommendation
+            Impact          = $Rec.Impact
+            Reason          = $Rec.Reason
+        }
+    }
+    return $Result | Sort-Object `
+        @{ Expression = { if ($_.Enabled) { 0 } else { 1 } } }, `
+        @{ Expression = { $Script:StartupImpactRank[$_.Impact] } }, `
+        Name
+}
+
+function Resolve-StartupItemByEncodedId {
+    <# Reverses Get-StartupReportData's Id back into the live item object
+       Disable-StartupItem/Enable-StartupItem expect, by re-scanning and
+       matching on (Type, RegPath, Name) - the same identity triple, never
+       a stale snapshot from a previous process. #>
+    param([string]$EncodedId)
+    $Parts = $EncodedId -split '\|\|\|', 3
+    if ($Parts.Count -lt 3) { return $null }
+    $Type, $RegPath, $Name = $Parts
+    return (Get-AllStartupItems | Where-Object {
+        $_.Type -eq $Type -and $_.RegPath -eq $RegPath -and $_.Name -eq $Name
+    } | Select-Object -First 1)
+}
+
 function Show-StartupItemsList {
     param([array]$Items)
     if ($Items.Count -eq 0) {

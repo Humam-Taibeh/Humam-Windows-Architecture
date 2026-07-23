@@ -206,6 +206,29 @@ function Write-ErrorX  { param($Text) Write-Host "   $Script:Cross  $Text" -Fore
 function Write-AlreadyOK { param($Text) Write-Host "   $Script:Check  $Text" -ForegroundColor Green; Write-Log "ALREADY-OK: $Text"; $Script:SessionSkipCount++ }
 
 # ============================================================
+#  GUI STRUCTURED DATA CHANNEL (v6.3)
+#  Companion to the ##PULSE##SUCCESS|/ERROR| verdict contract: a task that
+#  needs to hand the GUI more than one human-readable line (the winget
+#  update scan, the startup report) emits exactly one
+#      ##PULSE##DATA|<json>
+#  line before its verdict. src/utils/helpers.py (PowerShellTask) parses it
+#  into TaskResult.data and never prints it to the live console.
+# ============================================================
+function Write-GuiData {
+    <# Emits $Data (any JSON-serializable object, typically an array of
+       PSCustomObjects) as one ##PULSE##DATA| line. ConvertTo-Json on
+       Windows PowerShell 5.1 silently unwraps a single-element array to a
+       bare JSON object - re-wrapped defensively here so the frontend can
+       always assume "array in, array out" without a special case. #>
+    param([Parameter(Mandatory = $true)]$Data)
+    $Json = $Data | ConvertTo-Json -Depth 8 -Compress
+    if ($Data -is [array] -and -not $Json.TrimStart().StartsWith('[')) {
+        $Json = "[$Json]"
+    }
+    Write-Output "##PULSE##DATA|$Json"
+}
+
+# ============================================================
 #  INTERACTIVE PROMPT PRIMITIVES (NonInteractive-guarded)
 # ============================================================
 function Ask-User {

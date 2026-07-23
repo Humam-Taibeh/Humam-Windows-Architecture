@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QRectF,
-    Qt, QTimer, QUrl, QVariantAnimation, Signal,
+    Qt, QThread, QTimer, QUrl, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QPainter, QPainterPath, QRadialGradient,
@@ -33,10 +33,18 @@ from PySide6.QtWidgets import (
 )
 
 from frontend.animations import (
-    GlowController, RippleController, paint_bevel_frame, paint_glow_frame,
-    paint_nav_indicator, paint_ripple_frame,
+    GlowController, RippleController, ShimmerBar, paint_bevel_frame,
+    paint_glow_frame, paint_nav_indicator, paint_ripple_frame,
 )
 from frontend import theme as TH
+# Update Center / Startup Manager (v6.3) run their own background scans and
+# per-item actions independently of main.py's single-task console pipeline
+# (both are modal dialogs that fully cover it anyway) - the one deliberate
+# exception to this file's "pure component library" rule, since the alter-
+# native (threading process ownership through main.py) would either block
+# the dialog's own loading UI or duplicate PowerShellTask's cancellation-
+# safe process/thread bookkeeping here.
+from utils.helpers import PowerShellTask, TaskResult  # noqa: E402
 
 
 class PulseDialog(QDialog):
@@ -1015,6 +1023,126 @@ class StatusDot(QLabel):
         p.setPen(self._color)
         p.setFont(self._font)
         p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
+        p.end()
+
+
+# ============================================================
+#  TOGGLE SWITCH — native-feeling animated on/off control
+# ============================================================
+class ToggleSwitch(QWidget):
+    """A macOS/iOS-style pill switch, pure-paint per the animations.py
+    doctrine (no QGraphicsEffect, no per-frame QSS rebuild — one looping
+    QVariantAnimation drives the thumb slide + track color cross-fade,
+    another drives the busy pulse). Used by the Startup Manager for
+    instant enable/disable: clicking flips the thumb immediately and
+    emits `toggled`; the caller drives `set_busy(True)` while the backend
+    call is in flight and `set_checked_silent()` afterwards to reconcile
+    the visual state with the real outcome without re-emitting `toggled`."""
+
+    toggled = Signal(bool)
+
+    WIDTH, HEIGHT, PAD = 42, 24, 3
+
+    def __init__(self, t: dict, checked: bool = False, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedSize(self.WIDTH, self.HEIGHT)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._checked = checked
+        self._busy = False
+        self._pos = 1.0 if checked else 0.0
+        self._on_color = QColor(t["ok"])
+        self._off_color = QColor(t["panel_line"])
+        self._thumb_color = QColor("#ffffff")
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(160)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._on_frame)
+
+        self._busy_anim = QVariantAnimation(self)
+        self._busy_anim.setDuration(900)
+        self._busy_anim.setStartValue(0.35)
+        self._busy_anim.setKeyValueAt(0.5, 1.0)
+        self._busy_anim.setEndValue(0.35)
+        self._busy_anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._busy_anim.setLoopCount(-1)
+        self._busy_anim.valueChanged.connect(lambda _v: self.update())
+
+    # -- theming ------------------------------------------------
+    def apply_theme(self, t: dict):
+        self._on_color = QColor(t["ok"])
+        self._off_color = QColor(t["panel_line"])
+        self.update()
+
+    # -- state ----------------------------------------------------
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def setChecked(self, checked: bool):
+        self._set_checked(checked, emit=False)
+
+    def set_checked_silent(self, checked: bool):
+        """Reconcile the visual state with a backend result without
+        re-triggering `toggled` (avoids feedback loops)."""
+        self._set_checked(checked, emit=False)
+
+    def set_busy(self, busy: bool):
+        if busy == self._busy:
+            return
+        self._busy = busy
+        self.setDisabled(busy)
+        if busy:
+            self._busy_anim.start()
+        else:
+            self._busy_anim.stop()
+            self.update()
+
+    def _set_checked(self, checked: bool, emit: bool):
+        self._checked = checked
+        target = 1.0 if checked else 0.0
+        self._anim.stop()
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(target)
+        self._anim.start()
+        if emit:
+            self.toggled.emit(checked)
+
+    def _on_frame(self, value):
+        self._pos = float(value)
+        self.update()
+
+    # -- interaction ----------------------------------------------
+    def mouseReleaseEvent(self, e):
+        if self._busy:
+            return
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(e.position().toPoint())):
+            self._set_checked(not self._checked, emit=True)
+        super().mouseReleaseEvent(e)
+
+    # -- painting ---------------------------------------------------
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self._busy:
+            value = self._busy_anim.currentValue()
+            p.setOpacity(float(value) if value is not None else 0.6)
+
+        track, on = self._off_color, self._on_color
+        mix = QColor(
+            int(track.red()   + (on.red()   - track.red())   * self._pos),
+            int(track.green() + (on.green() - track.green()) * self._pos),
+            int(track.blue()  + (on.blue()  - track.blue())  * self._pos),
+        )
+        rect = QRectF(0, 0, self.WIDTH, self.HEIGHT)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(mix)
+        p.drawRoundedRect(rect, self.HEIGHT / 2.0, self.HEIGHT / 2.0)
+
+        d = self.HEIGHT - self.PAD * 2
+        x = self.PAD + self._pos * (self.WIDTH - self.PAD * 2 - d)
+        p.setBrush(self._thumb_color)
+        p.drawEllipse(QRectF(x, self.PAD, d, d))
         p.end()
 
 
@@ -2214,6 +2342,882 @@ class DevHubSelectorDialog(PulseDialog):
         elif wizard.mode == "local" and wizard.local_path:
             self.local_installer = (name, wizard.local_path)
             self.accept()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+
+# ============================================================
+#  UPDATE ROW — one winget upgrade candidate (current -> available)
+# ============================================================
+class UpdateRow(QFrame):
+    """One update candidate: checkbox + name + a current -> available
+    version audit. Pre-checked, same 'curated pack' contract AppSelector-
+    Dialog uses for its packs — the scan already promised these are real,
+    available upgrades; the user unticks whatever they don't want."""
+
+    def __init__(self, app_id: str, name: str, current: str, available: str, t: dict):
+        super().__init__()
+        self.app_id = app_id
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 12)
+        outer.setSpacing(12)
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.checkbox.setChecked(True)
+        outer.addWidget(self.checkbox)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        self._title = QLabel(name)
+        self._title.setWordWrap(True)
+        col.addWidget(self._title)
+        self._id_label = QLabel(app_id)
+        col.addWidget(self._id_label)
+        outer.addLayout(col, 1)
+
+        versions = QHBoxLayout()
+        versions.setSpacing(6)
+        self._current = QLabel(current or "—")
+        versions.addWidget(self._current)
+        self._arrow = QLabel("→")
+        versions.addWidget(self._arrow)
+        self._available = QLabel(available or "—")
+        versions.addWidget(self._available)
+        outer.addLayout(versions)
+
+        self.apply_theme(t)
+
+    def apply_theme(self, t: dict):
+        self.setStyleSheet(TH.update_row_qss(t))
+        self.checkbox.setStyleSheet(TH.checkbox_qss(t, t["accent"]))
+        self._title.setStyleSheet(TH.label_qss(t, "card"))
+        self._id_label.setStyleSheet(TH.label_qss(t, "caption"))
+        self._current.setStyleSheet(TH.version_chip_qss(t, accent=False))
+        self._available.setStyleSheet(TH.version_chip_qss(t, accent=True))
+        self._arrow.setStyleSheet(TH.label_qss(t, "faint"))
+
+    def is_checked(self) -> bool:
+        return self.checkbox.isChecked()
+
+
+# ============================================================
+#  UPDATE CENTER — live winget scan + selective / bulk apply
+# ============================================================
+class UpdateCenterDialog(PulseDialog):
+    """'Check for Updates': runs a live background winget scan (task
+    ScanForUpdates), presents a version audit (current vs. available) per
+    app with pre-checked rows, and hands back exactly which AppIds to
+    update — it never installs anything itself.
+
+    After exec():
+      Accepted + selected_ids non-empty -> caller runs task
+      'UpdateSelectedApps' with those AppIds through the app's normal
+      request_task()/_start_task() pipeline — the same live console, Stop
+      button and toast machinery as every other bulk deploy.
+      Rejected -> nothing to do.
+    """
+
+    def __init__(self, parent: QWidget, ps1_path: str, t: dict):
+        super().__init__(parent)
+        self._t = t
+        self._ps1_path = ps1_path
+        self.selected_ids: list[str] = []
+        self._rows: dict[str, UpdateRow] = {}
+        self._thread: QThread | None = None
+        self._worker: PowerShellTask | None = None
+        accent = t["accent"]
+
+        panel = _dialog_chrome(self, t, accent, width=640)
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(12)
+
+        head = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        title = QLabel("🔄  Update Center")
+        title.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        title_col.addWidget(title)
+        self._subtitle = QLabel("Scanning installed apps against winget…")
+        self._subtitle.setWordWrap(True)
+        self._subtitle.setStyleSheet(TH.label_qss(t, "body"))
+        title_col.addWidget(self._subtitle)
+        head.addLayout(title_col)
+        head.addStretch()
+        lay.addLayout(head)
+
+        self._stack = QStackedWidget()
+        lay.addWidget(self._stack)
+        self._loading_page = self._build_loading_page()
+        self._stack.addWidget(self._loading_page)
+        self._empty_page = self._build_empty_page()
+        self._stack.addWidget(self._empty_page)
+        self._error_page = self._build_error_page()
+        self._stack.addWidget(self._error_page)
+        self._results_page = self._build_results_page()
+        self._stack.addWidget(self._results_page)
+        self._stack.setCurrentWidget(self._loading_page)
+
+        self._start_scan()
+
+    # -- page builders ----------------------------------------------
+    def _build_loading_page(self) -> QWidget:
+        t = self._t
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 34, 0, 28)
+        lay.setSpacing(16)
+        lay.addStretch()
+        self._shimmer = ShimmerBar(height=6)
+        self._shimmer.set_theme(t)
+        lay.addWidget(self._shimmer)
+        label = QLabel("Checking every installed app against winget's catalog…")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(label)
+        lay.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.setFixedSize(96, 36)
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.setStyleSheet(TH.dialog_cancel_qss(t))
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        lay.addLayout(row)
+        return page
+
+    def _build_empty_page(self) -> QWidget:
+        t = self._t
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 30, 0, 24)
+        lay.setSpacing(10)
+        lay.addStretch()
+        icon = QLabel("✅")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("font-size: 40px; background: transparent; border: none;")
+        lay.addWidget(icon)
+        msg = QLabel("You're all caught up — every installed app is at its latest version.")
+        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        msg.setWordWrap(True)
+        msg.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(msg)
+        lay.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+        rescan = QPushButton("Rescan")
+        rescan.setFixedSize(96, 36)
+        rescan.setCursor(Qt.CursorShape.PointingHandCursor)
+        rescan.setStyleSheet(TH.dialog_cancel_qss(t))
+        rescan.clicked.connect(self._start_scan)
+        row.addWidget(rescan)
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_go_qss(t, t["accent"]))
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
+        lay.addLayout(row)
+        return page
+
+    def _build_error_page(self) -> QWidget:
+        t = self._t
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 30, 0, 24)
+        lay.setSpacing(10)
+        lay.addStretch()
+        icon = QLabel("⚠️")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("font-size: 40px; background: transparent; border: none;")
+        lay.addWidget(icon)
+        self._error_label = QLabel("")
+        self._error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._error_label.setWordWrap(True)
+        self._error_label.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(self._error_label)
+        lay.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_cancel_qss(t))
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
+        retry = QPushButton("Retry")
+        retry.setFixedSize(96, 36)
+        retry.setCursor(Qt.CursorShape.PointingHandCursor)
+        retry.setStyleSheet(TH.dialog_go_qss(t, t["accent"]))
+        retry.clicked.connect(self._start_scan)
+        row.addWidget(retry)
+        lay.addLayout(row)
+        return page
+
+    def _build_results_page(self) -> QWidget:
+        t = self._t
+        accent = t["accent"]
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(16)
+        all_btn = QPushButton("Select All")
+        all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        all_btn.setStyleSheet(TH.link_button_qss(t, accent))
+        all_btn.clicked.connect(lambda: self._set_all(True))
+        toolbar.addWidget(all_btn)
+        none_btn = QPushButton("Deselect All")
+        none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        none_btn.setStyleSheet(TH.link_button_qss(t, accent))
+        none_btn.clicked.connect(lambda: self._set_all(False))
+        toolbar.addWidget(none_btn)
+        toolbar.addStretch()
+        self._count_chip = QLabel("")
+        self._count_chip.setStyleSheet(TH.stat_chip_qss(t, "accent"))
+        toolbar.addWidget(self._count_chip)
+        lay.addLayout(toolbar)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(TH.scroll_area_qss(t))
+        scroll.setMaximumHeight(380)
+        self._host = QWidget()
+        self._host.setStyleSheet("background: transparent;")
+        self._host_lay = QVBoxLayout(self._host)
+        self._host_lay.setContentsMargins(0, 0, 6, 0)
+        self._host_lay.setSpacing(8)
+        self._host_lay.addStretch()
+        scroll.setWidget(self._host)
+        lay.addWidget(scroll)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        rescan = QPushButton("Rescan")
+        rescan.setCursor(Qt.CursorShape.PointingHandCursor)
+        rescan.setStyleSheet(TH.link_button_qss(t, accent))
+        rescan.clicked.connect(self._start_scan)
+        row.addWidget(rescan)
+        row.addStretch()
+
+        cancel = QPushButton("Cancel")
+        cancel.setFixedSize(90, 36)
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.setStyleSheet(TH.dialog_cancel_qss(t))
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+
+        self._update_selected_btn = QPushButton("Update Selected")
+        self._update_selected_btn.setFixedSize(168, 36)
+        self._update_selected_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_selected_btn.setStyleSheet(TH.dialog_secondary_go_qss(t, accent))
+        self._update_selected_btn.clicked.connect(self._accept_selected)
+        row.addWidget(self._update_selected_btn)
+
+        self._update_all_btn = QPushButton("⚡  Update All")
+        self._update_all_btn.setFixedSize(136, 36)
+        self._update_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_all_btn.setStyleSheet(TH.dialog_go_qss(t, accent))
+        self._update_all_btn.clicked.connect(self._accept_all)
+        row.addWidget(self._update_all_btn)
+        lay.addLayout(row)
+        return page
+
+    # -- scan lifecycle -----------------------------------------------
+    def _start_scan(self):
+        if self._thread is not None:
+            return  # a scan is already in flight
+        self._subtitle.setText("Scanning installed apps against winget…")
+        self._clear_rows()
+        self._stack.setCurrentWidget(self._loading_page)
+        self._shimmer.start()
+
+        thread = QThread(self)
+        worker = PowerShellTask(self._ps1_path, "ScanForUpdates", timeout=90)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_scan_finished)
+        worker.failed.connect(self._on_scan_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_thread_finished)
+        self._thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _on_thread_finished(self):
+        if self._worker is not None:
+            self._worker.deleteLater()
+            self._worker = None
+        if self._thread is not None:
+            self._thread.deleteLater()
+            self._thread = None
+
+    def _on_scan_failed(self, message: str):
+        self._show_error(message or "The update scan failed to run.")
+
+    def _on_scan_finished(self, result: TaskResult):
+        self._shimmer.stop()
+        if not result.success:
+            self._show_error(result.message)
+            return
+        updates = result.data if isinstance(result.data, list) else []
+        if not updates:
+            self._subtitle.setText("Every installed app is up to date.")
+            self._stack.setCurrentWidget(self._empty_page)
+            return
+        self._populate_rows(updates)
+        plural = "" if len(updates) == 1 else "s"
+        self._subtitle.setText(
+            f"{len(updates)} update{plural} available — audited against winget just now.")
+        self._stack.setCurrentWidget(self._results_page)
+
+    def _show_error(self, message: str):
+        self._shimmer.stop()
+        self._error_label.setText(message or "The update scan failed.")
+        self._subtitle.setText("Scan failed.")
+        self._stack.setCurrentWidget(self._error_page)
+
+    # -- row management -------------------------------------------------
+    def _clear_rows(self):
+        self._rows.clear()
+        while self._host_lay.count() > 1:   # keep the trailing stretch
+            item = self._host_lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def _populate_rows(self, updates: list):
+        self._clear_rows()
+        for entry in updates:
+            if not isinstance(entry, dict):
+                continue
+            app_id = str(entry.get("Id", "")).strip()
+            if not app_id:
+                continue
+            name = str(entry.get("Name") or app_id)
+            current = str(entry.get("CurrentVersion") or "—")
+            available = str(entry.get("AvailableVersion") or "—")
+            row = UpdateRow(app_id, name, current, available, self._t)
+            row.checkbox.toggled.connect(self._update_count)
+            self._rows[app_id] = row
+            self._host_lay.insertWidget(self._host_lay.count() - 1, row)
+        self._update_count()
+
+    def _set_all(self, checked: bool):
+        for row in self._rows.values():
+            row.checkbox.setChecked(checked)
+
+    def _update_count(self, _checked: bool = False):
+        count = sum(1 for r in self._rows.values() if r.is_checked())
+        total = len(self._rows)
+        self._count_chip.setText(f"{count} of {total} selected")
+        self._update_selected_btn.setText(
+            f"Update Selected ({count})" if count else "Update Selected")
+        self._update_selected_btn.setEnabled(count > 0)
+
+    # -- acceptance -------------------------------------------------
+    def _accept_selected(self):
+        self.selected_ids = [aid for aid, row in self._rows.items() if row.is_checked()]
+        if not self.selected_ids:
+            return
+        self.accept()
+
+    def _accept_all(self):
+        self.selected_ids = list(self._rows.keys())
+        if not self.selected_ids:
+            return
+        self.accept()
+
+    def reject(self):
+        if self._worker is not None:
+            self._worker.cancel()
+        super().reject()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+
+# ============================================================
+#  STARTUP ROW — one startup entry with a live enable/disable switch
+# ============================================================
+class StartupRow(QFrame):
+    """One startup entry: name, boot-impact badge, recommendation tag and
+    the backend's plain-language reason, plus a ToggleSwitch that fires
+    the disable/enable task the instant it flips — no separate 'Apply'
+    step, per the brief's 'fluid, native toggle switches ... instantly'."""
+
+    _REC_LABELS = {"Disable": "Recommended to Disable", "Keep": "Safe to Keep", "Review": "Worth Reviewing"}
+
+    toggle_requested = Signal(str, bool)   # (encoded_id, want_enabled)
+
+    def __init__(self, item: dict, t: dict):
+        super().__init__()
+        self.item_id = str(item["Id"])
+        self._enabled = bool(item["Enabled"])
+        self._impact = str(item.get("Impact") or "Medium")
+        self._recommendation = str(item.get("Recommendation") or "Review")
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 12)
+        outer.setSpacing(12)
+
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
+        self._name = QLabel(str(item.get("Name", "")))
+        name_row.addWidget(self._name)
+        self._impact_badge = QLabel(f"{self._impact.upper()} IMPACT")
+        name_row.addWidget(self._impact_badge)
+        self._rec_badge = QLabel(self._REC_LABELS.get(self._recommendation, self._recommendation))
+        name_row.addWidget(self._rec_badge)
+        name_row.addStretch()
+        col.addLayout(name_row)
+
+        type_label = "Registry (Run key)" if item.get("Type") == "Registry" else "Startup folder shortcut"
+        reason = str(item.get("Reason") or "")
+        self._meta = QLabel(f"{type_label}  ·  {reason}")
+        self._meta.setWordWrap(True)
+        col.addWidget(self._meta)
+        outer.addLayout(col, 1)
+
+        self.switch = ToggleSwitch(t, checked=self._enabled)
+        self.switch.toggled.connect(self._on_switch)
+        outer.addWidget(self.switch, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.apply_theme(t)
+        self._sync_disabled_prop()
+
+    def _on_switch(self, checked: bool):
+        self.toggle_requested.emit(self.item_id, checked)
+
+    def set_enabled_state(self, enabled: bool):
+        self._enabled = enabled
+        self.switch.set_checked_silent(enabled)
+        self._sync_disabled_prop()
+
+    def set_busy(self, busy: bool):
+        self.switch.set_busy(busy)
+
+    def _sync_disabled_prop(self):
+        self.setProperty("disabled_item", not self._enabled)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def apply_theme(self, t: dict):
+        self.setStyleSheet(TH.startup_row_qss(t))
+        self._name.setStyleSheet(TH.label_qss(t, "card"))
+        self._impact_badge.setStyleSheet(TH.impact_badge_qss(t, self._impact))
+        self._rec_badge.setStyleSheet(TH.recommendation_badge_qss(t, self._recommendation))
+        self._meta.setStyleSheet(TH.label_qss(t, "caption"))
+        self.switch.apply_theme(t)
+
+
+# ============================================================
+#  STARTUP MANAGER — intelligent optimization hub
+# ============================================================
+class StartupManagerDialog(PulseDialog):
+    """Startup Report, overhauled into an optimization hub: scans Run keys
+    + Startup folders (task StartupReport, JSON payload), groups every
+    entry under the backend's recommendation, and lets the user flip each
+    one live via ToggleSwitch — every click round-trips through its own
+    worker immediately. Nothing is handed back to the caller: this dialog
+    is fully self-contained (unlike AppSelectorDialog/UpdateCenterDialog,
+    which only decide what a *later* task should run), so main.py just
+    opens it and moves on when it closes."""
+
+    def __init__(self, parent: QWidget, ps1_path: str, t: dict):
+        super().__init__(parent)
+        self._t = t
+        self._ps1_path = ps1_path
+        self._rows: dict[str, StartupRow] = {}
+        self._items: dict[str, dict] = {}
+
+        self._scan_thread: QThread | None = None
+        self._scan_worker: PowerShellTask | None = None
+        self._toggle_thread: QThread | None = None
+        self._toggle_worker: PowerShellTask | None = None
+        self._toggle_queue: list[tuple[str, bool]] = []
+        self._active_toggle_id: str | None = None
+        self._active_want_enabled: bool = False
+
+        accent = t["accent"]
+        panel = _dialog_chrome(self, t, accent, width=640)
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(12)
+
+        head = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        title = QLabel("🚀  Startup Manager")
+        title.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        title_col.addWidget(title)
+        self._subtitle = QLabel("Auditing Run keys and Startup folders…")
+        self._subtitle.setWordWrap(True)
+        self._subtitle.setStyleSheet(TH.label_qss(t, "body"))
+        title_col.addWidget(self._subtitle)
+        head.addLayout(title_col)
+        head.addStretch()
+        lay.addLayout(head)
+
+        self._stack = QStackedWidget()
+        lay.addWidget(self._stack)
+        self._loading_page = self._build_loading_page()
+        self._stack.addWidget(self._loading_page)
+        self._error_page = self._build_error_page()
+        self._stack.addWidget(self._error_page)
+        self._results_page = self._build_results_page()
+        self._stack.addWidget(self._results_page)
+        self._stack.setCurrentWidget(self._loading_page)
+
+        self._status_strip = QLabel("")
+        self._status_strip.setWordWrap(True)
+        self._status_strip.hide()
+        lay.addWidget(self._status_strip)
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(self._status_strip.hide)
+
+        self._start_scan()
+
+    # -- page builders ----------------------------------------------
+    def _build_loading_page(self) -> QWidget:
+        t = self._t
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 34, 0, 28)
+        lay.setSpacing(16)
+        lay.addStretch()
+        self._shimmer = ShimmerBar(height=6)
+        self._shimmer.set_theme(t)
+        lay.addWidget(self._shimmer)
+        label = QLabel("Reading Run keys, the Startup folders, and scoring boot impact…")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(label)
+        lay.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.setFixedSize(96, 36)
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.setStyleSheet(TH.dialog_cancel_qss(t))
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        lay.addLayout(row)
+        return page
+
+    def _build_error_page(self) -> QWidget:
+        t = self._t
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 30, 0, 24)
+        lay.setSpacing(10)
+        lay.addStretch()
+        icon = QLabel("⚠️")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("font-size: 40px; background: transparent; border: none;")
+        lay.addWidget(icon)
+        self._error_label = QLabel("")
+        self._error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._error_label.setWordWrap(True)
+        self._error_label.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(self._error_label)
+        lay.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_cancel_qss(t))
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
+        retry = QPushButton("Retry")
+        retry.setFixedSize(96, 36)
+        retry.setCursor(Qt.CursorShape.PointingHandCursor)
+        retry.setStyleSheet(TH.dialog_go_qss(t, t["accent"]))
+        retry.clicked.connect(self._start_scan)
+        row.addWidget(retry)
+        lay.addLayout(row)
+        return page
+
+    def _build_results_page(self) -> QWidget:
+        t = self._t
+        accent = t["accent"]
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        summary = QHBoxLayout()
+        summary.setSpacing(8)
+        self._chip_enabled = QLabel("")
+        self._chip_enabled.setStyleSheet(TH.stat_chip_qss(t, "neutral"))
+        summary.addWidget(self._chip_enabled)
+        self._chip_disabled = QLabel("")
+        self._chip_disabled.setStyleSheet(TH.stat_chip_qss(t, "neutral"))
+        summary.addWidget(self._chip_disabled)
+        self._chip_recommended = QLabel("")
+        self._chip_recommended.setStyleSheet(TH.stat_chip_qss(t, "warn"))
+        summary.addWidget(self._chip_recommended)
+        summary.addStretch()
+        lay.addLayout(summary)
+
+        self._optimize_btn = QPushButton("⚡  Optimize Startup")
+        self._optimize_btn.setFixedHeight(38)
+        self._optimize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._optimize_btn.setStyleSheet(TH.dialog_go_qss(t, accent))
+        self._optimize_btn.setToolTip(
+            "Disables every currently-enabled item the audit recommends disabling, one by one.")
+        self._optimize_btn.clicked.connect(self._start_optimize)
+        lay.addWidget(self._optimize_btn)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(TH.scroll_area_qss(t))
+        scroll.setMaximumHeight(360)
+        self._host = QWidget()
+        self._host.setStyleSheet("background: transparent;")
+        self._host_lay = QVBoxLayout(self._host)
+        self._host_lay.setContentsMargins(0, 0, 6, 0)
+        self._host_lay.setSpacing(8)
+        self._host_lay.addStretch()
+        scroll.setWidget(self._host)
+        lay.addWidget(scroll)
+
+        row = QHBoxLayout()
+        rescan = QPushButton("Rescan")
+        rescan.setCursor(Qt.CursorShape.PointingHandCursor)
+        rescan.setStyleSheet(TH.link_button_qss(t, accent))
+        rescan.clicked.connect(self._start_scan)
+        row.addWidget(rescan)
+        row.addStretch()
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_secondary_go_qss(t, accent))
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        lay.addLayout(row)
+        return page
+
+    # -- scan lifecycle -----------------------------------------------
+    def _start_scan(self):
+        if self._scan_thread is not None:
+            return
+        self._subtitle.setText("Auditing Run keys and Startup folders…")
+        self._clear_rows()
+        self._stack.setCurrentWidget(self._loading_page)
+        self._shimmer.start()
+
+        thread = QThread(self)
+        worker = PowerShellTask(self._ps1_path, "StartupReport", timeout=60)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_scan_finished)
+        worker.failed.connect(self._on_scan_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_scan_thread_finished)
+        self._scan_thread = thread
+        self._scan_worker = worker
+        thread.start()
+
+    def _on_scan_thread_finished(self):
+        if self._scan_worker is not None:
+            self._scan_worker.deleteLater()
+            self._scan_worker = None
+        if self._scan_thread is not None:
+            self._scan_thread.deleteLater()
+            self._scan_thread = None
+
+    def _on_scan_failed(self, message: str):
+        self._show_error(message or "The startup audit failed to run.")
+
+    def _on_scan_finished(self, result: TaskResult):
+        self._shimmer.stop()
+        if not result.success:
+            self._show_error(result.message)
+            return
+        items = result.data if isinstance(result.data, list) else []
+        items = [it for it in items if isinstance(it, dict) and it.get("Id")]
+        if not items:
+            self._show_error("No startup items were found to audit.")
+            return
+        self._populate_rows(items)
+        self._subtitle.setText("Toggle any item to change it instantly — changes are reversible.")
+        self._stack.setCurrentWidget(self._results_page)
+
+    def _show_error(self, message: str):
+        self._shimmer.stop()
+        self._error_label.setText(message or "The startup audit failed.")
+        self._subtitle.setText("Audit failed.")
+        self._stack.setCurrentWidget(self._error_page)
+
+    # -- row management -------------------------------------------------
+    def _clear_rows(self):
+        self._rows.clear()
+        while self._host_lay.count() > 1:   # keep the trailing stretch
+            item = self._host_lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def _populate_rows(self, items: list[dict]):
+        self._clear_rows()
+        self._items = {str(it["Id"]): it for it in items}
+
+        buckets: dict[str, list[dict]] = {"Disable": [], "Review": [], "Keep": [], "_off": []}
+        for it in items:
+            if not it.get("Enabled"):
+                buckets["_off"].append(it)
+            else:
+                buckets.setdefault(it.get("Recommendation", "Review"), []).append(it)
+
+        sections = [
+            ("⚠️  Recommended to Disable", buckets["Disable"]),
+            ("🔎  Worth Reviewing", buckets["Review"]),
+            ("✅  Safe to Keep", buckets["Keep"]),
+            ("⏸️  Currently Disabled", buckets["_off"]),
+        ]
+        for label, rows in sections:
+            if not rows:
+                continue
+            header = QLabel(f"{label}   ·   {len(rows)}")
+            header.setStyleSheet(TH.label_qss(self._t, "section"))
+            self._host_lay.insertWidget(self._host_lay.count() - 1, header)
+            for it in rows:
+                row = StartupRow(it, self._t)
+                row.toggle_requested.connect(self._on_toggle_requested)
+                self._rows[str(it["Id"])] = row
+                self._host_lay.insertWidget(self._host_lay.count() - 1, row)
+        self._update_summary()
+
+    def _update_summary(self):
+        items = list(self._items.values())
+        enabled = sum(1 for it in items if it.get("Enabled"))
+        disabled = len(items) - enabled
+        recommended = sum(
+            1 for it in items if it.get("Enabled") and it.get("Recommendation") == "Disable")
+        self._chip_enabled.setText(f"{enabled} enabled")
+        self._chip_disabled.setText(f"{disabled} disabled")
+        self._chip_recommended.setText(f"{recommended} recommended to disable")
+        self._optimize_btn.setEnabled(recommended > 0)
+        self._optimize_btn.setText(
+            f"⚡  Optimize Startup ({recommended})" if recommended else "⚡  Optimize Startup — all clear")
+
+    # -- toggle queue (sequential — one PowerShell process at a time) --
+    def _on_toggle_requested(self, item_id: str, want_enabled: bool):
+        self._toggle_queue.append((item_id, want_enabled))
+        self._pump_toggle_queue()
+
+    def _start_optimize(self):
+        recommended_ids = [
+            it["Id"] for it in self._items.values()
+            if it.get("Enabled") and it.get("Recommendation") == "Disable"
+        ]
+        if not recommended_ids:
+            return
+        self._show_status("info", f"Disabling {len(recommended_ids)} recommended item(s)…")
+        for item_id in recommended_ids:
+            row = self._rows.get(item_id)
+            if row is not None:
+                row.set_busy(True)
+            self._toggle_queue.append((item_id, False))
+        self._pump_toggle_queue()
+
+    def _pump_toggle_queue(self):
+        if self._toggle_worker is not None or not self._toggle_queue:
+            return
+        item_id, want_enabled = self._toggle_queue.pop(0)
+        row = self._rows.get(item_id)
+        if row is not None:
+            row.set_busy(True)
+        self._active_toggle_id = item_id
+        self._active_want_enabled = want_enabled
+
+        task_name = "StartupEnableItem" if want_enabled else "StartupDisableItem"
+        thread = QThread(self)
+        worker = PowerShellTask(self._ps1_path, task_name, timeout=60, app_ids=[item_id])
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_toggle_finished)
+        worker.failed.connect(self._on_toggle_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_toggle_thread_finished)
+        self._toggle_thread = thread
+        self._toggle_worker = worker
+        thread.start()
+
+    def _on_toggle_thread_finished(self):
+        if self._toggle_worker is not None:
+            self._toggle_worker.deleteLater()
+            self._toggle_worker = None
+        if self._toggle_thread is not None:
+            self._toggle_thread.deleteLater()
+            self._toggle_thread = None
+        QTimer.singleShot(0, self._pump_toggle_queue)
+
+    def _on_toggle_finished(self, result: TaskResult):
+        item_id, want_enabled = self._active_toggle_id, self._active_want_enabled
+        row = self._rows.get(item_id)
+        if row is not None:
+            row.set_busy(False)
+        if result.success:
+            if item_id in self._items:
+                self._items[item_id]["Enabled"] = want_enabled
+            if row is not None:
+                row.set_enabled_state(want_enabled)
+            self._show_status("ok", f"✓  {result.message}")
+        else:
+            if row is not None:
+                row.set_enabled_state(not want_enabled)   # snap back
+            self._show_status("err", f"✕  {result.message}")
+        self._update_summary()
+
+    def _on_toggle_failed(self, message: str):
+        item_id = self._active_toggle_id
+        row = self._rows.get(item_id)
+        if row is not None:
+            row.set_busy(False)
+            row.set_enabled_state(not self._active_want_enabled)
+        self._show_status("err", f"✕  {message}")
+        self._update_summary()
+
+    def _show_status(self, tone: str, message: str):
+        self._status_strip.setText(message)
+        self._status_strip.setStyleSheet(TH.inline_status_qss(self._t, tone))
+        self._status_strip.show()
+        self._status_timer.start(4000)
+
+    # -- lifecycle --------------------------------------------------
+    def _cancel_workers(self):
+        if self._scan_worker is not None:
+            self._scan_worker.cancel()
+        if self._toggle_worker is not None:
+            self._toggle_worker.cancel()
+        self._toggle_queue.clear()
+
+    def reject(self):
+        self._cancel_workers()
+        super().reject()
+
+    def accept(self):
+        self._cancel_workers()
+        super().accept()
 
     def showEvent(self, e):
         super().showEvent(e)

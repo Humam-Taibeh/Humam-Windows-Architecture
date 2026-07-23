@@ -23,6 +23,7 @@ Shared utilities for the Pulse GUI:
 from __future__ import annotations
 
 import codecs
+import json
 import subprocess
 import sys
 import threading
@@ -48,6 +49,12 @@ from frontend import theme as TH
 class TaskResult:
     success: bool
     message: str
+    # Structured payload (v6.3): populated when the backend emitted a
+    # ##PULSE##DATA|<json> line (Write-GuiData in 00-Foundation.ps1) - the
+    # winget update scan and the startup report both use this instead of
+    # cramming a table into the human-readable message. None for every
+    # older/simpler task that never emits one.
+    data: object | None = None
 
 
 # Verdict sentinel (v6.1): the backend prefixes its final contract line with
@@ -55,6 +62,8 @@ class TaskResult:
 # mistaken for the verdict. Bare SUCCESS|/ERROR| lines from pre-6.1 backends
 # are still accepted as a fallback.
 VERDICT_SENTINEL = "##PULSE##"
+# Structured-data line prefix (v6.3) - see TaskResult.data above.
+VERDICT_DATA_PREFIX = VERDICT_SENTINEL + "DATA|"
 
 
 # ============================================================
@@ -272,9 +281,11 @@ class PowerShellTask(QObject):
                     lines[-1] = text
                 else:
                     lines.append(text)
-                if text:
+                if text and not text.startswith(VERDICT_DATA_PREFIX):
                     # The console shows the human-readable verdict, not the
                     # machine sentinel; `lines` keeps the raw text for parsing.
+                    # DATA payload lines are structured JSON for the caller,
+                    # not console output - they never reach the live console.
                     shown = (text[len(VERDICT_SENTINEL):]
                              if text.startswith(VERDICT_SENTINEL) else text)
                     self.output.emit(shown, replace)
@@ -314,7 +325,7 @@ class PowerShellTask(QObject):
             # the sentinel are parsed via the strict legacy fallback.
             last_line = next(
                 (ln[len(VERDICT_SENTINEL):] for ln in reversed(lines)
-                 if ln.startswith(VERDICT_SENTINEL)),
+                 if ln.startswith(VERDICT_SENTINEL) and not ln.startswith(VERDICT_DATA_PREFIX)),
                 None)
             if last_line is None:
                 last_line = next(
@@ -322,12 +333,26 @@ class PowerShellTask(QObject):
                      if ln.startswith("SUCCESS|") or ln.startswith("ERROR|")),
                     "")
 
+            # Structured payload (v6.3): the most recent ##PULSE##DATA| line,
+            # if the task emitted one (Write-GuiData). Malformed JSON never
+            # aborts the verdict - it just leaves data as None.
+            data = None
+            raw_data = next(
+                (ln[len(VERDICT_DATA_PREFIX):] for ln in reversed(lines)
+                 if ln.startswith(VERDICT_DATA_PREFIX)),
+                None)
+            if raw_data is not None:
+                try:
+                    data = json.loads(raw_data)
+                except ValueError:
+                    data = None
+
             if last_line.startswith("SUCCESS"):
                 msg = last_line.split("|", 1)[1].strip() if "|" in last_line else "Task completed."
-                self.finished.emit(TaskResult(True, msg))
+                self.finished.emit(TaskResult(True, msg, data))
             elif last_line.startswith("ERROR"):
                 msg = last_line.split("|", 1)[1].strip() if "|" in last_line else "Task failed."
-                self.finished.emit(TaskResult(False, msg))
+                self.finished.emit(TaskResult(False, msg, data))
             else:
                 # Backend didn't follow the SUCCESS|/ERROR| contract. Don't dump the
                 # raw console output into the "silent executor" UI - just report a

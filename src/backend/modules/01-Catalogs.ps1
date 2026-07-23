@@ -331,5 +331,6 @@ $Script:AdminRequiredTasks = @(
     "NetworkOptimization","UltimatePowerPlan","RemoveOneDrive","RemoveEdge","ReinstallEdge",
     "CreateRestorePoint","DriverBackup","RestoreServices","RestoreEdge","ApplyAllPrivacy",
     "ResetTweaks","InstallEssentialApps","InstallDevHub","InstallGamingApps",
-    "InstallDiagnosticApps","InstallRuntimes","InstallOfficeODT","InstallOfficeODTAuto"
+    "InstallDiagnosticApps","InstallRuntimes","InstallOfficeODT","InstallOfficeODTAuto",
+    "UpdateSelectedApps","StartupDisableItem","StartupEnableItem"
 )

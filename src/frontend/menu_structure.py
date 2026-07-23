@@ -53,6 +53,17 @@ Item schema:
              Sourced from DEV_HUB_GROUPS/DEV_HUB_BUNDLES below, which mirror
              $Apps_DevRuntimes/DevIDEs/DevAI/DevData/DevContainers and
              $Script:DevHubBundles/DevHubDependencyHints in 01-Catalogs.ps1.
+    update_center  bool  when True, the GUI opens widgets.UpdateCenterDialog
+             instead of every other selector — it runs its own live winget
+             scan (task ScanForUpdates), shows a current-vs-available
+             version audit, and hands back the ticked AppIds. main.py then
+             runs "task" (UpdateSelectedApps) with those AppIds through the
+             normal pipeline, exactly like an "apps" selection would.
+    startup_manager  bool  when True, the GUI opens
+             widgets.StartupManagerDialog instead of running "task"
+             directly — a self-contained optimization hub (scan, group by
+             recommendation, live per-item ToggleSwitch) that never hands
+             anything back; main.py just opens it and moves on.
 """
 
 # ============================================================
@@ -266,9 +277,12 @@ CATEGORIES = [
                   "Cloud file sync client for OneDrive.",
                   "https://www.microsoft.com/en-us/microsoft-365/onedrive/download"),
              ]},
-            {"icon": "🚀", "title": "Startup Report",
-             "desc": "Audit everything that launches at boot (Run keys + Startup folders).",
-             "task": "StartupReport", "timeout": 300},
+            {"icon": "🔄", "title": "Check for Updates",
+             "desc": "Live winget scan for every installed app — audit current vs. available versions, then update exactly what you pick.",
+             "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
+            {"icon": "🚀", "title": "Startup Manager",
+             "desc": "Smart boot-impact audit of everything that launches at sign-in, with instant enable/disable toggles.",
+             "task": "StartupReport", "timeout": 300, "startup_manager": True},
         ],
     },
     # --------------------------------------------------------

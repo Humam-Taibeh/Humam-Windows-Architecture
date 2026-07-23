@@ -90,6 +90,74 @@ function Get-LatestVersion {
 }
 
 # ============================================================
+#  UPDATE CENTER — winget upgrade scan (v6.3)
+# ============================================================
+function Get-WingetUpgradeList {
+    <#
+    .SYNOPSIS
+        Returns every app winget reports as upgradable, as an array of
+        PSCustomObject { Id, Name, CurrentVersion, AvailableVersion }.
+
+    .DESCRIPTION
+        `winget upgrade` has no --output json in the stable CLI, so this
+        parses its aligned text table the same way every serious community
+        tool does: read the column START OFFSETS from the header row itself
+        (Name / Id / Version / Available[/ Source]), then slice each data
+        row by those offsets - never by splitting on whitespace, which
+        breaks the instant an app name contains a space (most of them do).
+        Malformed/unrecognized rows are skipped individually rather than
+        aborting the whole scan - a partial result beats a hard failure.
+    #>
+    if (-not $global:WingetAvailable) { return @() }
+
+    $Raw = & winget upgrade --include-unknown --accept-source-agreements --disable-interactivity 2>$null
+    if (-not $Raw) { return @() }
+    $Lines = @($Raw | Where-Object { $_ -and $_.Trim() -ne '' })
+
+    $HeaderIdx = -1
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match '^Name\s+Id\s+Version\s+Available') { $HeaderIdx = $i; break }
+    }
+    if ($HeaderIdx -eq -1) { return @() }   # "No installed package found..." / "No applicable update found"
+
+    $Header = $Lines[$HeaderIdx]
+    $NameStart      = $Header.IndexOf("Name")
+    $IdStart        = $Header.IndexOf("Id")
+    $VersionStart   = $Header.IndexOf("Version")
+    $AvailableStart = $Header.IndexOf("Available")
+    $SourceStart    = $Header.IndexOf("Source")   # may be -1 (msstore-only listings omit it)
+
+    $Items = @()
+    for ($i = $HeaderIdx + 2; $i -lt $Lines.Count; $i++) {   # +2 skips header + "----" separator
+        $Line = $Lines[$i]
+        if ($Line -match '^\d+\s+upgrades?\s+available' -or $Line -match '^-+$') { continue }
+        if ($Line -match '^\d+\s+package\(s\)') { continue }
+        if ($Line.Length -le $IdStart) { continue }
+        try {
+            $AvailEnd = if ($SourceStart -gt $AvailableStart) { $SourceStart } else { $Line.Length }
+            $Name = $Line.Substring($NameStart, [Math]::Min($IdStart, $Line.Length) - $NameStart).Trim()
+            $Id   = $Line.Substring($IdStart, [Math]::Min($VersionStart, $Line.Length) - $IdStart).Trim()
+            $Ver  = $Line.Substring($VersionStart, [Math]::Min($AvailableStart, $Line.Length) - $VersionStart).Trim()
+            $Avail = $Line.Substring($AvailableStart, [Math]::Min($AvailEnd, $Line.Length) - $AvailableStart).Trim()
+            if ([string]::IsNullOrWhiteSpace($Id) -or [string]::IsNullOrWhiteSpace($Name)) { continue }
+            # "have an upgrade available but require explicit targeting" -
+            # winget still lists them with a version of "Unknown"; keep them
+            # (--include-unknown asked for exactly this) but the frontend
+            # audit reads better with the raw values, so pass through as-is.
+            $Items += [PSCustomObject]@{
+                Id              = $Id
+                Name            = $Name
+                CurrentVersion  = $Ver
+                AvailableVersion = $Avail
+            }
+        } catch {
+            continue   # one unparsable row never aborts the whole scan
+        }
+    }
+    return $Items
+}
+
+# ============================================================
 #  WINGET / CHOCOLATEY EXECUTION
 # ============================================================
 function Stop-LockingProcesses {
