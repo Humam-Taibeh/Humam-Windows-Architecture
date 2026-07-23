@@ -47,20 +47,25 @@ $Script:TweakCatalog = @(
 #  APP CATALOG (mirrored by menu_structure.py)
 # ============================================================
 $Apps_Basic = @(
-    @("Google.Chrome", "Google Chrome"), @("Spotify.Spotify", "Spotify (Win32)"),
+    @("Google.Chrome", "Google Chrome"), @("Brave.Brave", "Brave Browser"),
+    @("Mozilla.Firefox", "Mozilla Firefox"), @("Telegram.TelegramDesktop", "Telegram Desktop"),
+    @("Spotify.Spotify", "Spotify (Win32)"),
     @("Discord.Discord", "Discord"), @("9NKSQCEZVDDB", "WhatsApp (Store)"),
     @("9PKTQ5699M62", "iCloud (Store)"), @("Apple.iTunes", "iTunes"),
     @("7zip.7zip", "7-Zip"), @("VideoLAN.VLC", "VLC Media Player"),
-    @("TheDocumentFoundation.LibreOffice", "LibreOffice")
+    @("TheDocumentFoundation.LibreOffice", "LibreOffice"), @("Notion.Notion", "Notion")
 )
 $Apps_Gaming = @(
     @("Valve.Steam", "Steam"), @("EpicGames.EpicGamesLauncher", "Epic Games"),
     @("RockstarGames.Launcher", "Rockstar Games"), @("BlueStacks.BlueStacks", "BlueStacks 5")
 )
+# Notion lives in $Apps_Basic (Browsers & Daily Apps) - it's a daily
+# productivity app, not a hardware tool; this catalog stays purely
+# diagnostic/monitoring utilities.
 $Apps_Tools = @(
     @("CPUID.CPU-Z", "CPU-Z"), @("TechPowerUp.GPU-Z", "GPU-Z"),
     @("CPUID.HWMonitor", "HWMonitor"), @("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo"),
-    @("Guru3D.Afterburner", "MSI Afterburner"), @("Notion.Notion", "Notion")
+    @("Guru3D.Afterburner", "MSI Afterburner")
 )
 # Word/Excel/PowerPoint/Outlook/OneNote/Access/Publisher ship as ONE
 # Click-to-Run bundle with no per-app winget package - the only winget
@@ -149,6 +154,9 @@ $Script:DevHubDependencyHints = @{
 # ============================================================
 $Script:DownloadUrls = @{
     "Google.Chrome"                 = "https://www.google.com/chrome/"
+    "Brave.Brave"                   = "https://brave.com/download/"
+    "Mozilla.Firefox"               = "https://www.mozilla.org/firefox/new/"
+    "Telegram.TelegramDesktop"      = "https://telegram.org/apps"
     "Spotify.Spotify"               = "https://www.spotify.com/download"
     "Discord.Discord"               = "https://discord.com/download"
     "Apple.iTunes"                  = "https://www.apple.com/itunes/download/"

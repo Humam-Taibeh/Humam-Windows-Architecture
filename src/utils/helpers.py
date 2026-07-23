@@ -390,7 +390,7 @@ class Toast(QFrame):
     """
 
     WIDTH = 340
-    GLYPHS = {"success": "✓", "error": "✕", "info": "i"}
+    GLYPHS = {"success": "✓", "error": "✕", "info": "i", "warn": "⚠"}
 
     def __init__(self, parent: QWidget, kind: str, message: str,
                  t: dict, duration_ms: int = 5000):
@@ -451,7 +451,8 @@ class Toast(QFrame):
 
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
-        accent = {"success": t["ok"], "error": t["err"]}.get(self.kind, t["accent"])
+        accent = {"success": t["ok"], "error": t["err"], "warn": t["warn"]}.get(
+            self.kind, t["accent"])
         self.setStyleSheet(TH.toast_qss(t, accent))
         self._chip.setStyleSheet(TH.toast_icon_qss(t, accent))
         self._label.setStyleSheet(TH.toast_text_qss(t))

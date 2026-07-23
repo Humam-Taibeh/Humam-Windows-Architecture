@@ -104,6 +104,17 @@ class PulseDialog(QDialog):
         super().mousePressEvent(e)
 
 
+# Every scrollable "row list" selector (App Selector, Dev Hub, Update
+# Center, Startup Manager, and a hub's own landing screen) shares this one
+# width — global theme consistency means these can never quietly drift
+# apart the way UpdateCenterDialog (640px) and AppSelectorDialog (560px)
+# once had. Simple one-off confirmations/wizards (ConfirmDialog,
+# CommandPalette, OfficeWizardDialog, ToolInstallWizardDialog) keep their
+# own narrower, purpose-built widths — widening a two-sentence confirm to
+# 700px would trade clutter for empty space, not fix it.
+SELECTOR_DIALOG_WIDTH = 700
+
+
 def _dialog_chrome(dialog: PulseDialog, t: dict, accent: str,
                    width: int, radius: int = 18, anchor: str = "center") -> "DepthCard":
     """One shared construction path for every Pulse dialog: the frosted
@@ -225,7 +236,8 @@ class TitleBar(QWidget):
     }
 
     def __init__(self, window: QMainWindow, t: dict,
-                 app_name: str, version: str, channel: str = ""):
+                 app_name: str, version: str, channel: str = "",
+                 is_admin: bool = True):
         super().__init__(window)
         self._window = window
         self._drag_offset: QPoint | None = None
@@ -247,6 +259,18 @@ class TitleBar(QWidget):
         if channel:
             self._channel = QLabel(channel.upper())
             lay.addWidget(self._channel)
+        # Persistent, always-visible counterpart to the once-only startup
+        # toast — a user browsing categories before ever clicking anything
+        # should already know why an elevated action will fail, instead of
+        # finding out from a red error after the fact.
+        self._admin_badge: QLabel | None = None
+        if not is_admin:
+            self._admin_badge = QLabel("⚠ NOT ELEVATED")
+            self._admin_badge.setToolTip(
+                "Some system-level actions need Administrator rights. "
+                "Close Pulse and re-launch it via right-click → "
+                "Run as administrator.")
+            lay.addWidget(self._admin_badge)
         lay.addStretch()
 
         btns = QHBoxLayout()
@@ -287,6 +311,8 @@ class TitleBar(QWidget):
         self._version.setStyleSheet(TH.label_qss(t, "version"))
         if self._channel is not None:
             self._channel.setStyleSheet(TH.beta_badge_qss(t))
+        if self._admin_badge is not None:
+            self._admin_badge.setStyleSheet(TH.admin_badge_qss(t))
         for btn in (self._btn_theme, self._btn_min, self.btn_max):
             btn.setStyleSheet(TH.titlebar_button_qss(t, t["titlebar_hover"]))
         self._btn_close.setStyleSheet(TH.titlebar_close_qss(t))
@@ -832,6 +858,80 @@ class ConfirmDialog(PulseDialog):
 
 
 # ============================================================
+#  HUB DIALOG — a hub card's landing screen (drill-down navigation)
+# ============================================================
+class HubDialog(PulseDialog):
+    """A primary hub card's landing screen: its sub-actions rendered as
+    the exact same GlassCard a category page uses — zero new card design,
+    100% visual parity with the page this modal is standing in for. This
+    is what lets Software Management collapse to four spacious primary
+    cards (Browsers & Daily Apps / Developer & University Hub / Gaming &
+    Launchers / System Tools & Utilities) without deleting a single
+    existing action: each hub is just a focused, one-level-deeper page.
+
+    Picking a sub-card closes this dialog and hands it back via
+    `chosen_item`; the caller runs it through the normal request_task()
+    pipeline exactly as if the card lived directly on a category page."""
+
+    def __init__(self, parent: QWidget, hub: dict, t: dict):
+        super().__init__(parent)
+        self.chosen_item: dict | None = None
+        accent = t["accent"]
+        panel = _dialog_chrome(self, t, accent, width=SELECTOR_DIALOG_WIDTH)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(14)
+
+        head = QLabel(f"{hub['icon']}  {hub['title']}")
+        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        lay.addWidget(head)
+
+        sub = QLabel(hub.get("desc", ""))
+        sub.setWordWrap(True)
+        sub.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(sub)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(TH.scroll_area_qss(t))
+        scroll.setMaximumHeight(420)
+        host = QWidget()
+        host.setStyleSheet("background: transparent;")
+        host_lay = QVBoxLayout(host)
+        host_lay.setContentsMargins(0, 0, 6, 0)
+        host_lay.setSpacing(12)
+        for item in hub.get("items", []):
+            card = GlassCard(item, accent, t)
+            card.setMinimumHeight(96)
+            card.clicked.connect(lambda it=item: self._choose(it))
+            host_lay.addWidget(card)
+        host_lay.addStretch()
+        scroll.setWidget(host)
+        lay.addWidget(scroll)
+
+        lay.addSpacing(4)
+        row = QHBoxLayout()
+        row.addStretch()
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_cancel_qss(t))
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
+        lay.addLayout(row)
+
+    def _choose(self, item: dict):
+        self.chosen_item = item
+        self.accept()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+
+# ============================================================
 #  LIVE CONSOLE — streams raw PowerShell stdout in real time
 # ============================================================
 class LiveConsole(QPlainTextEdit):
@@ -1185,7 +1285,7 @@ class AppSelectorDialog(PulseDialog):
             url = entry[3] if len(entry) > 3 else ""
             apps.append((app_id, app_name, desc, url))
 
-        panel = _dialog_chrome(self, t, accent, width=560)
+        panel = _dialog_chrome(self, t, accent, width=SELECTOR_DIALOG_WIDTH)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -2186,7 +2286,7 @@ class DevHubSelectorDialog(PulseDialog):
         self._tool_meta: dict[str, tuple[str, str]] = {}  # id -> (name, url)
         self._dependents: dict[str, list[str]] = {}        # requires_id -> [dependent ids]
 
-        panel = _dialog_chrome(self, t, t["accent"], width=560)
+        panel = _dialog_chrome(self, t, t["accent"], width=SELECTOR_DIALOG_WIDTH)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -2352,56 +2452,84 @@ class DevHubSelectorDialog(PulseDialog):
 #  UPDATE ROW — one winget upgrade candidate (current -> available)
 # ============================================================
 class UpdateRow(QFrame):
-    """One update candidate: checkbox + name + a current -> available
-    version audit. Pre-checked, same 'curated pack' contract AppSelector-
-    Dialog uses for its packs — the scan already promised these are real,
-    available upgrades; the user unticks whatever they don't want."""
+    """One update candidate, built on the EXACT same structure as
+    DevHubRow (checkbox carries its own label, a '⋯' wizard button sits at
+    the row's right edge, a muted caption line underneath) — so an Update
+    Center row and an Essential Apps / Dev Hub row read as one family, not
+    two different products with different padding and chrome. Pre-checked,
+    same 'curated pack' contract every other selector uses — the scan
+    already promised these are real, available upgrades.
+
+    The whole row is clickable (not just the checkbox) — ticking a box or
+    tapping anywhere on the row does the same thing, matching how a native
+    settings list behaves. The '⋯' opens the identical
+    ToolInstallWizardDialog every other app row uses (Path A silent winget
+    / Path B official link / Path C local file); Path A there just narrows
+    the caller's selection down to this one AppId."""
+
+    options_requested = Signal(str)  # app_id
 
     def __init__(self, app_id: str, name: str, current: str, available: str, t: dict):
         super().__init__()
         self.app_id = app_id
+        self.app_name = name
+        self.current_version = current
+        self.available_version = available
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(14, 12, 14, 12)
-        outer.setSpacing(12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 10, 14, 10)
+        outer.setSpacing(2)
 
-        self.checkbox = QCheckBox()
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.checkbox = QCheckBox(name)
         self.checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         self.checkbox.setChecked(True)
-        outer.addWidget(self.checkbox)
+        row.addWidget(self.checkbox)
+        row.addStretch()
 
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        self._title = QLabel(name)
-        self._title.setWordWrap(True)
-        col.addWidget(self._title)
-        self._id_label = QLabel(app_id)
-        col.addWidget(self._id_label)
-        outer.addLayout(col, 1)
-
-        versions = QHBoxLayout()
-        versions.setSpacing(6)
         self._current = QLabel(current or "—")
-        versions.addWidget(self._current)
+        row.addWidget(self._current)
         self._arrow = QLabel("→")
-        versions.addWidget(self._arrow)
+        row.addWidget(self._arrow)
         self._available = QLabel(available or "—")
-        versions.addWidget(self._available)
-        outer.addLayout(versions)
+        row.addWidget(self._available)
+
+        self.options_btn = QPushButton("⋯")
+        self.options_btn.setFixedSize(28, 24)
+        self.options_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.options_btn.setToolTip(
+            "Install options for this app (winget / official link / local file)")
+        self.options_btn.clicked.connect(lambda: self.options_requested.emit(self.app_id))
+        row.addWidget(self.options_btn)
+        outer.addLayout(row)
+
+        self._id_label = QLabel(app_id)
+        outer.addWidget(self._id_label)
 
         self.apply_theme(t)
 
     def apply_theme(self, t: dict):
-        self.setStyleSheet(TH.update_row_qss(t))
+        self.setStyleSheet(TH.dev_hub_row_qss(t))
         self.checkbox.setStyleSheet(TH.checkbox_qss(t, t["accent"]))
-        self._title.setStyleSheet(TH.label_qss(t, "card"))
-        self._id_label.setStyleSheet(TH.label_qss(t, "caption"))
         self._current.setStyleSheet(TH.version_chip_qss(t, accent=False))
         self._available.setStyleSheet(TH.version_chip_qss(t, accent=True))
         self._arrow.setStyleSheet(TH.label_qss(t, "faint"))
+        self.options_btn.setStyleSheet(TH.icon_ghost_button_qss(t, t["accent"]))
+        self._id_label.setStyleSheet(TH.label_qss(t, "caption"))
 
     def is_checked(self) -> bool:
         return self.checkbox.isChecked()
+
+    def mouseReleaseEvent(self, e):
+        # Click-anywhere-toggles, except on controls that already own
+        # their own click (the checkbox itself, the '⋯' wizard button).
+        if e.button() == Qt.MouseButton.LeftButton:
+            child = self.childAt(e.position().toPoint())
+            if child not in (self.checkbox, self.options_btn):
+                self.checkbox.setChecked(not self.checkbox.isChecked())
+        super().mouseReleaseEvent(e)
 
 
 # ============================================================
@@ -2409,15 +2537,19 @@ class UpdateRow(QFrame):
 # ============================================================
 class UpdateCenterDialog(PulseDialog):
     """'Check for Updates': runs a live background winget scan (task
-    ScanForUpdates), presents a version audit (current vs. available) per
-    app with pre-checked rows, and hands back exactly which AppIds to
-    update — it never installs anything itself.
+    ScanForUpdates), then presents a version audit (current vs. available)
+    per app in the exact same panel geometry, row styling and action-row
+    layout as AppSelectorDialog — same width, same padding, same single
+    primary CTA — so the two feel like the same screen with different
+    data, not two different dialogs. It never installs anything itself.
 
     After exec():
       Accepted + selected_ids non-empty -> caller runs task
       'UpdateSelectedApps' with those AppIds through the app's normal
       request_task()/_start_task() pipeline — the same live console, Stop
       button and toast machinery as every other bulk deploy.
+      Accepted + local_installer set -> caller runs task InstallLocalFile,
+      exactly like AppSelectorDialog/DevHubSelectorDialog's row wizards.
       Rejected -> nothing to do.
     """
 
@@ -2426,29 +2558,25 @@ class UpdateCenterDialog(PulseDialog):
         self._t = t
         self._ps1_path = ps1_path
         self.selected_ids: list[str] = []
+        self.local_installer: tuple[str, str] | None = None
         self._rows: dict[str, UpdateRow] = {}
         self._thread: QThread | None = None
         self._worker: PowerShellTask | None = None
         accent = t["accent"]
 
-        panel = _dialog_chrome(self, t, accent, width=640)
+        panel = _dialog_chrome(self, t, accent, width=SELECTOR_DIALOG_WIDTH)
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
         lay.setSpacing(12)
 
-        head = QHBoxLayout()
-        title_col = QVBoxLayout()
-        title_col.setSpacing(2)
-        title = QLabel("🔄  Update Center")
-        title.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
-        title_col.addWidget(title)
+        head = QLabel("🔄  Update Center")
+        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        lay.addWidget(head)
+
         self._subtitle = QLabel("Scanning installed apps against winget…")
         self._subtitle.setWordWrap(True)
         self._subtitle.setStyleSheet(TH.label_qss(t, "body"))
-        title_col.addWidget(self._subtitle)
-        head.addLayout(title_col)
-        head.addStretch()
-        lay.addLayout(head)
+        lay.addWidget(self._subtitle)
 
         self._stack = QStackedWidget()
         lay.addWidget(self._stack)
@@ -2560,6 +2688,12 @@ class UpdateCenterDialog(PulseDialog):
         return page
 
     def _build_results_page(self) -> QWidget:
+        """Deliberately mirrors AppSelectorDialog's results layout line for
+        line: Select All / Deselect All / stretch / count on the left
+        toolbar (Rescan joins the left cluster so the right edge stays
+        exactly the count label, like every other selector), the same
+        360px scroll cap, and a Cancel + single primary-CTA bottom row —
+        same sizes, same QSS factories."""
         t = self._t
         accent = t["accent"]
         page = QWidget()
@@ -2579,17 +2713,22 @@ class UpdateCenterDialog(PulseDialog):
         none_btn.setStyleSheet(TH.link_button_qss(t, accent))
         none_btn.clicked.connect(lambda: self._set_all(False))
         toolbar.addWidget(none_btn)
+        rescan_btn = QPushButton("Rescan")
+        rescan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        rescan_btn.setStyleSheet(TH.link_button_qss(t, accent))
+        rescan_btn.clicked.connect(self._start_scan)
+        toolbar.addWidget(rescan_btn)
         toolbar.addStretch()
-        self._count_chip = QLabel("")
-        self._count_chip.setStyleSheet(TH.stat_chip_qss(t, "accent"))
-        toolbar.addWidget(self._count_chip)
+        self._count_label = QLabel("")
+        self._count_label.setStyleSheet(TH.label_qss(t, "caption"))
+        toolbar.addWidget(self._count_label)
         lay.addLayout(toolbar)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(TH.scroll_area_qss(t))
-        scroll.setMaximumHeight(380)
+        scroll.setMaximumHeight(360)
         self._host = QWidget()
         self._host.setStyleSheet("background: transparent;")
         self._host_lay = QVBoxLayout(self._host)
@@ -2599,35 +2738,23 @@ class UpdateCenterDialog(PulseDialog):
         scroll.setWidget(self._host)
         lay.addWidget(scroll)
 
+        lay.addSpacing(4)
         row = QHBoxLayout()
-        row.setSpacing(8)
-        rescan = QPushButton("Rescan")
-        rescan.setCursor(Qt.CursorShape.PointingHandCursor)
-        rescan.setStyleSheet(TH.link_button_qss(t, accent))
-        rescan.clicked.connect(self._start_scan)
-        row.addWidget(rescan)
         row.addStretch()
 
         cancel = QPushButton("Cancel")
-        cancel.setFixedSize(90, 36)
+        cancel.setFixedSize(96, 36)
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel.setStyleSheet(TH.dialog_cancel_qss(t))
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
 
-        self._update_selected_btn = QPushButton("Update Selected")
-        self._update_selected_btn.setFixedSize(168, 36)
-        self._update_selected_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._update_selected_btn.setStyleSheet(TH.dialog_secondary_go_qss(t, accent))
-        self._update_selected_btn.clicked.connect(self._accept_selected)
-        row.addWidget(self._update_selected_btn)
-
-        self._update_all_btn = QPushButton("⚡  Update All")
-        self._update_all_btn.setFixedSize(136, 36)
-        self._update_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._update_all_btn.setStyleSheet(TH.dialog_go_qss(t, accent))
-        self._update_all_btn.clicked.connect(self._accept_all)
-        row.addWidget(self._update_all_btn)
+        self._deploy_btn = QPushButton("Update Selected")
+        self._deploy_btn.setFixedSize(160, 36)
+        self._deploy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._deploy_btn.setStyleSheet(TH.dialog_go_qss(t, accent))
+        self._deploy_btn.clicked.connect(self._accept_selection)
+        row.addWidget(self._deploy_btn)
         lay.addLayout(row)
         return page
 
@@ -2675,9 +2802,6 @@ class UpdateCenterDialog(PulseDialog):
             self._stack.setCurrentWidget(self._empty_page)
             return
         self._populate_rows(updates)
-        plural = "" if len(updates) == 1 else "s"
-        self._subtitle.setText(
-            f"{len(updates)} update{plural} available — audited against winget just now.")
         self._stack.setCurrentWidget(self._results_page)
 
     def _show_error(self, message: str):
@@ -2708,8 +2832,14 @@ class UpdateCenterDialog(PulseDialog):
             available = str(entry.get("AvailableVersion") or "—")
             row = UpdateRow(app_id, name, current, available, self._t)
             row.checkbox.toggled.connect(self._update_count)
+            row.options_requested.connect(self._open_tool_wizard)
             self._rows[app_id] = row
             self._host_lay.insertWidget(self._host_lay.count() - 1, row)
+        # Same sentence shape AppSelectorDialog uses for its curated packs —
+        # one consistent voice across every selector in the app.
+        self._subtitle.setText(
+            f"All {len(self._rows)} updates are pre-selected — untick anything you don't "
+            "want, or use a row's ⋯ for more install options.")
         self._update_count()
 
     def _set_all(self, checked: bool):
@@ -2718,24 +2848,37 @@ class UpdateCenterDialog(PulseDialog):
 
     def _update_count(self, _checked: bool = False):
         count = sum(1 for r in self._rows.values() if r.is_checked())
+        self._count_label.setText(f"{count} selected")
         total = len(self._rows)
-        self._count_chip.setText(f"{count} of {total} selected")
-        self._update_selected_btn.setText(
-            f"Update Selected ({count})" if count else "Update Selected")
-        self._update_selected_btn.setEnabled(count > 0)
+        if count and count == total:
+            self._deploy_btn.setText(f"Update All ({count})")
+        else:
+            self._deploy_btn.setText(f"Update Selected ({count})" if count else "Update Selected")
+        self._deploy_btn.setEnabled(count > 0)
 
     # -- acceptance -------------------------------------------------
-    def _accept_selected(self):
+    def _accept_selection(self):
         self.selected_ids = [aid for aid, row in self._rows.items() if row.is_checked()]
         if not self.selected_ids:
             return
         self.accept()
 
-    def _accept_all(self):
-        self.selected_ids = list(self._rows.keys())
-        if not self.selected_ids:
+    # -- per-app wizard ("⋯") --------------------------------------------
+    def _open_tool_wizard(self, app_id: str):
+        row = self._rows.get(app_id)
+        if row is None:
             return
-        self.accept()
+        desc = f"Update available: {row.current_version} → {row.available_version}"
+        wizard = ToolInstallWizardDialog(self, app_id, row.app_name, desc, "", self._t)
+        if wizard.exec() != QDialog.DialogCode.Accepted:
+            return
+        if wizard.mode == "winget":
+            self._set_all(False)
+            row.checkbox.setChecked(True)
+            self._accept_selection()
+        elif wizard.mode == "local" and wizard.local_path:
+            self.local_installer = (row.app_name, wizard.local_path)
+            self.accept()
 
     def reject(self):
         if self._worker is not None:
@@ -2852,7 +2995,7 @@ class StartupManagerDialog(PulseDialog):
         self._active_want_enabled: bool = False
 
         accent = t["accent"]
-        panel = _dialog_chrome(self, t, accent, width=640)
+        panel = _dialog_chrome(self, t, accent, width=SELECTOR_DIALOG_WIDTH)
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
         lay.setSpacing(12)

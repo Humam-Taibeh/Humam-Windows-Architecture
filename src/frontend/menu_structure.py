@@ -64,6 +64,17 @@ Item schema:
              directly — a self-contained optimization hub (scan, group by
              recommendation, live per-item ToggleSwitch) that never hands
              anything back; main.py just opens it and moves on.
+    hub      bool + items list[dict]  when True, this entry is a container,
+             not a runnable action — it has no "task" and is never passed
+             to core.ps1. Clicking it opens widgets.HubDialog (a single
+             sub-item skips straight to that sub-item instead) rendering
+             `items` as the same GlassCards a category page uses; picking
+             one runs it through request_task() exactly as if it had lived
+             on the page directly. This is what lets a category collapse
+             to a handful of primary cards without deleting any actions —
+             see CATEGORIES["software"] for the 4-hub Software Management
+             layout. iter_leaf_items() below expands every hub so leaf
+             actions stay reachable from the Ctrl+K command palette.
 """
 
 # ============================================================
@@ -168,121 +179,154 @@ CATEGORIES = [
         "tagline": "Deploy apps, runtimes and audit startup programs",
         "accent": "#58a6ff",
         "items": [
-            {"icon": "🧰", "title": "Essential Apps",
-             "desc": "Install the essential daily-driver pack (browsers, archivers, media tools) via winget.",
-             "task": "InstallEssentialApps", "timeout": 3600, "confirm": True,
-             "apps": [
-                 ("Google.Chrome", "Google Chrome",
-                  "Fast, secure web browser from Google.",
-                  "https://www.google.com/chrome/"),
-                 ("Spotify.Spotify", "Spotify (Win32)",
-                  "Music and podcast streaming client.",
-                  "https://www.spotify.com/download/windows/"),
-                 ("Discord.Discord", "Discord",
-                  "Voice, video and text chat for friends and communities.",
-                  "https://discord.com/download"),
-                 ("9NKSQCEZVDDB", "WhatsApp (Store)",
-                  "Official WhatsApp messenger for the desktop.",
-                  "https://www.whatsapp.com/download"),
-                 ("9PKTQ5699M62", "iCloud (Store)",
-                  "Access iCloud Photos, Drive and Passwords on Windows.",
-                  "https://www.apple.com/icloud/"),
-                 ("Apple.iTunes", "iTunes",
-                  "Media library and Apple device sync.",
-                  "https://www.apple.com/itunes/"),
-                 ("7zip.7zip", "7-Zip",
-                  "Open-source archiver with best-in-class compression.",
-                  "https://www.7-zip.org/"),
-                 ("VideoLAN.VLC", "VLC Media Player",
-                  "Plays practically every audio and video format ever made.",
-                  "https://www.videolan.org/vlc/"),
-                 ("TheDocumentFoundation.LibreOffice", "LibreOffice",
-                  "Free office suite — Writer, Calc, Impress and more.",
-                  "https://www.libreoffice.org/download/download-libreoffice/"),
+            # -- HUB 1: everyday consumer/productivity apps ---------------
+            {"icon": "🧰", "title": "Browsers & Daily Apps",
+             "desc": "Browsers, chat, media and productivity essentials — pick a pack below.",
+             "hub": True,
+             "items": [
+                 {"icon": "🌐", "title": "Browsers, Chat & Media",
+                  "desc": "Chrome, Brave, Firefox, Discord, Telegram, WhatsApp, Spotify, VLC, 7-Zip and more.",
+                  "task": "InstallEssentialApps", "timeout": 3600, "confirm": True,
+                  "apps": [
+                      ("Google.Chrome", "Google Chrome",
+                       "Fast, secure web browser from Google.",
+                       "https://www.google.com/chrome/"),
+                      ("Brave.Brave", "Brave Browser",
+                       "Privacy-first Chromium browser with built-in ad blocking.",
+                       "https://brave.com/download/"),
+                      ("Mozilla.Firefox", "Mozilla Firefox",
+                       "Fast, independent browser built on open standards.",
+                       "https://www.mozilla.org/firefox/new/"),
+                      ("Telegram.TelegramDesktop", "Telegram Desktop",
+                       "Fast, secure cloud-based messaging.",
+                       "https://telegram.org/apps"),
+                      ("Spotify.Spotify", "Spotify (Win32)",
+                       "Music and podcast streaming client.",
+                       "https://www.spotify.com/download/windows/"),
+                      ("Discord.Discord", "Discord",
+                       "Voice, video and text chat for friends and communities.",
+                       "https://discord.com/download"),
+                      ("9NKSQCEZVDDB", "WhatsApp (Store)",
+                       "Official WhatsApp messenger for the desktop.",
+                       "https://www.whatsapp.com/download"),
+                      ("9PKTQ5699M62", "iCloud (Store)",
+                       "Access iCloud Photos, Drive and Passwords on Windows.",
+                       "https://www.apple.com/icloud/"),
+                      ("Apple.iTunes", "iTunes",
+                       "Media library and Apple device sync.",
+                       "https://www.apple.com/itunes/"),
+                      ("7zip.7zip", "7-Zip",
+                       "Open-source archiver with best-in-class compression.",
+                       "https://www.7-zip.org/"),
+                      ("VideoLAN.VLC", "VLC Media Player",
+                       "Plays practically every audio and video format ever made.",
+                       "https://www.videolan.org/vlc/"),
+                      ("TheDocumentFoundation.LibreOffice", "LibreOffice",
+                       "Free office suite — Writer, Calc, Impress and more.",
+                       "https://www.libreoffice.org/download/download-libreoffice/"),
+                      ("Notion.Notion", "Notion",
+                       "All-in-one notes, docs and project workspace.",
+                       "https://www.notion.com/desktop"),
+                  ]},
+                 {"icon": "📄", "title": "Microsoft Office Suite",
+                  "desc": "Word, Excel, PowerPoint, Outlook and more — via the official Deployment Tool wizard.",
+                  "task": "InstallOfficeODT", "timeout": 3600, "wizard": "office"},
+                 {"icon": "🤝", "title": "Teams & OneDrive",
+                  "desc": "Microsoft Teams and OneDrive — real standalone winget packages.",
+                  "task": "InstallOfficeApps", "timeout": 3600, "confirm": True,
+                  "apps": [
+                      ("Microsoft.Teams", "Microsoft Teams",
+                       "Meetings, chat and collaboration.",
+                       "https://www.microsoft.com/en-us/microsoft-teams/download-app"),
+                      ("Microsoft.OneDrive", "Microsoft OneDrive",
+                       "Cloud file sync client for OneDrive.",
+                       "https://www.microsoft.com/en-us/microsoft-365/onedrive/download"),
+                  ]},
+                 {"icon": "🧩", "title": "Core API Runtimes",
+                  "desc": "DirectX, Visual C++, .NET and Java runtimes — the invisible prerequisites most apps need.",
+                  "task": "InstallRuntimes", "timeout": 3600, "confirm": True,
+                  "apps": [
+                      ("Microsoft.DirectX", "DirectX End-User Runtime",
+                       "Legacy DirectX libraries that older games still need.",
+                       "https://www.microsoft.com/en-us/download/details.aspx?id=35"),
+                      ("Microsoft.VCRedist.2015+.x64", "Visual C++ Redistributables",
+                       "C++ runtime DLLs required by countless Windows apps.",
+                       "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"),
+                      ("Microsoft.DotNet.DesktopRuntime.8", ".NET Desktop Runtime",
+                       "Runs modern .NET desktop applications.",
+                       "https://dotnet.microsoft.com/en-us/download/dotnet/8.0"),
+                      ("Oracle.JavaRuntimeEnvironment", "Java Runtime Environment",
+                       "Runs Java desktop applications.",
+                       "https://www.java.com/en/download/"),
+                  ]},
              ]},
+            # -- HUB 2: developer tooling (single flow -> direct passthrough) --
             {"icon": "🎓", "title": "Developer & University Hub",
-             "desc": "Runtimes, compilers, IDEs, AI tools, databases and containers — pick exactly what you need.",
-             "task": "InstallDevHub", "timeout": 3600, "devhub": True},
-            {"icon": "🧭", "title": "PATH Doctor (Auto-Fix Environment)",
-             "desc": "Makes sure Windows can find your dev tools by name in any terminal — checks Git, Python, Java, VS Code, GCC, Node & Ollama and fixes any that aren't wired up yet.",
-             "task": "VerifyEnvironment", "timeout": 300},
-            {"icon": "🎮", "title": "Gaming Launchers",
-             "desc": "Steam, Epic and the other launchers you actually use, in one pass.",
-             "task": "InstallGamingApps", "timeout": 3600, "confirm": True,
-             "apps": [
-                 ("Valve.Steam", "Steam",
-                  "The largest PC game store and launcher.",
-                  "https://store.steampowered.com/about/"),
-                 ("EpicGames.EpicGamesLauncher", "Epic Games",
-                  "Epic's store and launcher — free weekly games included.",
-                  "https://store.epicgames.com/en-US/download"),
-                 ("RockstarGames.Launcher", "Rockstar Games",
-                  "Rockstar's launcher for GTA, Red Dead and more.",
-                  "https://socialclub.rockstargames.com/rockstar-games-launcher"),
-                 ("BlueStacks.BlueStacks", "BlueStacks 5",
-                  "Android app player — run mobile games on Windows.",
-                  "https://www.bluestacks.com/download.html"),
+             "desc": "VS Code, Cursor, Python, Java, Git, Node.js and more — pick exactly what you need.",
+             "hub": True,
+             "items": [
+                 {"icon": "🎓", "title": "Developer & University Hub",
+                  "desc": "Runtimes, compilers, IDEs, AI tools, databases and containers — pick exactly what you need.",
+                  "task": "InstallDevHub", "timeout": 3600, "devhub": True},
              ]},
-            {"icon": "🔬", "title": "Hardware Diagnostics",
-             "desc": "Monitoring and diagnostic utilities for CPU, GPU, RAM and disks.",
-             "task": "InstallDiagnosticApps", "timeout": 3600, "confirm": True,
-             "apps": [
-                 ("CPUID.CPU-Z", "CPU-Z",
-                  "CPU, motherboard and memory identification tool.",
-                  "https://www.cpuid.com/softwares/cpu-z.html"),
-                 ("TechPowerUp.GPU-Z", "GPU-Z",
-                  "Graphics card information, sensors and BIOS tools.",
-                  "https://www.techpowerup.com/gpuz/"),
-                 ("CPUID.HWMonitor", "HWMonitor",
-                  "Live voltages, temperatures and fan speeds.",
-                  "https://www.cpuid.com/softwares/hwmonitor.html"),
-                 ("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo",
-                  "Drive health and S.M.A.R.T. monitoring.",
-                  "https://crystalmark.info/en/software/crystaldiskinfo/"),
-                 ("Guru3D.Afterburner", "MSI Afterburner",
-                  "GPU overclocking and on-screen performance monitoring.",
-                  "https://www.msi.com/Landing/afterburner"),
-                 ("Notion.Notion", "Notion",
-                  "All-in-one notes, docs and project workspace.",
-                  "https://www.notion.com/desktop"),
+            # -- HUB 3: gaming (single flow -> direct passthrough) --------
+            {"icon": "🎮", "title": "Gaming & Launchers",
+             "desc": "Steam, Epic, Rockstar and BlueStacks — matching GPU software added automatically.",
+             "hub": True,
+             "items": [
+                 {"icon": "🎮", "title": "Gaming Launchers",
+                  "desc": "Steam, Epic and the other launchers you actually use — your GPU's companion app (NVIDIA/AMD/Intel) is detected and added automatically.",
+                  "task": "InstallGamingApps", "timeout": 3600, "confirm": True,
+                  "apps": [
+                      ("Valve.Steam", "Steam",
+                       "The largest PC game store and launcher.",
+                       "https://store.steampowered.com/about/"),
+                      ("EpicGames.EpicGamesLauncher", "Epic Games",
+                       "Epic's store and launcher — free weekly games included.",
+                       "https://store.epicgames.com/en-US/download"),
+                      ("RockstarGames.Launcher", "Rockstar Games",
+                       "Rockstar's launcher for GTA, Red Dead and more.",
+                       "https://socialclub.rockstargames.com/rockstar-games-launcher"),
+                      ("BlueStacks.BlueStacks", "BlueStacks 5",
+                       "Android app player — run mobile games on Windows.",
+                       "https://www.bluestacks.com/download.html"),
+                  ]},
              ]},
-            {"icon": "🧩", "title": "Core API Runtimes",
-             "desc": "DirectX, Visual C++, .NET and Java runtimes — the bulk install.",
-             "task": "InstallRuntimes", "timeout": 3600, "confirm": True,
-             "apps": [
-                 ("Microsoft.DirectX", "DirectX End-User Runtime",
-                  "Legacy DirectX libraries that older games still need.",
-                  "https://www.microsoft.com/en-us/download/details.aspx?id=35"),
-                 ("Microsoft.VCRedist.2015+.x64", "Visual C++ Redistributables",
-                  "C++ runtime DLLs required by countless Windows apps.",
-                  "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"),
-                 ("Microsoft.DotNet.DesktopRuntime.8", ".NET Desktop Runtime",
-                  "Runs modern .NET desktop applications.",
-                  "https://dotnet.microsoft.com/en-us/download/dotnet/8.0"),
-                 ("Oracle.JavaRuntimeEnvironment", "Java Runtime Environment",
-                  "Runs Java desktop applications.",
-                  "https://www.java.com/en/download/"),
+            # -- HUB 4: diagnostics, environment repair, optimization -----
+            {"icon": "🛠️", "title": "System Tools & Utilities",
+             "desc": "Hardware diagnostics, environment repair, startup optimization and live update audits.",
+             "hub": True,
+             "items": [
+                 {"icon": "🔬", "title": "Hardware Diagnostics",
+                  "desc": "Monitoring and diagnostic utilities for CPU, GPU, RAM and disks.",
+                  "task": "InstallDiagnosticApps", "timeout": 3600, "confirm": True,
+                  "apps": [
+                      ("CPUID.CPU-Z", "CPU-Z",
+                       "CPU, motherboard and memory identification tool.",
+                       "https://www.cpuid.com/softwares/cpu-z.html"),
+                      ("TechPowerUp.GPU-Z", "GPU-Z",
+                       "Graphics card information, sensors and BIOS tools.",
+                       "https://www.techpowerup.com/gpuz/"),
+                      ("CPUID.HWMonitor", "HWMonitor",
+                       "Live voltages, temperatures and fan speeds.",
+                       "https://www.cpuid.com/softwares/hwmonitor.html"),
+                      ("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo",
+                       "Drive health and S.M.A.R.T. monitoring.",
+                       "https://crystalmark.info/en/software/crystaldiskinfo/"),
+                      ("Guru3D.Afterburner", "MSI Afterburner",
+                       "GPU overclocking and on-screen performance monitoring.",
+                       "https://www.msi.com/Landing/afterburner"),
+                  ]},
+                 {"icon": "🧭", "title": "PATH Doctor (Auto-Fix Environment)",
+                  "desc": "Makes sure Windows can find your dev tools by name in any terminal — checks Git, Python, Java, VS Code, GCC, Node & Ollama and fixes any that aren't wired up yet.",
+                  "task": "VerifyEnvironment", "timeout": 300},
+                 {"icon": "🚀", "title": "Startup Manager",
+                  "desc": "Smart boot-impact audit of everything that launches at sign-in, with instant enable/disable toggles.",
+                  "task": "StartupReport", "timeout": 300, "startup_manager": True},
+                 {"icon": "🔄", "title": "Check for Updates",
+                  "desc": "Live winget scan for every installed app — audit current vs. available versions, then update exactly what you pick.",
+                  "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
              ]},
-            {"icon": "📄", "title": "Microsoft Office Suite",
-             "desc": "Word, Excel, PowerPoint, Outlook and more — via the official Deployment Tool wizard.",
-             "task": "InstallOfficeODT", "timeout": 3600, "wizard": "office"},
-            {"icon": "🤝", "title": "Teams & OneDrive",
-             "desc": "Microsoft Teams and OneDrive — real standalone winget packages.",
-             "task": "InstallOfficeApps", "timeout": 3600, "confirm": True,
-             "apps": [
-                 ("Microsoft.Teams", "Microsoft Teams",
-                  "Meetings, chat and collaboration.",
-                  "https://www.microsoft.com/en-us/microsoft-teams/download-app"),
-                 ("Microsoft.OneDrive", "Microsoft OneDrive",
-                  "Cloud file sync client for OneDrive.",
-                  "https://www.microsoft.com/en-us/microsoft-365/onedrive/download"),
-             ]},
-            {"icon": "🔄", "title": "Check for Updates",
-             "desc": "Live winget scan for every installed app — audit current vs. available versions, then update exactly what you pick.",
-             "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
-            {"icon": "🚀", "title": "Startup Manager",
-             "desc": "Smart boot-impact audit of everything that launches at sign-in, with instant enable/disable toggles.",
-             "task": "StartupReport", "timeout": 300, "startup_manager": True},
         ],
     },
     # --------------------------------------------------------
@@ -443,6 +487,30 @@ CATEGORIES = [
     },
 ]
 
+def _count_leaves(items: list[dict]) -> int:
+    return sum(
+        _count_leaves(it["items"]) if it.get("hub") else 1
+        for it in items
+    )
+
+
 def total_operations() -> int:
-    """Number of operations exposed across all categories."""
-    return sum(len(c["items"]) for c in CATEGORIES)
+    """Number of runnable operations across all categories — a hub
+    container itself isn't one, so this counts through into `items`
+    instead of stopping at the top-level card count."""
+    return sum(_count_leaves(c["items"]) for c in CATEGORIES)
+
+
+def iter_leaf_items():
+    """Yields (item, breadcrumb) for every runnable action, expanding hub
+    containers — used by the Ctrl+K command palette so a hub's sub-actions
+    (e.g. 'Microsoft Office Suite', tucked inside the Browsers & Daily Apps
+    hub) stay searchable even though the category page now shows only the
+    hub card itself."""
+    for cat in CATEGORIES:
+        for item in cat["items"]:
+            if item.get("hub"):
+                for sub in item["items"]:
+                    yield sub, f"{cat['title']} › {item['title']}"
+            else:
+                yield item, cat["title"]

@@ -52,13 +52,14 @@ from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
-    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, total_operations,
+    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, iter_leaf_items, total_operations,
 )
 from frontend.widgets import (  # noqa: E402
     AmbientGlow, AppSelectorDialog, BreathingIcon, CommandPalette,
-    ConfirmDialog, DepthCard, DevHubSelectorDialog, GlassCard, LiveConsole,
-    NavButton, NavPill, OfficeWizardDialog, PulseDialog, StartupManagerDialog,
-    StatePill, StatusDot, TitleBar, UpdateCenterDialog, refit_dialog,
+    ConfirmDialog, DepthCard, DevHubSelectorDialog, GlassCard, HubDialog,
+    LiveConsole, NavButton, NavPill, OfficeWizardDialog, PulseDialog,
+    StartupManagerDialog, StatePill, StatusDot, TitleBar, UpdateCenterDialog,
+    refit_dialog,
 )
 
 # ============================================================
@@ -504,7 +505,8 @@ class PulseApp(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.titlebar = TitleBar(self, t, APP_NAME, APP_VERSION, APP_CHANNEL)
+        self.titlebar = TitleBar(self, t, APP_NAME, APP_VERSION, APP_CHANNEL,
+                                  is_admin=self.is_admin)
         self.titlebar.theme_toggle_requested.connect(self._toggle_theme_animated)
         root.addWidget(self.titlebar)
 
@@ -695,7 +697,11 @@ class PulseApp(QMainWindow):
     #  COMMAND PALETTE (Ctrl+K)
     # ============================================================
     def _open_command_palette(self):
-        entries = [(item, cat["title"]) for cat in CATEGORIES for item in cat["items"]]
+        # iter_leaf_items() expands hub containers so a sub-action (e.g.
+        # "Microsoft Office Suite", tucked inside the Browsers & Daily Apps
+        # hub) stays searchable even though its category page now shows
+        # only the hub card.
+        entries = list(iter_leaf_items())
         palette = CommandPalette(self, self.theme.t, entries)
         # Top-anchored VS Code / Slack quick-launcher placement comes from
         # _present_dialog(anchor="top") in the palette's own showEvent.
@@ -715,9 +721,30 @@ class PulseApp(QMainWindow):
         return dialog.exec()
 
     # ============================================================
+    #  HUB NAVIGATION — a primary card's drill-down landing screen
+    # ============================================================
+    def _open_hub(self, hub: dict):
+        """A hub with exactly one real action skips the landing screen
+        entirely (nothing to choose between) and runs it directly — the
+        Developer & University Hub and Gaming & Launchers cards behave
+        exactly as they did before Software Management collapsed to 4
+        primary cards. A hub with several sub-actions opens HubDialog."""
+        sub_items = hub.get("items", [])
+        if len(sub_items) == 1:
+            self.request_task(sub_items[0], None)
+            return
+        dialog = HubDialog(self, hub, self.theme.t)
+        if (self._exec_dialog(dialog) == QDialog.DialogCode.Accepted
+                and dialog.chosen_item is not None):
+            self.request_task(dialog.chosen_item, None)
+
+    # ============================================================
     #  TASK PIPELINE
     # ============================================================
     def request_task(self, item: dict, card: GlassCard):
+        if item.get("hub"):
+            self._open_hub(item)
+            return
         task = item["task"]
 
         if task.startswith("@"):
@@ -743,7 +770,12 @@ class PulseApp(QMainWindow):
             dialog = UpdateCenterDialog(self, self.ps1_path, self.theme.t)
             if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
                 return
-            if dialog.selected_ids:
+            if dialog.local_installer:
+                # A row's "⋯" wizard resolved to Path C (a local file) —
+                # same contract as every other selector's row wizard.
+                local_installer = dialog.local_installer
+                item = {**item, "task": "InstallLocalFile"}
+            elif dialog.selected_ids:
                 app_ids = dialog.selected_ids
             else:
                 self.toasts.show("info", "No updates were selected — nothing to update.", 3500)
@@ -850,8 +882,15 @@ class PulseApp(QMainWindow):
             if message.lower().startswith("unknown task"):
                 message = ("This module needs the updated core.ps1 backend. "
                            "Update src/backend/core.ps1 to enable it.")
-            self.toasts.show("error", message, 6000)
-            self._set_status("err", "System Ready")
+            if "needs administrator rights" in message.lower():
+                # A clean amber warning, not a flat red error — the title
+                # bar's "NOT ELEVATED" badge already told the user this was
+                # coming; this is confirmation, not a surprise failure.
+                self.toasts.show("warn", message, 7000)
+                self._set_status("err", "Administrator rights required")
+            else:
+                self.toasts.show("error", message, 6000)
+                self._set_status("err", "System Ready")
             self.state_pill.set_state("err")
         self._finish_common("ok" if result.success else "err")
 

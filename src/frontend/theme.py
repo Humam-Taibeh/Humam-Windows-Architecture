@@ -400,6 +400,21 @@ def beta_badge_qss(t: dict) -> str:
     """
 
 
+def admin_badge_qss(t: dict) -> str:
+    """Persistent 'Not Elevated' pill in the title bar — the always-visible
+    counterpart to the once-only startup toast, so a user browsing the app
+    knows up front (not after a system-level task fails) that admin-only
+    actions won't run until Pulse is restarted elevated. Amber `warn`
+    token, not `err`: this is a standing condition to be aware of, not a
+    failure that just happened."""
+    return f"""
+        color: {t['warn']}; font-size: 9px; font-weight: 700;
+        background: {alpha(t['warn'], 0.12)};
+        border: 1px solid {alpha(t['warn'], 0.35)};
+        border-radius: 8px; padding: 2px 8px; letter-spacing: 1px;
+    """
+
+
 def toast_qss(t: dict, accent: str) -> str:
     """One toast notification card: app-material surface (same frosted
     treatment as dialogs), a slim colored status spine on the left, and
@@ -788,17 +803,6 @@ def recommendation_badge_qss(t: dict, recommendation: str) -> str:
         color: {color}; font-size: 10px; font-weight: 700;
         background: {alpha(color, 0.10)}; border: 1px solid {alpha(color, 0.35)};
         border-radius: 9px; padding: 3px 10px;
-    """
-
-
-def update_row_qss(t: dict) -> str:
-    """One app row inside the Update Center's scroll list."""
-    return f"""
-        QFrame {{
-            background: {t['card']}; border: 1px solid {t['card_line']};
-            border-radius: 12px;
-        }}
-        QFrame:hover {{ border: 1px solid {alpha(t['accent'], 0.35)}; }}
     """
 
 
