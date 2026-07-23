@@ -143,18 +143,31 @@ $Script:StartupKeepRules = @(
     @{ Pattern = 'wacom|huion';                                       Reason = "Graphics tablet driver — needed immediately for pen input to work." }
 )
 
+# Pre-compiled once at module load, not re-compiled on every -match call
+# against every item - cheap either way at typical startup-list sizes, but
+# this is the correct pattern for "fast lookups, never heavy work per item"
+# and keeps Get-StartupRecommendation's per-item cost to pure in-memory
+# regex evaluation with zero I/O.
+$Script:_RegexOpts = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor `
+    [System.Text.RegularExpressions.RegexOptions]::Compiled
+foreach ($Rule in $Script:StartupDisableRules) { $Rule.Regex = [regex]::new($Rule.Pattern, $Script:_RegexOpts) }
+foreach ($Rule in $Script:StartupKeepRules)    { $Rule.Regex = [regex]::new($Rule.Pattern, $Script:_RegexOpts) }
+
 function Get-StartupRecommendation {
     <# Returns @{ Recommendation='Disable'|'Keep'|'Review'; Impact='High'|
-       'Medium'|'Low'; Reason=<string> } for one Get-AllStartupItems entry. #>
+       'Medium'|'Low'; Reason=<string> } for one Get-AllStartupItems entry.
+       Pure in-memory string/regex work - no registry, filesystem or
+       network access, so this is intentionally cheap no matter how many
+       startup items are being scored. #>
     param($Item)
-    $Hay = "$($Item.Name) $($Item.Command)".ToLowerInvariant()
+    $Hay = "$($Item.Name) $($Item.Command)"
     foreach ($Rule in $Script:StartupDisableRules) {
-        if ($Hay -match $Rule.Pattern) {
+        if ($Rule.Regex.IsMatch($Hay)) {
             return @{ Recommendation = 'Disable'; Impact = $Rule.Impact; Reason = $Rule.Reason }
         }
     }
     foreach ($Rule in $Script:StartupKeepRules) {
-        if ($Hay -match $Rule.Pattern) {
+        if ($Rule.Regex.IsMatch($Hay)) {
             return @{ Recommendation = 'Keep'; Impact = 'Low'; Reason = $Rule.Reason }
         }
     }

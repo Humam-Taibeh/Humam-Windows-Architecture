@@ -30,8 +30,26 @@
 # ============================================================
 $Script:OSBuild   = [System.Environment]::OSVersion.Version.Build
 $Script:IsWin11   = $Script:OSBuild -ge 22000
-$Script:OSCaption = try { (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption } catch { "Unknown Windows Edition" }
+# OSCaption is resolved LAZILY (Get-OSCaption, below) - Get-CimInstance talks
+# to the WMI provider host, which is a genuine (and highly variable - a cold
+# provider host, AV real-time scanning, or a flaky WMI repository can turn
+# this into several seconds) per-PROCESS cost. Every core.ps1 -Task launch
+# dot-sources this file fresh, so an eager call here taxed EVERY task - GUI
+# tasks with a tight timeout (like the Startup Manager's scan) were the ones
+# that could actually time out because of it, even though the caption is
+# only ever read by a rarely-hit edition-support warning and the interactive
+# console banner (neither is on the hot path of a GUI task).
+$Script:OSCaption = $null
 $Script:WindowsEditionID = try { (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name EditionID -ErrorAction Stop).EditionID } catch { "Unknown" }
+
+function Get-OSCaption {
+    <# Computes-and-caches Win32_OperatingSystem.Caption on first actual
+       use instead of paying the WMI round-trip on every task launch. #>
+    if ($null -eq $Script:OSCaption) {
+        $Script:OSCaption = try { (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption } catch { "Unknown Windows Edition" }
+    }
+    return $Script:OSCaption
+}
 
 # ============================================================
 #  LOG LOCATION (%LOCALAPPDATA%\Pulse\logs) + SIZE ROTATION
@@ -117,6 +135,25 @@ function Write-Log {
     try {
         [void]$Script:SessionLogEntries.Add("[$Stamp] $Message")
     } catch {}
+}
+
+function Write-LogBatch {
+    <# Writes many lines in ONE file append instead of N separate Write-Log
+       calls. Add-Content opens/writes/closes the log file on every call;
+       a scan that logs one line per discovered item (startup audit,
+       driver scan, ...) turned that per-call overhead into an
+       O(n) pile of file I/O that scales with however much is installed
+       on the machine - a single batched append removes it entirely. #>
+    param([string[]]$Messages)
+    if (-not $Messages -or $Messages.Count -eq 0) { return }
+    $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $Lines = @($Messages | ForEach-Object { "[$Stamp] $_" })
+    try {
+        Add-Content -Path $Script:LogPath -Value $Lines -ErrorAction SilentlyContinue
+    } catch {}
+    foreach ($Line in $Lines) {
+        try { [void]$Script:SessionLogEntries.Add($Line) } catch {}
+    }
 }
 
 function Write-Divider {
@@ -295,7 +332,7 @@ function Test-OSSupport {
         [int]$MaxBuild = 999999
     )
     if ($Script:OSBuild -lt $MinBuild -or $Script:OSBuild -gt $MaxBuild) {
-        Write-Warn "Skipped '$FeatureName': not supported on this Windows build (detected build $Script:OSBuild, edition: $Script:OSCaption)."
+        Write-Warn "Skipped '$FeatureName': not supported on this Windows build (detected build $Script:OSBuild, edition: $(Get-OSCaption))."
         return $false
     }
     return $true

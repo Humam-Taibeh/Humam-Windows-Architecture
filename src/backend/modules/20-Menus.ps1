@@ -34,7 +34,7 @@ function Show-EpicIntro {
     Write-Host ""
     Write-Host "        $greeting" -ForegroundColor Yellow
     Write-Host "        Pulse · Ultimate Deployment & Optimization Suite — by Humam Taibeh" -ForegroundColor DarkGray
-    Write-Host "        v$Script:ScriptVersion  |  $Script:OSCaption (Build $Script:OSBuild)" -ForegroundColor DarkGray
+    Write-Host "        v$Script:ScriptVersion  |  $(Get-OSCaption) (Build $Script:OSBuild)" -ForegroundColor DarkGray
     if ($Script:DryRun) {
         Write-Host "        DRY-RUN MODE (-WhatIf): changes will be simulated, not applied." -ForegroundColor DarkYellow
     }

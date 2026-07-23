@@ -106,28 +106,75 @@ class PulseDialog(QDialog):
 
 # Every scrollable "row list" selector (App Selector, Dev Hub, Update
 # Center, Startup Manager, and a hub's own landing screen) shares this one
-# width — global theme consistency means these can never quietly drift
-# apart the way UpdateCenterDialog (640px) and AppSelectorDialog (560px)
-# once had. Simple one-off confirmations/wizards (ConfirmDialog,
+# DYNAMIC sizing rule — global theme consistency means these can never
+# quietly drift apart the way UpdateCenterDialog (640px) and
+# AppSelectorDialog (560px) once had, and a fixed pixel box can never look
+# cramped on a big display or oversized on a small one. Both dimensions
+# scale off the HOST WINDOW's *current* size (re-applied live on resize by
+# refit_dialog below), landing mid-band of the brief's percentages, with a
+# width floor/ceiling so it never goes pocket-sized or absurdly wide on an
+# ultrawide monitor. Simple one-off confirmations/wizards (ConfirmDialog,
 # CommandPalette, OfficeWizardDialog, ToolInstallWizardDialog) keep their
-# own narrower, purpose-built widths — widening a two-sentence confirm to
-# 700px would trade clutter for empty space, not fix it.
-SELECTOR_DIALOG_WIDTH = 700
+# own narrower, purpose-built FIXED widths — a two-sentence confirm scaling
+# to 1100px on a 4K screen would trade clutter for empty space, not fix it.
+_SELECTOR_WIDTH_FRACTION = 0.675   # ~65-70% of host width
+_SELECTOR_WIDTH_MIN = 800
+_SELECTOR_WIDTH_MAX = 1100
+_SELECTOR_HEIGHT_FRACTION = 0.775  # ~75-80% of host height
+_SELECTOR_HEIGHT_MIN = 460
+
+
+def _resolve_host_window(dialog: QDialog) -> QWidget | None:
+    """Climb from `dialog` to the real top-level app window — nested
+    wizards (a PulseDialog opened from another PulseDialog) are parented
+    to the dialog above them, not the app, so this walks up through any
+    number of stacked dialogs to the one true QMainWindow."""
+    host = dialog.parentWidget()
+    if host is None:
+        return None
+    host = host.window()
+    while isinstance(host, QDialog) and host.parentWidget() is not None:
+        host = host.parentWidget().window()
+    return host
+
+
+def _selector_panel_size(dialog: QDialog) -> tuple[int, int]:
+    """(width, height) for a responsive selector panel, derived from the
+    host window's CURRENT size — called once at construction and again on
+    every host resize (refit_dialog), so an already-open dialog visibly
+    grows/shrinks along with the window instead of freezing at whatever
+    size the window happened to be when it was opened."""
+    host = _resolve_host_window(dialog)
+    if host is None:
+        return (_SELECTOR_WIDTH_MIN, _SELECTOR_HEIGHT_MIN)
+    width = max(_SELECTOR_WIDTH_MIN,
+                min(_SELECTOR_WIDTH_MAX, round(host.width() * _SELECTOR_WIDTH_FRACTION)))
+    height = max(_SELECTOR_HEIGHT_MIN, round(host.height() * _SELECTOR_HEIGHT_FRACTION))
+    return (width, height)
 
 
 def _dialog_chrome(dialog: PulseDialog, t: dict, accent: str,
-                   width: int, radius: int = 18, anchor: str = "center") -> "DepthCard":
+                   width: int = 0, radius: int = 18, anchor: str = "center",
+                   responsive: bool = False) -> "DepthCard":
     """One shared construction path for every Pulse dialog: the frosted
-    DepthCard panel at exactly `width`, laid out centered (or top-anchored
-    for the command palette) inside the dialog's full-body scrim, plus a
-    soft elevation shadow. A drop-shadow QGraphicsEffect is allowed here
-    as the deliberate exception to the animations.py doctrine: dialogs
-    are small, transient surfaces that repaint a handful of times — not
-    steady-state 60fps chrome.
+    DepthCard panel, laid out centered (or top-anchored for the command
+    palette) inside the dialog's full-body scrim, plus a soft elevation
+    shadow. A drop-shadow QGraphicsEffect is allowed here as the
+    deliberate exception to the animations.py doctrine: dialogs are small,
+    transient surfaces that repaint a handful of times — not steady-state
+    60fps chrome.
+
+    `responsive=True` sizes the panel dynamically off the host window (see
+    _selector_panel_size) and keeps it that way as the window resizes;
+    `width` (a fixed pixel value) is used only when `responsive=False`.
 
     Returns the panel; the caller builds its content layout inside it."""
     panel = DepthCard(radius=radius, parent=dialog)
-    panel.setFixedWidth(width)
+    dialog._responsive_panel = responsive
+    if responsive:
+        panel.setFixedSize(*_selector_panel_size(dialog))
+    else:
+        panel.setFixedWidth(width)
     panel.setStyleSheet(TH.dialog_panel_qss(t, accent))
     dialog.panel = panel
 
@@ -159,13 +206,10 @@ def refit_dialog(dialog: PulseDialog):
     and reachable no matter what is open — and match its scrim radius to
     the host's maximized state (square when flush, rounded otherwise,
     matching the shell). Called from showEvent and again whenever the
-    host resizes while a dialog is open."""
-    host = dialog.parentWidget()
-    if host is not None:
-        host = host.window()
-        # nested wizards are parented to another dialog — climb to the app
-        while isinstance(host, QDialog) and host.parentWidget() is not None:
-            host = host.parentWidget().window()
+    host resizes while a dialog is open — which is also what keeps a
+    responsive selector panel (see _dialog_chrome) sized to the window
+    live, instead of freezing at its opening-time dimensions."""
+    host = _resolve_host_window(dialog)
     if host is not None:
         titlebar_h = getattr(getattr(host, "titlebar", None), "height", lambda: 0)()
         body = QRect(0, titlebar_h, host.width(), host.height() - titlebar_h)
@@ -173,6 +217,8 @@ def refit_dialog(dialog: PulseDialog):
         theme_mgr = getattr(host, "theme", None)
         if theme_mgr is not None:
             dialog._set_scrim(theme_mgr.t, 0 if host.isMaximized() else 22)
+        if getattr(dialog, "_responsive_panel", False) and dialog.panel is not None:
+            dialog.panel.setFixedSize(*_selector_panel_size(dialog))
 
 
 def _present_dialog(dialog: PulseDialog, duration_ms: int = 130):
@@ -249,7 +295,11 @@ class TitleBar(QWidget):
         lay.setContentsMargins(20, 8, 10, 6)
         lay.setSpacing(9)
 
-        self._glyph = QLabel("✦")
+        # Same breathing-pulse component the Welcome page's hero mark uses
+        # (BreathingIcon) — the brand glyph reads identically everywhere
+        # it appears instead of animating on the home screen and sitting
+        # inert in the title bar.
+        self._glyph = BreathingIcon("✦", size=26, accent=t["accent"])
         lay.addWidget(self._glyph)
         self._name = QLabel(app_name)
         lay.addWidget(self._name)
@@ -305,8 +355,7 @@ class TitleBar(QWidget):
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
         self._t = t
-        self._glyph.setStyleSheet(
-            f"color: {t['accent']}; font-size: 17px; background: transparent; border: none;")
+        self._glyph.apply_theme(t)
         self._name.setStyleSheet(TH.label_qss(t, "brand"))
         self._version.setStyleSheet(TH.label_qss(t, "version"))
         if self._channel is not None:
@@ -877,7 +926,7 @@ class HubDialog(PulseDialog):
         super().__init__(parent)
         self.chosen_item: dict | None = None
         accent = t["accent"]
-        panel = _dialog_chrome(self, t, accent, width=SELECTOR_DIALOG_WIDTH)
+        panel = _dialog_chrome(self, t, accent, responsive=True)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -896,20 +945,31 @@ class HubDialog(PulseDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(TH.scroll_area_qss(t))
-        scroll.setMaximumHeight(420)
         host = QWidget()
         host.setStyleSheet("background: transparent;")
         host_lay = QVBoxLayout(host)
         host_lay.setContentsMargins(0, 0, 6, 0)
-        host_lay.setSpacing(12)
+        host_lay.setSpacing(14)
+        # Every card gets an EQUAL stretch factor and no trailing spacer -
+        # with only a handful of sub-actions per hub, top-anchoring them
+        # with dead space below (the old behavior) read as an empty,
+        # unfinished sub-menu on the new, much taller responsive panel.
+        # Stretching each card to share the leftover height instead makes
+        # 2-4 sub-actions fill the screen generously, exactly like the
+        # premium, fully-populated feel of a normal category page; once
+        # there are enough items to exceed the natural minimum heights,
+        # the scroll area takes over automatically.
         for item in hub.get("items", []):
             card = GlassCard(item, accent, t)
-            card.setMinimumHeight(96)
+            card.setMinimumHeight(110)
             card.clicked.connect(lambda it=item: self._choose(it))
-            host_lay.addWidget(card)
-        host_lay.addStretch()
+            host_lay.addWidget(card, 1)
         scroll.setWidget(host)
-        lay.addWidget(scroll)
+        # Stretch factor, not a maximumHeight cap: the panel itself is now
+        # a fixed size derived from the host window (see _dialog_chrome's
+        # `responsive=True`), so the scroll area should claim every pixel
+        # left over after the header/footer instead of stopping short.
+        lay.addWidget(scroll, 1)
 
         lay.addSpacing(4)
         row = QHBoxLayout()
@@ -1285,7 +1345,7 @@ class AppSelectorDialog(PulseDialog):
             url = entry[3] if len(entry) > 3 else ""
             apps.append((app_id, app_name, desc, url))
 
-        panel = _dialog_chrome(self, t, accent, width=SELECTOR_DIALOG_WIDTH)
+        panel = _dialog_chrome(self, t, accent, responsive=True)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -1327,7 +1387,6 @@ class AppSelectorDialog(PulseDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(TH.scroll_area_qss(t))
-        scroll.setMaximumHeight(360)
 
         host = QWidget()
         host.setStyleSheet("background: transparent;")
@@ -1343,7 +1402,9 @@ class AppSelectorDialog(PulseDialog):
             host_lay.addWidget(row)
         host_lay.addStretch()
         scroll.setWidget(host)
-        lay.addWidget(scroll)
+        # Stretch factor, not a maximumHeight cap — see HubDialog's note;
+        # the panel is now a fixed size derived from the host window.
+        lay.addWidget(scroll, 1)
 
         lay.addSpacing(4)
         row = QHBoxLayout()
@@ -2286,7 +2347,7 @@ class DevHubSelectorDialog(PulseDialog):
         self._tool_meta: dict[str, tuple[str, str]] = {}  # id -> (name, url)
         self._dependents: dict[str, list[str]] = {}        # requires_id -> [dependent ids]
 
-        panel = _dialog_chrome(self, t, t["accent"], width=SELECTOR_DIALOG_WIDTH)
+        panel = _dialog_chrome(self, t, t["accent"], responsive=True)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
@@ -2340,7 +2401,6 @@ class DevHubSelectorDialog(PulseDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(TH.scroll_area_qss(t))
-        scroll.setMaximumHeight(380)
 
         host = QWidget()
         host.setStyleSheet("background: transparent;")
@@ -2364,7 +2424,7 @@ class DevHubSelectorDialog(PulseDialog):
                 host_lay.addWidget(row)
         host_lay.addStretch()
         scroll.setWidget(host)
-        lay.addWidget(scroll)
+        lay.addWidget(scroll, 1)
 
         lay.addSpacing(4)
         row = QHBoxLayout()
@@ -2564,7 +2624,7 @@ class UpdateCenterDialog(PulseDialog):
         self._worker: PowerShellTask | None = None
         accent = t["accent"]
 
-        panel = _dialog_chrome(self, t, accent, width=SELECTOR_DIALOG_WIDTH)
+        panel = _dialog_chrome(self, t, accent, responsive=True)
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
         lay.setSpacing(12)
@@ -2579,7 +2639,7 @@ class UpdateCenterDialog(PulseDialog):
         lay.addWidget(self._subtitle)
 
         self._stack = QStackedWidget()
-        lay.addWidget(self._stack)
+        lay.addWidget(self._stack, 1)
         self._loading_page = self._build_loading_page()
         self._stack.addWidget(self._loading_page)
         self._empty_page = self._build_empty_page()
@@ -2728,7 +2788,6 @@ class UpdateCenterDialog(PulseDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(TH.scroll_area_qss(t))
-        scroll.setMaximumHeight(360)
         self._host = QWidget()
         self._host.setStyleSheet("background: transparent;")
         self._host_lay = QVBoxLayout(self._host)
@@ -2736,7 +2795,7 @@ class UpdateCenterDialog(PulseDialog):
         self._host_lay.setSpacing(8)
         self._host_lay.addStretch()
         scroll.setWidget(self._host)
-        lay.addWidget(scroll)
+        lay.addWidget(scroll, 1)
 
         lay.addSpacing(4)
         row = QHBoxLayout()
@@ -2995,7 +3054,7 @@ class StartupManagerDialog(PulseDialog):
         self._active_want_enabled: bool = False
 
         accent = t["accent"]
-        panel = _dialog_chrome(self, t, accent, width=SELECTOR_DIALOG_WIDTH)
+        panel = _dialog_chrome(self, t, accent, responsive=True)
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(28, 24, 28, 22)
         lay.setSpacing(12)
@@ -3015,7 +3074,7 @@ class StartupManagerDialog(PulseDialog):
         lay.addLayout(head)
 
         self._stack = QStackedWidget()
-        lay.addWidget(self._stack)
+        lay.addWidget(self._stack, 1)
         self._loading_page = self._build_loading_page()
         self._stack.addWidget(self._loading_page)
         self._error_page = self._build_error_page()
@@ -3130,7 +3189,6 @@ class StartupManagerDialog(PulseDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(TH.scroll_area_qss(t))
-        scroll.setMaximumHeight(360)
         self._host = QWidget()
         self._host.setStyleSheet("background: transparent;")
         self._host_lay = QVBoxLayout(self._host)
@@ -3138,7 +3196,7 @@ class StartupManagerDialog(PulseDialog):
         self._host_lay.setSpacing(8)
         self._host_lay.addStretch()
         scroll.setWidget(self._host)
-        lay.addWidget(scroll)
+        lay.addWidget(scroll, 1)
 
         row = QHBoxLayout()
         rescan = QPushButton("Rescan")
@@ -3166,7 +3224,12 @@ class StartupManagerDialog(PulseDialog):
         self._shimmer.start()
 
         thread = QThread(self)
-        worker = PowerShellTask(self._ps1_path, "StartupReport", timeout=60)
+        # 90s, not 60s: the scan itself is fast (pure registry reads + in-
+        # memory regex scoring — see 05-Startup.ps1), but cold PowerShell
+        # process start-up (module dot-sourcing, AV real-time scanning) is
+        # environment-dependent and deserves real margin, not a hair-trigger
+        # timeout — same generous window ScanForUpdates already uses.
+        worker = PowerShellTask(self._ps1_path, "StartupReport", timeout=90)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_scan_finished)

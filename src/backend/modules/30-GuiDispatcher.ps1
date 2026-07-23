@@ -214,10 +214,13 @@ function Invoke-GuiTask {
                 $Enabled     = @($Items | Where-Object { $_.Enabled }).Count
                 $Disabled    = @($Items | Where-Object { -not $_.Enabled }).Count
                 $Recommended = @($Items | Where-Object { $_.Enabled -and $_.Recommendation -eq 'Disable' }).Count
-                foreach ($It in $Items) {
-                    $State = if ($It.Enabled) { "ENABLED " } else { "DISABLED" }
-                    Write-Log ("STARTUP [{0}] ({1}) {2} -> {3} [{4}/{5}]" -f $State, $It.Type, $It.Name, $It.Command, $It.Recommendation, $It.Impact)
-                }
+                # ONE log append for the whole scan, not one per item - see
+                # Write-LogBatch (00-Foundation.ps1).
+                $LogLines = @($Items | ForEach-Object {
+                    $State = if ($_.Enabled) { "ENABLED " } else { "DISABLED" }
+                    "STARTUP [{0}] ({1}) {2} -> {3} [{4}/{5}]" -f $State, $_.Type, $_.Name, $_.Command, $_.Recommendation, $_.Impact
+                })
+                Write-LogBatch -Messages $LogLines
                 $Suffix = if ($Recommended -gt 0) { " — $Recommended recommended to disable." } else { " — nothing flagged." }
                 Write-Output "##PULSE##SUCCESS|Startup audit: $Enabled enabled, $Disabled disabled item(s)$Suffix"
                 break
