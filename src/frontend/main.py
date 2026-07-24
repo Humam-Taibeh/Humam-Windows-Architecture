@@ -1108,6 +1108,20 @@ class PulseApp(QMainWindow):
             if self._glass_applied:
                 TH.apply_native_rounding(int(self.winId()), rounded=not flush)
 
+    def closeEvent(self, event):
+        """Guard against orphaning the backend process tree: if a
+        PowerShellTask is still running when the window closes (the X
+        button, Alt+F4, or the custom caption's close control below all
+        end up here via Qt's normal close path), cancel it and give the
+        process-tree kill a moment to land before the QThread gets torn
+        down - otherwise winget/DISM/sfc children spawned by core.ps1 are
+        left running headless after the GUI disappears."""
+        if self._thread is not None and self._thread.isRunning():
+            if self._worker is not None:
+                self._worker.cancel()
+            self._thread.wait(3000)
+        super().closeEvent(event)
+
     # Win32 hit-test codes for the native resize border (WM_NCHITTEST)
     _HT = {"L": 10, "R": 11, "T": 12, "TL": 13, "TR": 14,
            "B": 15, "BL": 16, "BR": 17}
