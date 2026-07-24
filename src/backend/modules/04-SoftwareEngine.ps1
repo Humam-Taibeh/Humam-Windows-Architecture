@@ -79,7 +79,20 @@ function Get-InstalledVersion {
 
 function Get-LatestVersion {
     param([string]$AppId)
-    if (Is-StoreApp $AppId) { return "Store" }
+    if (Is-StoreApp $AppId) {
+        # "Store" (not "Unknown") is the deliberate sentinel meaning "can't
+        # probe a real version, treat any installed copy as current" -
+        # Smart-Deploy's store-app branch reads it exactly that way.
+        # winget's msstore source, when reachable, gives a real version to
+        # compare against Get-AppxPackage's installed version instead.
+        if (-not $global:WingetAvailable) { return "Store" }
+        $Lines = & winget show --id $AppId --exact --source msstore --accept-source-agreements --disable-interactivity 2>$null
+        if (-not $Lines) { return "Store" }
+        foreach ($Line in $Lines) {
+            if ($Line -match '^\s*Version:\s*(\S+)') { return $Matches[1] }
+        }
+        return "Store"
+    }
     if (-not $global:WingetAvailable) { return "Unknown" }  # no winget -> no probe
     $Lines = & winget show --id $AppId --exact --accept-source-agreements --disable-interactivity 2>$null
     if (-not $Lines) { return "Unknown" }
@@ -92,11 +105,13 @@ function Get-LatestVersion {
 # ============================================================
 #  UPDATE CENTER — winget upgrade scan (v6.3)
 # ============================================================
-function Get-WingetUpgradeList {
+function ConvertFrom-WingetUpgradeTable {
     <#
     .SYNOPSIS
-        Returns every app winget reports as upgradable, as an array of
+        Parses `winget upgrade`'s aligned text table into an array of
         PSCustomObject { Id, Name, CurrentVersion, AvailableVersion }.
+        Source-agnostic - used for both the default multi-source scan and
+        the msstore-scoped one below, since the column layout is identical.
 
     .DESCRIPTION
         `winget upgrade` has no --output json in the stable CLI, so this
@@ -108,9 +123,8 @@ function Get-WingetUpgradeList {
         Malformed/unrecognized rows are skipped individually rather than
         aborting the whole scan - a partial result beats a hard failure.
     #>
-    if (-not $global:WingetAvailable) { return @() }
+    param([string[]]$Raw)
 
-    $Raw = & winget upgrade --include-unknown --accept-source-agreements --disable-interactivity 2>$null
     if (-not $Raw) { return @() }
     $Lines = @($Raw | Where-Object { $_ -and $_.Trim() -ne '' })
 
@@ -153,6 +167,49 @@ function Get-WingetUpgradeList {
         } catch {
             continue   # one unparsable row never aborts the whole scan
         }
+    }
+    return $Items
+}
+
+function Get-WingetUpgradeList {
+    <#
+    .SYNOPSIS
+        Returns every app winget reports as upgradable - Win32 packages AND
+        Microsoft Store apps - as an array of PSCustomObject { Id, Name,
+        CurrentVersion, AvailableVersion }, so Update Center's "Update All"
+        can process both kinds in one unified batch.
+
+    .DESCRIPTION
+        The default (source-less) `winget upgrade` call is expected to
+        cover every configured source including msstore, but in practice
+        Microsoft Store packages carry their own per-source terms-of-
+        transaction agreement - a source that hasn't separately accepted it
+        gets silently dropped from the unscoped listing even with
+        --accept-source-agreements. Explicitly scanning `--source msstore`
+        (which DOES accept that source's agreement when scoped to it) is
+        what reliably surfaces Store app updates, so both scans always run
+        and are merged, de-duplicated by Id (the default scan winning any
+        overlap since it's the richer/authoritative pass).
+    #>
+    if (-not $global:WingetAvailable) { return @() }
+
+    $WingetRaw = & winget upgrade --include-unknown --accept-source-agreements --disable-interactivity 2>$null
+    $WingetItems = @(ConvertFrom-WingetUpgradeTable -Raw $WingetRaw)
+
+    $StoreItems = @()
+    try {
+        $StoreRaw = & winget upgrade --include-unknown --source msstore --accept-source-agreements --disable-interactivity 2>$null
+        $StoreItems = @(ConvertFrom-WingetUpgradeTable -Raw $StoreRaw)
+    } catch {
+        Write-Log "msstore upgrade scan failed: $($_.Exception.Message)"
+    }
+
+    $SeenIds = @{}
+    $Items = @()
+    foreach ($Item in ($WingetItems + $StoreItems)) {
+        if ($SeenIds.ContainsKey($Item.Id)) { continue }
+        $SeenIds[$Item.Id] = $true
+        $Items += $Item
     }
     return $Items
 }
@@ -353,14 +410,70 @@ function Smart-Deploy {
         Write-StatusPanel -Label "STORE APP" -Text $AppName
 
         $InstalledVer = Get-InstalledVersion -AppId $AppId -AppName $AppName
-        if ($InstalledVer) {
+        $LatestVer    = Get-LatestVersion -AppId $AppId
+
+        if ($InstalledVer -and ($InstalledVer -eq $LatestVer -or $LatestVer -eq "Store")) {
             Write-AlreadyOK "$AppName -> already installed (v$InstalledVer) - skipped."
             return @{Status='Success'; AlreadyCurrent=$true; Message='Already installed'}
         }
 
         if ($Script:DryRun) {
-            Write-Info "[WHATIF] $AppName is a Microsoft Store app - a real run would require the Store (skipped)."
-            return @{Status='Skipped'; Message='Store app (dry-run)'}
+            if ($InstalledVer) {
+                if (Test-DryRun "winget upgrade --id $AppId ($AppName) via --source msstore, silent") { }
+            } else {
+                Write-Info "[WHATIF] $AppName is a Microsoft Store app - a real run would require the Store (skipped)."
+            }
+            return @{Status='Success'; Message='Dry-run (no change)'}
+        }
+
+        if ($InstalledVer) {
+            # An update IS available (the AlreadyCurrent short-circuit above
+            # only returns when there ISN'T one) - unlike a brand-new Store
+            # install, updating an app already on the machine needs no
+            # first-run Store consent UI, so this can run through winget's
+            # msstore source exactly like a normal silent upgrade - the
+            # same single unified pass Update Center uses for Win32 apps.
+            Write-Warn "$AppName update available (Store): $InstalledVer -> $LatestVer"
+            if ($Bulk) {
+                if ($BulkMethod -eq 'manual') {
+                    Write-Info "Opening Store page for $AppName..."
+                    Start-Process "ms-windows-store://pdp/?ProductId=$AppId"
+                    return @{Status='Success'; Message='Store opened'}
+                }
+                # 'auto' falls through to the silent winget update below.
+            } elseif ($Script:NonInteractive) {
+                Write-Info "GUI mode: proceeding with silent winget update (msstore source)."
+            } else {
+                Write-Host "   y = Update via winget (silent, msstore source)" -ForegroundColor Yellow
+                Write-Host "   n = Skip this app only" -ForegroundColor Yellow
+                Write-Host "   b = Back to category" -ForegroundColor Yellow
+                Write-Host "   q = Quit to main menu" -ForegroundColor Yellow
+                $choice = Read-Choice -Prompt "   Choose (y/n/b/q)" -Valid @('y','n','b','q')
+                switch ($choice) {
+                    'q' { return @{Status='Quit'; Message='User quit to main menu'} }
+                    'b' { return @{Status='Back'; Message='User returned to category'} }
+                    'n' { Write-Info "Bypassed $AppName."; return @{Status='Skipped'; Message='User skipped'} }
+                    'y' { }
+                }
+            }
+
+            Ensure-Winget | Out-Null
+            if (-not $global:WingetAvailable) {
+                Write-ErrorX "$AppName failed: winget is unavailable, so this Microsoft Store update can't be applied."
+                return @{Status='Failed'; Message='winget unavailable'}
+            }
+
+            Write-Info "Updating $AppName via winget (Microsoft Store source)..."
+            $Code = Invoke-Winget -ArgList @("upgrade", "--id", $AppId, "--exact", "--source", "msstore", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity")
+            $Result = Resolve-WingetExitCode -Code $Code
+            if ($Result.Success) {
+                if ($Result.AlreadyCurrent) { Write-AlreadyOK "$AppName -> $($Result.Message) - skipped." }
+                else { Write-Success "$AppName -> $($Result.Message)" }
+                return @{Status='Success'; AlreadyCurrent=$Result.AlreadyCurrent; Message=$Result.Message}
+            } else {
+                Write-ErrorX "$AppName failed: $($Result.Message)"
+                return @{Status='Failed'; Message=$Result.Message}
+            }
         }
 
         if ($Bulk) {
@@ -404,13 +517,23 @@ function Smart-Deploy {
 
     $CurrentVersion = Get-InstalledVersion -AppId $AppId -AppName $AppName
     $LatestVersion  = Get-LatestVersion -AppId $AppId
+    # See $Script:AlwaysForceReinstallAppIds in 01-Catalogs.ps1: some
+    # AppIds (Microsoft.Edge) can report a "current" version through this
+    # exact same version probe even when the payload Pulse actually cares
+    # about was just removed - the fast-path skip below has to be bypassed
+    # for them, or a reinstall silently does nothing.
+    $ForceReinstall = $Script:AlwaysForceReinstallAppIds -contains $AppId
 
     if ($CurrentVersion) {
-        if ($CurrentVersion -eq $LatestVersion -or $LatestVersion -eq "Unknown") {
+        if (($CurrentVersion -eq $LatestVersion -or $LatestVersion -eq "Unknown") -and -not $ForceReinstall) {
             Write-AlreadyOK "$AppName -> already up to date (v$CurrentVersion) - skipped."
             return @{Status='Success'; AlreadyCurrent=$true; Message='Already up to date'}
         }
-        Write-Warn "$AppName update available: $CurrentVersion -> $LatestVersion"
+        if ($ForceReinstall -and ($CurrentVersion -eq $LatestVersion -or $LatestVersion -eq "Unknown")) {
+            Write-Warn "$AppName reports as already current, but always gets a forced reinstall (see AlwaysForceReinstallAppIds)."
+        } else {
+            Write-Warn "$AppName update available: $CurrentVersion -> $LatestVersion"
+        }
     } else {
         Write-Warn "$AppName is not installed. (Latest: $LatestVersion)"
     }
@@ -473,7 +596,14 @@ function Smart-Deploy {
 
     Stop-LockingProcesses -AppId $AppId
     Write-Info "Running winget - live progress:"
-    if ($CurrentVersion) {
+    if ($ForceReinstall) {
+        # AlwaysForceReinstallAppIds bypass "upgrade" entirely - an upgrade
+        # call has nothing to do against a version winget considers already
+        # current, which is exactly the broken state this list exists to
+        # route around. A forced install reliably re-lays the package
+        # either way.
+        $Code = Invoke-Winget -ArgList @("install", "--id", $AppId, "--exact", "--accept-source-agreements", "--accept-package-agreements", "--force", "--disable-interactivity")
+    } elseif ($CurrentVersion) {
         $Code = Invoke-Winget -ArgList @("upgrade", "--id", $AppId, "--exact", "--include-unknown", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity")
     } else {
         $Code = Invoke-Winget -ArgList @("install", "--id", $AppId, "--exact", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity")
@@ -486,7 +616,7 @@ function Smart-Deploy {
         # the identical elevation failure a second time.
         Write-Warn "First attempt failed. Retrying with force flags..."
         Start-Sleep -Seconds 3
-        if ($CurrentVersion) {
+        if ($CurrentVersion -and -not $ForceReinstall) {
             $Code = Invoke-Winget -ArgList @("upgrade", "--id", $AppId, "--exact", "--include-unknown", "--accept-source-agreements", "--accept-package-agreements", "--force", "--disable-interactivity")
         } else {
             $Code = Invoke-Winget -ArgList @("install", "--id", $AppId, "--exact", "--accept-source-agreements", "--accept-package-agreements", "--force", "--disable-interactivity")

@@ -180,14 +180,33 @@ function Remove-OneDrivePackage {
 #  MICROSOFT EDGE REMOVAL / REINSTALL
 # ============================================================
 function Remove-MicrosoftEdge {
+    <#
+    .SYNOPSIS
+        Three-tier removal: Edge's own setup.exe (when present), then a
+        winget uninstall, then an Appx cleanup of any leftover stub - each
+        tier only runs if the one before it wasn't available or failed, so
+        a build that's missing the Installer\setup.exe payload (or has it
+        but hits a policy block) still gets a real removal attempt instead
+        of the old immediate give-up.
+    #>
     Write-SectionHeader "Remove Microsoft Edge"
     New-SystemRestorePoint
+    Backup-EdgeState
+
+    if (Test-DryRun "Remove Microsoft Edge (setup.exe --uninstall --force-uninstall --system-level, falling back to winget/Appx cleanup if needed)") { return }
+
+    # msedge.exe/msedgewebview2.exe hold their own binaries open - every
+    # removal path below fails or silently no-ops if either is still
+    # running.
+    Get-Process -Name "msedge", "msedgewebview2" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 800
+
+    $Removed = $false
+
     $EdgeUninstaller = "$env:ProgramFiles\Microsoft\Edge\Application\*\Installer\setup.exe"
     $UninstallPath = Get-ChildItem -Path $EdgeUninstaller -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($UninstallPath) {
-        Backup-EdgeState
-        if (Test-DryRun "Run Edge setup.exe --uninstall --force-uninstall --system-level") { return }
-        $Removed = Invoke-WithRetry -OperationName "Remove Microsoft Edge" -Action {
+        $Removed = Invoke-WithRetry -OperationName "Remove Microsoft Edge (setup.exe)" -Action {
             # Start-Process doesn't throw on a non-zero exit code, so without
             # this check a failed uninstall (e.g. blocked by policy) would
             # still report success - throwing here is what lets Invoke-WithRetry
@@ -195,10 +214,39 @@ function Remove-MicrosoftEdge {
             $Proc = Start-Process -FilePath $UninstallPath.FullName -ArgumentList "--uninstall --force-uninstall --system-level" -Wait -NoNewWindow -PassThru -ErrorAction Stop
             if ($Proc.ExitCode -ne 0) { throw "Edge's uninstaller exited with code $($Proc.ExitCode)." }
         }
-        if ($Removed) {
-            Write-Success "Microsoft Edge has been uninstalled (a system restart is recommended). A version/settings backup was saved to Desktop\Pulse_EdgeBackup."
-            $Script:PendingRestart = $true
+    } else {
+        Write-Info "Edge's own setup.exe was not found - falling back to winget/Appx cleanup."
+    }
+
+    # setup.exe is absent entirely on builds that register Edge as a
+    # protected inbox component with no standalone Installer folder -
+    # winget still knows how to remove the Win32 package cleanly on those,
+    # so this is a real second line of defense, not a last resort.
+    if (-not $Removed) {
+        Ensure-Winget | Out-Null
+        if ($global:WingetAvailable) {
+            $Removed = Invoke-WithRetry -OperationName "Remove Microsoft Edge (winget)" -Action {
+                $Code = Invoke-Winget -ArgList @("uninstall", "--id", "Microsoft.Edge", "--exact", "--silent", "--force", "--accept-source-agreements", "--disable-interactivity")
+                if ($Code -ne 0) { throw "winget uninstall exited with code $Code." }
+            }
         }
+    }
+
+    # Last resort: strip any Appx-registered Edge stub (WebView2 shell,
+    # PWA host, etc.) either path above can leave behind - these aren't
+    # the browser itself, but they're what makes Windows keep reporting
+    # Edge as "installed" once the Win32 payload is already gone.
+    if (-not $Removed) {
+        $Removed = Invoke-WithRetry -OperationName "Remove Microsoft Edge (Appx cleanup)" -Action {
+            $Packages = Get-AppxPackage -AllUsers -Name "*MicrosoftEdge*" -ErrorAction SilentlyContinue
+            if (-not $Packages) { throw "No Edge Appx package registration found to remove." }
+            $Packages | Remove-AppxPackage -AllUsers -ErrorAction Stop
+        }
+    }
+
+    if ($Removed) {
+        Write-Success "Microsoft Edge has been uninstalled (a system restart is recommended). A version/settings backup was saved to Desktop\Pulse_EdgeBackup."
+        $Script:PendingRestart = $true
     } else {
         Write-Warn "Edge is either a built-in component and cannot be fully removed, or it is not installed as a standalone. You may reset Edge instead."
     }

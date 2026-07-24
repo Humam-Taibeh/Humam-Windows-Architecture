@@ -373,14 +373,6 @@ function Invoke-GuiTask {
                 }
                 break
             }
-            "ReinstallEdge" {
-                if (-not $Script:DryRun -and -not (Ensure-Winget)) { Write-Output "##PULSE##ERROR|winget is unavailable, so Edge cannot be reinstalled automatically. Install 'App Installer' from the Microsoft Store first."; break }
-                Complete-GuiTask -Action { Install-MicrosoftEdge } `
-                    -SuccessMessage "Microsoft Edge reinstalled via winget; backed-up settings restored where available." `
-                    -FailureMessage "Edge reinstallation did not complete."
-                break
-            }
-
             # ============ 3. MAINTENANCE & REPAIR ============
             "RunSFC" {
                 $RepairOk = Invoke-SystemRepair

@@ -48,7 +48,8 @@ $Script:TweakCatalog = @(
 # ============================================================
 $Apps_Basic = @(
     @("Google.Chrome", "Google Chrome"), @("Brave.Brave", "Brave Browser"),
-    @("Mozilla.Firefox", "Mozilla Firefox"), @("Telegram.TelegramDesktop", "Telegram Desktop"),
+    @("Mozilla.Firefox", "Mozilla Firefox"), @("Microsoft.Edge", "Microsoft Edge"),
+    @("Telegram.TelegramDesktop", "Telegram Desktop"),
     @("Spotify.Spotify", "Spotify (Win32)"),
     @("Discord.Discord", "Discord"), @("9NKSQCEZVDDB", "WhatsApp (Store)"),
     @("9PKTQ5699M62", "iCloud (Store)"), @("Apple.iTunes", "iTunes"),
@@ -156,6 +157,7 @@ $Script:DownloadUrls = @{
     "Google.Chrome"                 = "https://www.google.com/chrome/"
     "Brave.Brave"                   = "https://brave.com/download/"
     "Mozilla.Firefox"               = "https://www.mozilla.org/firefox/new/"
+    "Microsoft.Edge"                = "https://www.microsoft.com/en-us/edge/download"
     "Telegram.TelegramDesktop"      = "https://telegram.org/apps"
     "Spotify.Spotify"               = "https://www.spotify.com/download"
     "Discord.Discord"               = "https://discord.com/download"
@@ -211,7 +213,29 @@ $Script:LockProcessMap = @{
     # common real-world cause. Pre-emptively closing them avoids the
     # conflict instead of just reporting a cryptic failure afterward.
     "MSYS2.MSYS2"                = @("mintty", "bash", "pacman")
+    # msedge.exe/msedgewebview2.exe hold their own binaries open - a
+    # running browser (or a background WebView2 host another app spawned)
+    # blocks both a fresh install and an upgrade over itself.
+    "Microsoft.Edge"             = @("msedge", "msedgewebview2")
 }
+
+# ============================================================
+#  APP IDS THAT MUST ALWAYS RE-RUN THE INSTALLER, EVEN WHEN winget
+#  REPORTS THE SAME VERSION AS "LATEST"
+#  Windows keeps Microsoft Edge registered under the SAME winget Id
+#  (Microsoft.Edge) whether it's the user-managed standalone install OR
+#  the protected inbox/OS-component stub some builds fall back to after
+#  Remove-MicrosoftEdge (06-Tweaks.ps1) removes the standalone copy - so
+#  `winget list --id Microsoft.Edge` can still report a "current" version
+#  right after a clean removal. Smart-Deploy's normal
+#  CurrentVersion-equals-LatestVersion fast path would then silently skip
+#  the reinstall entirely (the exact "installs do nothing" bug this list
+#  exists to close) - AppIds here bypass that fast path and always run a
+#  forced `winget install` instead.
+# ============================================================
+$Script:AlwaysForceReinstallAppIds = @(
+    "Microsoft.Edge"
+)
 
 # ============================================================
 #  ELEVATION-PROHIBITED APP IDS
@@ -373,7 +397,7 @@ if (-not (Test-Path $Script:StartupBackupFolder) -and (Test-Path "$env:USERPROFI
 $Script:AdminRequiredTasks = @(
     "RunSFC","CleanCache","RemoveBloatware","OptimizeDrives","RemoveWindowsOld",
     "DisableHibernation","EnableHibernation","DisableTelemetry","DisableActivityHistory",
-    "NetworkOptimization","UltimatePowerPlan","RemoveOneDrive","RemoveEdge","ReinstallEdge",
+    "NetworkOptimization","UltimatePowerPlan","RemoveOneDrive","RemoveEdge",
     "CreateRestorePoint","DriverBackup","RestoreServices","RestoreEdge","ApplyAllPrivacy",
     "ResetTweaks","InstallOfficeODT","InstallOfficeODTAuto",
     "StartupDisableItem","StartupEnableItem"
