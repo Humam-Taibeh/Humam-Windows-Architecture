@@ -353,23 +353,36 @@ function Invoke-GuiTask {
                 break
             }
             "RemoveOneDrive" {
-                Complete-GuiTask -Action { Remove-OneDrivePackage } `
-                    -SuccessMessage "OneDrive removed. Local files were backed up to Desktop\Pulse_OneDriveBackup first." `
-                    -FailureMessage "OneDrive removal encountered errors."
+                # Remove-OneDrivePackage does its own pre-flight state check
+                # (Test-OneDriveInstalled) and hands back the exact verdict -
+                # a plain Complete-GuiTask wrap would always show the fixed
+                # "removed" message even when nothing needed doing.
+                $Result = Remove-OneDrivePackage
+                if ($Result.Status -eq 'Failed') {
+                    Write-Output "##PULSE##ERROR|$($Result.Message) See the Pulse log (Information > View Operation Log)."
+                } else {
+                    Write-Output "##PULSE##SUCCESS|$($Result.Message)"
+                }
+                break
+            }
+            "RestoreOneDrive" {
+                if (-not $Script:DryRun -and -not (Ensure-Winget)) { Write-Output "##PULSE##ERROR|winget is unavailable, so OneDrive cannot be reinstalled automatically. Install 'App Installer' from the Microsoft Store first."; break }
+                Complete-GuiTask -Action { Restore-OneDrivePackage } `
+                    -SuccessMessage "Microsoft OneDrive reinstalled via winget. Copy your files back from Desktop\Pulse_OneDriveBackup once it finishes syncing." `
+                    -FailureMessage "OneDrive restoration did not complete."
                 break
             }
             "RemoveEdge" {
-                if ($Script:DryRun) {
-                    Remove-MicrosoftEdge
-                    Write-Output "##PULSE##SUCCESS|[DRY-RUN] Edge removal simulated (backup + uninstall were reported, not executed)."
-                    break
-                }
-                Remove-MicrosoftEdge
-                $EdgeStillThere = @(Get-ChildItem -Path "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe" -ErrorAction SilentlyContinue).Count -gt 0
-                if ($EdgeStillThere) {
-                    Write-Output "##PULSE##ERROR|Windows protected Edge from removal on this build (it is an OS component here). A backup of its settings was still saved."
+                # Remove-MicrosoftEdge does its own pre-flight state check
+                # (Test-MicrosoftEdgeInstalled) AND a final post-purge
+                # re-verification, so its returned Status is authoritative -
+                # no need for the dispatcher to separately re-probe the
+                # filesystem the way this case used to.
+                $Result = Remove-MicrosoftEdge
+                if ($Result.Status -eq 'Failed') {
+                    Write-Output "##PULSE##ERROR|$($Result.Message)"
                 } else {
-                    Write-Output "##PULSE##SUCCESS|Microsoft Edge uninstalled. Settings backup saved to Desktop\Pulse_EdgeBackup. Restart recommended."
+                    Write-Output "##PULSE##SUCCESS|$($Result.Message)"
                 }
                 break
             }

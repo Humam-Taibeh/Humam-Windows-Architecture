@@ -398,7 +398,7 @@ $Script:AdminRequiredTasks = @(
     "RunSFC","CleanCache","RemoveBloatware","OptimizeDrives","RemoveWindowsOld",
     "DisableHibernation","EnableHibernation","DisableTelemetry","DisableActivityHistory",
     "NetworkOptimization","UltimatePowerPlan","RemoveOneDrive","RemoveEdge",
-    "CreateRestorePoint","DriverBackup","RestoreServices","RestoreEdge","ApplyAllPrivacy",
+    "CreateRestorePoint","DriverBackup","RestoreServices","RestoreEdge","RestoreOneDrive","ApplyAllPrivacy",
     "ResetTweaks","InstallOfficeODT","InstallOfficeODTAuto",
     "StartupDisableItem","StartupEnableItem"
 )

@@ -139,83 +139,227 @@ function Enable-MinimalistTaskbar {
 }
 
 # ============================================================
-#  ONEDRIVE REMOVAL
+#  ONEDRIVE REMOVAL / RESTORE
 # ============================================================
+function Test-OneDriveInstalled {
+    <# Explicit pre-flight state check, shared by Remove-OneDrivePackage and
+       whatever wants to know up front - true if either the per-user
+       install folder or a live OneDrive.exe process is present. #>
+    $ODInstallFolder = "$env:LOCALAPPDATA\Microsoft\OneDrive"
+    if (Test-Path $ODInstallFolder) { return $true }
+    if (Get-Process -Name "OneDrive" -ErrorAction SilentlyContinue) { return $true }
+    return $false
+}
+
 function Remove-OneDrivePackage {
+    <#
+    .SYNOPSIS
+        Removes OneDrive after an explicit pre-flight state check - callers
+        get a hashtable @{Status; Message} back (Status is one of
+        AlreadyRemoved / DryRun / Success / Failed) so the GUI dispatcher
+        can show the right verdict instead of a generic "removed" message
+        even when nothing needed doing.
+    #>
+    Write-SectionHeader "Purge Microsoft OneDrive"
+
+    if (-not (Test-OneDriveInstalled)) {
+        Write-AlreadyOK "OneDrive is already removed from this system."
+        return @{ Status = 'AlreadyRemoved'; Message = 'OneDrive is already removed from this system.' }
+    }
+
     New-SystemRestorePoint
     $ODSetup = "$env:SystemRoot\SysWOW64\OneDriveSetup.exe"
-    $ODInstallFolder = "$env:LOCALAPPDATA\Microsoft\OneDrive"
-    if (-not (Test-Path $ODInstallFolder) -and -not (Get-Process -Name "OneDrive" -ErrorAction SilentlyContinue)) {
-        Write-AlreadyOK "OneDrive is already removed/not installed."
-        return
-    }
+
     if (-not (Backup-OneDriveFiles)) {
         Write-ErrorX "Aborting OneDrive removal: the backup did not complete successfully. Resolve the issue above and try again."
-        return
+        return @{ Status = 'Failed'; Message = 'OneDrive removal was aborted because the pre-removal backup did not complete successfully.' }
     }
     try {
         Invoke-Mutation -Description "Terminate OneDrive.exe" -Action {
             Stop-Process -Name "OneDrive" -Force -ErrorAction SilentlyContinue
         } | Out-Null
         if (Test-Path $ODSetup) {
-            if (Test-DryRun "Run OneDriveSetup.exe /uninstall") { return }
+            if (Test-DryRun "Run OneDriveSetup.exe /uninstall") {
+                return @{ Status = 'DryRun'; Message = '[DRY-RUN] OneDrive removal simulated (backup + uninstall were reported, not executed).' }
+            }
             # -PassThru + exit-code check: without it, Write-Success fired
             # unconditionally regardless of whether the uninstaller actually
             # succeeded (Start-Process doesn't throw on a non-zero exit code).
             $Proc = Start-Process $ODSetup -ArgumentList "/uninstall" -Wait -NoNewWindow -PassThru
             if ($Proc.ExitCode -eq 0) {
                 Write-Success "OneDrive uninstall sequence executed."
+                return @{ Status = 'Success'; Message = 'OneDrive removed. Local files were backed up to Desktop\Pulse_OneDriveBackup first.' }
             } else {
                 Write-ErrorX "OneDrive's uninstaller exited with code $($Proc.ExitCode)."
+                return @{ Status = 'Failed'; Message = "OneDrive's uninstaller exited with code $($Proc.ExitCode)." }
             }
         } else {
             Write-Warn "Skipped: OneDrive standalone installer payload not found."
+            return @{ Status = 'Failed'; Message = 'OneDrive standalone installer payload not found - it may already be partially removed.' }
         }
     } catch {
         Write-ErrorX "OneDrive removal failed: $($_.Exception.Message)"
+        return @{ Status = 'Failed'; Message = "OneDrive removal failed: $($_.Exception.Message)" }
+    }
+}
+
+function Restore-OneDrivePackage {
+    Write-SectionHeader "Restore Microsoft OneDrive"
+    if (Ensure-Winget) {
+        Write-Info "Reinstalling Microsoft OneDrive via winget..."
+        $Result = Smart-Deploy "Microsoft.OneDrive" "Microsoft OneDrive"
+        if ($Result.Status -eq 'Success' -and (Test-Path $Script:OneDriveBackupFolder)) {
+            Write-Info "Your pre-removal files are still backed up at Desktop\Pulse_OneDriveBackup - copy them back into your OneDrive folder once it finishes syncing."
+        }
+    } elseif ($Script:DryRun) {
+        Write-Info "[WHATIF] Would reinstall Microsoft OneDrive via winget."
+    } else {
+        Write-Warn "Winget unavailable. Opening official download page for a manual install..."
+        Open-UrlSafe -Url "https://www.microsoft.com/en-us/microsoft-365/onedrive/download"
     }
 }
 
 # ============================================================
 #  MICROSOFT EDGE REMOVAL / REINSTALL
 # ============================================================
+function Get-EdgeUninstallRegistryKeys {
+    <# Every hive/bitness combination Edge's Uninstall entry can land under -
+       shared by Test-MicrosoftEdgeInstalled and Clear-EdgeNoRemoveFlags so
+       both check exactly the same set. #>
+    @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Microsoft Edge"
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Microsoft Edge"
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Microsoft Edge"
+    )
+}
+
+function Test-MicrosoftEdgeInstalled {
+    <# Explicit pre-flight state check - Edge counts as "present" if either
+       its binary (either Program Files bitness) or its Uninstall registry
+       entry (either hive/bitness) still exists, so a stale leftover of
+       just one still routes through the real removal path instead of
+       silently no-oping, while a machine where NONE of them exist (truly
+       already removed) short-circuits instead of re-running the whole
+       force-purge sequence for nothing. #>
+    $BinaryPaths = @(
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+    )
+    foreach ($Path in $BinaryPaths) {
+        if (Test-Path $Path) { return $true }
+    }
+    foreach ($Key in (Get-EdgeUninstallRegistryKeys)) {
+        if (Test-Path $Key) { return $true }
+    }
+    return $false
+}
+
+function Clear-EdgeNoRemoveFlags {
+    <# Best-effort: Windows/Edge can set a NoRemove=1 flag on the Uninstall
+       registry key, which hides/disables the Control Panel uninstall
+       button. It doesn't block setup.exe directly, but forcefully clearing
+       it up front removes one more thing standing between "Windows thinks
+       this is protected" and a clean uninstall. Failures here are logged
+       and swallowed - this is a defensive extra step, not the primary
+       removal mechanism, so it never aborts the overall purge. #>
+    foreach ($Key in (Get-EdgeUninstallRegistryKeys)) {
+        if (-not (Test-Path $Key)) { continue }
+        $Current = Get-RegValue -Path $Key -Name "NoRemove"
+        if ($null -eq $Current -or "$Current" -eq "0") { continue }
+        try {
+            Set-RegValue -Path $Key -Name "NoRemove" -Value 0 -Type DWord
+            Write-Info "Cleared NoRemove protection flag on '$Key'."
+        } catch {
+            Write-Warn "Could not clear NoRemove flag on '$Key': $($_.Exception.Message)"
+        }
+    }
+}
+
+function Remove-EdgeScheduledTasks {
+    <# Last-mile cleanup: the Edge/EdgeUpdate scheduled tasks keep
+       reinstalling or re-registering Edge components in the background
+       even after the browser payload itself is gone. Best-effort - a
+       machine with none of these left is the success case, not a failure. #>
+    try {
+        $Tasks = Get-ScheduledTask -TaskName "MicrosoftEdgeUpdate*" -ErrorAction SilentlyContinue
+        foreach ($Task in $Tasks) {
+            try {
+                Unregister-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath -Confirm:$false -ErrorAction Stop
+                Write-Info "Removed leftover scheduled task '$($Task.TaskName)'."
+            } catch {
+                Write-Warn "Could not remove scheduled task '$($Task.TaskName)': $($_.Exception.Message)"
+            }
+        }
+    } catch {
+        # Get-ScheduledTask itself can throw on a locked-down Task Scheduler
+        # service - never let that abort the rest of the purge.
+    }
+}
+
 function Remove-MicrosoftEdge {
     <#
     .SYNOPSIS
-        Three-tier removal: Edge's own setup.exe (when present), then a
-        winget uninstall, then an Appx cleanup of any leftover stub - each
-        tier only runs if the one before it wasn't available or failed, so
-        a build that's missing the Installer\setup.exe payload (or has it
-        but hits a policy block) still gets a real removal attempt instead
-        of the old immediate give-up.
+        Explicit pre-flight state check, then an aggressive multi-tier
+        force-purge: kill every locking/identity process, forcefully clear
+        the NoRemove registry protection flag, run Edge's own setup.exe
+        with --force-uninstall, fall back to a winget uninstall, then a
+        final Appx + scheduled-task cleanup pass - each tier only runs if
+        the one before it wasn't available or failed, and each is a real
+        removal attempt in its own right rather than a last-resort no-op.
+        Returns a hashtable @{Status; Message} (Status is one of
+        AlreadyRemoved / DryRun / Success / Failed) so the GUI dispatcher
+        can show the right verdict instead of re-deriving it from a second,
+        separate filesystem probe.
     #>
     Write-SectionHeader "Remove Microsoft Edge"
+
+    if (-not (Test-MicrosoftEdgeInstalled)) {
+        Write-AlreadyOK "Microsoft Edge is already removed from this system."
+        return @{ Status = 'AlreadyRemoved'; Message = 'Microsoft Edge is already removed from this system.' }
+    }
+
     New-SystemRestorePoint
     Backup-EdgeState
 
-    if (Test-DryRun "Remove Microsoft Edge (setup.exe --uninstall --force-uninstall --system-level, falling back to winget/Appx cleanup if needed)") { return }
+    if (Test-DryRun "Force-purge Microsoft Edge (kill processes, clear NoRemove flags, setup.exe --uninstall --system-level --verbose-logging --force-uninstall, falling back to winget/Appx/scheduled-task cleanup if needed)") {
+        return @{ Status = 'DryRun'; Message = '[DRY-RUN] Edge removal simulated (backup + uninstall were reported, not executed).' }
+    }
 
-    # msedge.exe/msedgewebview2.exe hold their own binaries open - every
-    # removal path below fails or silently no-ops if either is still
-    # running.
-    Get-Process -Name "msedge", "msedgewebview2" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    # msedge.exe/msedgewebview2.exe/identity_helper.exe hold their own
+    # binaries open - every removal path below fails or silently no-ops if
+    # any of them is still running.
+    Get-Process -Name "msedge", "msedgewebview2", "identity_helper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 800
+
+    Clear-EdgeNoRemoveFlags
 
     $Removed = $false
 
-    $EdgeUninstaller = "$env:ProgramFiles\Microsoft\Edge\Application\*\Installer\setup.exe"
-    $UninstallPath = Get-ChildItem -Path $EdgeUninstaller -ErrorAction SilentlyContinue | Select-Object -First 1
+    # setup.exe's real location varies by install (64-bit Edge normally
+    # lands in Program Files, but the Installer payload some builds/branches
+    # ship is still found under Program Files (x86)) - both are checked,
+    # first hit wins.
+    $EdgeUninstallers = @(
+        "$env:ProgramFiles\Microsoft\Edge\Application\*\Installer\setup.exe"
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\*\Installer\setup.exe"
+    )
+    $UninstallPath = $null
+    foreach ($Pattern in $EdgeUninstallers) {
+        $Found = Get-ChildItem -Path $Pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($Found) { $UninstallPath = $Found; break }
+    }
+
     if ($UninstallPath) {
         $Removed = Invoke-WithRetry -OperationName "Remove Microsoft Edge (setup.exe)" -Action {
             # Start-Process doesn't throw on a non-zero exit code, so without
             # this check a failed uninstall (e.g. blocked by policy) would
             # still report success - throwing here is what lets Invoke-WithRetry
             # actually see the failure and offer a retry.
-            $Proc = Start-Process -FilePath $UninstallPath.FullName -ArgumentList "--uninstall --force-uninstall --system-level" -Wait -NoNewWindow -PassThru -ErrorAction Stop
+            $Proc = Start-Process -FilePath $UninstallPath.FullName -ArgumentList "--uninstall --system-level --verbose-logging --force-uninstall" -Wait -NoNewWindow -PassThru -ErrorAction Stop
             if ($Proc.ExitCode -ne 0) { throw "Edge's uninstaller exited with code $($Proc.ExitCode)." }
         }
     } else {
-        Write-Info "Edge's own setup.exe was not found - falling back to winget/Appx cleanup."
+        Write-Info "Edge's own setup.exe was not found in either Program Files location - falling back to winget/Appx cleanup."
     }
 
     # setup.exe is absent entirely on builds that register Edge as a
@@ -244,11 +388,19 @@ function Remove-MicrosoftEdge {
         }
     }
 
-    if ($Removed) {
+    Remove-EdgeScheduledTasks
+
+    # Final verification against real system state - not just whichever
+    # tier reported success - so a partial removal (e.g. the Win32 payload
+    # is gone but Windows still shows it "protected") is caught here
+    # instead of reporting a clean success that isn't true.
+    if ($Removed -or -not (Test-MicrosoftEdgeInstalled)) {
         Write-Success "Microsoft Edge has been uninstalled (a system restart is recommended). A version/settings backup was saved to Desktop\Pulse_EdgeBackup."
         $Script:PendingRestart = $true
+        return @{ Status = 'Success'; Message = 'Microsoft Edge uninstalled. Settings backup saved to Desktop\Pulse_EdgeBackup. Restart recommended.' }
     } else {
         Write-Warn "Edge is either a built-in component and cannot be fully removed, or it is not installed as a standalone. You may reset Edge instead."
+        return @{ Status = 'Failed'; Message = 'Windows protected Edge from removal on this build (it is an OS component here). A backup of its settings was still saved.' }
     }
 }
 

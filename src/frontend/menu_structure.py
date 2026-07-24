@@ -297,7 +297,7 @@ CATEGORIES = [
              ]},
             # -- HUB 4: diagnostics, environment repair, optimization -----
             {"icon": "🛠️", "title": "System Tools & Utilities",
-             "desc": "Hardware diagnostics, environment repair, startup optimization and live update audits.",
+             "desc": "Hardware diagnostics, environment repair, startup optimization, live update audits, and Edge/OneDrive removal & restore.",
              "hub": True,
              "items": [
                  {"icon": "🔬", "title": "Hardware Diagnostics",
@@ -329,6 +329,22 @@ CATEGORIES = [
                  {"icon": "🔄", "title": "Check for Updates",
                   "desc": "Live winget scan for every installed app — audit current vs. available versions, then update exactly what you pick.",
                   "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
+                 # -- Browser & cloud cleanup: Edge/OneDrive removal + their
+                 # restore counterparts live together here (their single
+                 # logical home) rather than split across the Optimization
+                 # and Safety & Recovery categories.
+                 {"icon": "🌐", "title": "Remove Microsoft Edge",
+                  "desc": "Force-purge Chromium Edge — kills locking processes, clears registry protection flags and cleans up leftover stubs (backup kept).",
+                  "task": "RemoveEdge", "timeout": 900, "confirm": True, "danger": True},
+                 {"icon": "🔁", "title": "Install / Restore Microsoft Edge",
+                  "desc": "Reinstall Microsoft Edge via winget and restore your backed-up settings.",
+                  "task": "RestoreEdge", "timeout": 1800},
+                 {"icon": "☁️", "title": "Purge OneDrive",
+                  "desc": "Back up local OneDrive files, then terminate and uninstall OneDrive.",
+                  "task": "RemoveOneDrive", "timeout": 900, "confirm": True, "danger": True},
+                 {"icon": "🔁", "title": "Restore OneDrive",
+                  "desc": "Reinstall Microsoft OneDrive via winget so it's back and syncing.",
+                  "task": "RestoreOneDrive", "timeout": 1800},
              ]},
         ],
     },
@@ -363,12 +379,6 @@ CATEGORIES = [
             {"icon": "⚡", "title": "Ultimate Power Plan",
              "desc": "Unlock the hidden high-performance power scheme, renamed for you.",
              "task": "UltimatePowerPlan", "timeout": 300},
-            {"icon": "☁️", "title": "Purge OneDrive",
-             "desc": "Back up local OneDrive files, then terminate and uninstall OneDrive.",
-             "task": "RemoveOneDrive", "timeout": 900, "confirm": True, "danger": True},
-            {"icon": "🌐", "title": "Remove Microsoft Edge",
-             "desc": "Uninstall Chromium Edge where Windows permits it (backup kept). Reinstall it from Software Management > Browsers & Daily Apps.",
-             "task": "RemoveEdge", "timeout": 900, "confirm": True, "danger": True},
         ],
     },
     # --------------------------------------------------------
@@ -474,9 +484,6 @@ CATEGORIES = [
             {"icon": "🔧", "title": "Restore Services",
              "desc": "Re-enable Windows services disabled by the optimizer.",
              "task": "RestoreServices", "timeout": 300},
-            {"icon": "🌐", "title": "Restore Edge Backup",
-             "desc": "Reinstate Microsoft Edge from the safety backup.",
-             "task": "RestoreEdge", "timeout": 1800},
             {"icon": "🛟", "title": "Create Restore Point",
              "desc": "Manual System Restore checkpoint — your safety net.",
              "task": "CreateRestorePoint", "timeout": 600},
