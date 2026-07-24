@@ -342,16 +342,17 @@ function Invoke-GuiOfficeAutoDownload {
     $SetupPath = Join-Path $DestinationFolder "setup.exe"
     $SourceUrl = "https://officecdn.microsoft.com/pr/wsus/setup.exe"
     Write-Info "Downloading the Office Click-to-Run client from Microsoft..."
-    $Client = $null
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $Client = New-Object System.Net.WebClient
-        $Client.DownloadFile($SourceUrl, $SetupPath)
+        # Invoke-WebRequest, not WebClient.DownloadFile: WebClient has no
+        # timeout mechanism at all, so a stalled connection (restrictive
+        # corporate firewall, dead route) would hang this GUI task forever
+        # with no verdict line ever emitted - matches the timeout convention
+        # already used by Invoke-WingetBootstrap in 03-Environment.ps1.
+        Invoke-WebRequest -Uri $SourceUrl -OutFile $SetupPath -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
     } catch {
         Write-ErrorX "Download failed: $($_.Exception.Message)"
         return @{ Success = $false }
-    } finally {
-        if ($Client) { $Client.Dispose() }
     }
 
     if (-not (Test-Path -Path $SetupPath -PathType Leaf)) {

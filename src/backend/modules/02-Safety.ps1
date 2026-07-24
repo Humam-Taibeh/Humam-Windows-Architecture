@@ -77,7 +77,13 @@ function Backup-OriginalRegValue {
         $Serialized = if ($null -eq $CurrentVal) { "__NOTSET__" } else { "$CurrentVal" }
         Set-ItemProperty -Path $Script:TweaksBackupRegPath -Name $BackupName -Value $Serialized -Type String -Force
     } catch {
-        Write-Log "BACKUP-WARN: could not snapshot $Path\$Name for '$TweakKey': $($_.Exception.Message)"
+        # This was Write-Log only - completely invisible on console/GUI.
+        # A silent snapshot failure here means "Reset All Tweaks" later has
+        # no original value to restore and falls back to a hardcoded
+        # default instead of the user's real prior setting, with no warning
+        # at either point. Write-ErrorX so the loss of rollback capability
+        # is surfaced the moment it actually happens.
+        Write-ErrorX "Could not snapshot $Path\$Name for '$TweakKey' - it will NOT be restorable to its original value later: $($_.Exception.Message)"
     }
 }
 
@@ -121,33 +127,39 @@ function Reset-AllTweaksToDefaults {
         return
     }
 
+    # Each block below now gates its "reverted" success line on
+    # Restore-OriginalRegValue's ACTUAL per-call result instead of printing
+    # unconditionally - previously every block announced success even when
+    # every underlying restore had failed (Restore-OriginalRegValue already
+    # writes its own Write-ErrorX per failed value, so a silent $false here
+    # was immediately followed by a contradictory green "reverted" banner).
     Invoke-WithRetry -OperationName "Reset Dark Mode" -Action {
-        Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "AppsUseLightTheme" -DefaultIfMissing "1" | Out-Null
-        Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "SystemUsesLightTheme" -DefaultIfMissing "1" | Out-Null
-        Write-Success "Dark Mode reverted."
+        $Ok  = Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "AppsUseLightTheme" -DefaultIfMissing "1"
+        $Ok  = (Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "SystemUsesLightTheme" -DefaultIfMissing "1") -and $Ok
+        if ($Ok) { Write-Success "Dark Mode reverted." } else { Write-ErrorX "Dark Mode reset incomplete - see the error(s) above." }
     } | Out-Null
 
     Invoke-WithRetry -OperationName "Reset Mouse Acceleration" -Action {
-        Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -DefaultIfMissing "1" -Type String | Out-Null
-        Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -DefaultIfMissing "6" -Type String | Out-Null
-        Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -DefaultIfMissing "10" -Type String | Out-Null
-        Write-Success "Mouse acceleration reverted."
+        $Ok  = Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -DefaultIfMissing "1" -Type String
+        $Ok  = (Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -DefaultIfMissing "6" -Type String) -and $Ok
+        $Ok  = (Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -DefaultIfMissing "10" -Type String) -and $Ok
+        if ($Ok) { Write-Success "Mouse acceleration reverted." } else { Write-ErrorX "Mouse acceleration reset incomplete - see the error(s) above." }
     } | Out-Null
 
     if ($Script:IsWin11) {
         Invoke-WithRetry -OperationName "Reset Taskbar" -Action {
-            Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarAl" -DefaultIfMissing "1" | Out-Null
-            Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarDa" -DefaultIfMissing "1" | Out-Null
-            Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarMn" -DefaultIfMissing "1" | Out-Null
-            Write-Success "Taskbar layout reverted."
+            $Ok  = Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarAl" -DefaultIfMissing "1"
+            $Ok  = (Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarDa" -DefaultIfMissing "1") -and $Ok
+            $Ok  = (Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarMn" -DefaultIfMissing "1") -and $Ok
+            if ($Ok) { Write-Success "Taskbar layout reverted." } else { Write-ErrorX "Taskbar layout reset incomplete - see the error(s) above." }
         } | Out-Null
     }
 
     Invoke-WithRetry -OperationName "Reset Game Mode" -Action {
-        Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\Software\Microsoft\GameBar" -Name "AllowAutoGameMode" -DefaultIfMissing "0" | Out-Null
-        Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -DefaultIfMissing "0" | Out-Null
-        Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -DefaultIfMissing "1" | Out-Null
-        Write-Success "Game Mode / Game Bar settings reverted."
+        $Ok  = Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\Software\Microsoft\GameBar" -Name "AllowAutoGameMode" -DefaultIfMissing "0"
+        $Ok  = (Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -DefaultIfMissing "0") -and $Ok
+        $Ok  = (Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -DefaultIfMissing "1") -and $Ok
+        if ($Ok) { Write-Success "Game Mode / Game Bar settings reverted." } else { Write-ErrorX "Game Mode reset incomplete - see the error(s) above." }
     } | Out-Null
 
     Invoke-WithRetry -OperationName "Reset Classic Context Menu" -Action {
@@ -156,20 +168,26 @@ function Reset-AllTweaksToDefaults {
     } | Out-Null
 
     Invoke-WithRetry -OperationName "Reset Telemetry" -Action {
-        Restore-OriginalRegValue -TweakKey "Telemetry" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "AllowTelemetry" -DefaultIfMissing "3" | Out-Null
-        Write-Success "Telemetry policy value reverted."
+        if (Restore-OriginalRegValue -TweakKey "Telemetry" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "AllowTelemetry" -DefaultIfMissing "3") {
+            Write-Success "Telemetry policy value reverted."
+        } else {
+            Write-ErrorX "Telemetry policy reset failed - see the error above."
+        }
     } | Out-Null
 
     Invoke-WithRetry -OperationName "Reset Advertising ID" -Action {
-        Restore-OriginalRegValue -TweakKey "AdvertisingID" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name "Enabled" -DefaultIfMissing "1" | Out-Null
-        Write-Success "Advertising ID reverted."
+        if (Restore-OriginalRegValue -TweakKey "AdvertisingID" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name "Enabled" -DefaultIfMissing "1") {
+            Write-Success "Advertising ID reverted."
+        } else {
+            Write-ErrorX "Advertising ID reset failed - see the error above."
+        }
     } | Out-Null
 
     Invoke-WithRetry -OperationName "Reset Activity History" -Action {
-        Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableActivityFeed" -DefaultIfMissing "1" | Out-Null
-        Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "PublishUserActivities" -DefaultIfMissing "1" | Out-Null
-        Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "UploadUserActivities" -DefaultIfMissing "1" | Out-Null
-        Write-Success "Activity History sync reverted."
+        $Ok  = Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableActivityFeed" -DefaultIfMissing "1"
+        $Ok  = (Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "PublishUserActivities" -DefaultIfMissing "1") -and $Ok
+        $Ok  = (Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "UploadUserActivities" -DefaultIfMissing "1") -and $Ok
+        if ($Ok) { Write-Success "Activity History sync reverted." } else { Write-ErrorX "Activity History reset incomplete - see the error(s) above." }
     } | Out-Null
 
     Write-Success "Reset-All-Tweaks pass complete."
@@ -193,7 +211,11 @@ function Backup-ServiceState {
         if (-not $State.Exists) { return }
         Set-ItemProperty -Path $Script:ServicesBackupRegPath -Name $Name -Value "$($State.StartType)|$($State.Status)" -Type String -Force
     } catch {
-        Write-Log "BACKUP-WARN: could not snapshot service '$Name': $($_.Exception.Message)"
+        # Same reasoning as Backup-OriginalRegValue above: a silent failure
+        # here means Restore-AllServicesToPreviousState will find no backup
+        # entry for this service later and have nothing to restore it to -
+        # the user's original startup type is gone, with no notification.
+        Write-ErrorX "Could not snapshot service '$Name' - it will NOT be restorable to its original state later: $($_.Exception.Message)"
     }
     if (-not ($Script:ServicesDisabledThisSession -contains $Name)) {
         [void]$Script:ServicesDisabledThisSession.Add($Name)
@@ -319,10 +341,17 @@ function Restore-EdgeState {
 #  ONEDRIVE FILE BACKUP
 # ============================================================
 function Backup-OneDriveFiles {
+    <#
+    .SYNOPSIS
+        Returns $true when it's safe for the caller (Remove-OneDrivePackage)
+        to proceed with the destructive removal, $false when a requested
+        backup did not actually complete and the removal should be aborted
+        instead of silently destroying unbacked-up data.
+    #>
     $OneDrivePath = "$env:USERPROFILE\OneDrive"
     if (-not (Test-Path $OneDrivePath)) {
         Write-Info "No local OneDrive folder found - nothing to back up."
-        return
+        return $true
     }
     $SizeGB = "Unknown"
     try {
@@ -331,16 +360,28 @@ function Backup-OneDriveFiles {
 
     if (-not (Ask-User "Back Up Local OneDrive Files First" "Copies your local OneDrive folder (approx. $SizeGB GB) to Desktop\Pulse_OneDriveBackup before removing OneDrive. Recommended, but can take a while for large folders.")) {
         Write-Warn "Skipping backup at your request - proceeding to remove OneDrive without one."
-        return
+        return $true
     }
-    if (Test-DryRun "Copy local OneDrive folder (~$SizeGB GB) to Desktop\Pulse_OneDriveBackup via robocopy") { return }
+    if (Test-DryRun "Copy local OneDrive folder (~$SizeGB GB) to Desktop\Pulse_OneDriveBackup via robocopy") { return $true }
     try {
         New-Item -Path $Script:OneDriveBackupFolder -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
         Write-Info "Copying files - this may take a while depending on folder size..."
         robocopy $OneDrivePath $Script:OneDriveBackupFolder /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
-        Write-Success "OneDrive files backed up to Desktop\Pulse_OneDriveBackup."
+        # Robocopy's exit code is a bitmask, not a boolean - 0-7 all mean
+        # "completed, no failed copies" (bits just flag "files copied" /
+        # "extra files" etc.); 8+ means at least one file failed to copy.
+        # This was never checked, so a partial/failed copy still reported a
+        # clean backup immediately before the caller deletes the real data.
+        if ($LASTEXITCODE -lt 8) {
+            Write-Success "OneDrive files backed up to Desktop\Pulse_OneDriveBackup."
+            return $true
+        } else {
+            Write-ErrorX "OneDrive backup incomplete (robocopy exit code $LASTEXITCODE) - not all files copied successfully."
+            return $false
+        }
     } catch {
         Write-ErrorX "OneDrive backup failed: $($_.Exception.Message)"
+        return $false
     }
 }
 

@@ -214,6 +214,28 @@ $Script:LockProcessMap = @{
 }
 
 # ============================================================
+#  ELEVATION-PROHIBITED APP IDS
+#  Packages whose installer manifest sets "elevationProhibited" - winget
+#  itself reports these with exit code -1978335146 / 0x8A150056
+#  (APPINSTALLER_CLI_ERROR_INSTALLER_PROHIBITS_ELEVATION) the instant it's
+#  run under an Administrator token, no matter what flags are passed
+#  (confirmed against winget-cli's own AppInstallerErrors.h and
+#  microsoft/winget-pkgs#210448 - "--scope user" does NOT bypass this; the
+#  installer refuses before scope is even evaluated). Pulse's console mode
+#  always self-elevates (core.ps1) and the GUI has no de-elevate button
+#  (only elevate), so this is a real, reachable failure - not a corner
+#  case. Listing known offenders here lets Smart-Deploy skip the doomed
+#  winget call up front instead of burning a failed attempt + a force
+#  retry, both guaranteed to hit the same wall. Resolve-WingetExitCode in
+#  04-SoftwareEngine.ps1 still handles the code correctly for any AppId
+#  NOT listed here (e.g. a future catalog addition) - this list is a
+#  latency/log-noise optimization, not the actual safety net.
+# ============================================================
+$Script:KnownElevationProhibitedAppIds = @(
+    "Spotify.Spotify"
+)
+
+# ============================================================
 #  DEVELOPER AUTO-PATHING (post-install PATH registration)
 # ============================================================
 $Script:DevAppPaths = @{
@@ -332,13 +354,27 @@ if (-not (Test-Path $Script:StartupBackupFolder) -and (Test-Path "$env:USERPROFI
 #  (write HKLM / services / machine state - checked up-front by the
 #  dispatcher so the user gets one clear message instead of a pile of
 #  access-denied noise)
+#
+#  Software-install/update tasks (InstallEssentialApps, InstallDevHub,
+#  InstallGamingApps, InstallDiagnosticApps, InstallRuntimes,
+#  UpdateSelectedApps) are deliberately NOT in this list: winget and every
+#  individual installer already handle their own elevation needs (a
+#  machine-scope MSI still triggers its own UAC consent prompt when it
+#  genuinely needs one), and blanket-requiring Pulse itself to be
+#  elevated for the whole category actively breaks user-scope/
+#  elevation-prohibited packages - Spotify's installer manifest sets
+#  elevationProhibited and hard-refuses under an Administrator token
+#  (winget exit code -1978335146 / 0x8A150056, see
+#  $Script:WingetElevationConflictCodes in 04-SoftwareEngine.ps1) - so
+#  requiring admin here made it permanently un-installable rather than
+#  safer. Office's ODT flow stays admin-required: it writes to
+#  install roots the ODT itself expects elevated.
 # ============================================================
 $Script:AdminRequiredTasks = @(
     "RunSFC","CleanCache","RemoveBloatware","OptimizeDrives","RemoveWindowsOld",
     "DisableHibernation","EnableHibernation","DisableTelemetry","DisableActivityHistory",
     "NetworkOptimization","UltimatePowerPlan","RemoveOneDrive","RemoveEdge","ReinstallEdge",
     "CreateRestorePoint","DriverBackup","RestoreServices","RestoreEdge","ApplyAllPrivacy",
-    "ResetTweaks","InstallEssentialApps","InstallDevHub","InstallGamingApps",
-    "InstallDiagnosticApps","InstallRuntimes","InstallOfficeODT","InstallOfficeODTAuto",
-    "UpdateSelectedApps","StartupDisableItem","StartupEnableItem"
+    "ResetTweaks","InstallOfficeODT","InstallOfficeODTAuto",
+    "StartupDisableItem","StartupEnableItem"
 )

@@ -198,6 +198,16 @@ function Invoke-Chocolatey {
 # Resolve-WingetExitCode read from the same source of truth.
 $Script:WingetAlreadyCurrentCodes = @(-1978335212, -1978335153, -1978335189)
 
+# Winget exit codes that mean "this process's CURRENT elevation state is
+# categorically wrong for this operation" - retrying with --force changes
+# nothing (it's not a lock/transient failure, it's a hard refusal baked
+# into the installer manifest or into winget itself), so these share the
+# same no-retry gate as WingetAlreadyCurrentCodes below. Resolve-WingetExitCode
+# flags them with ElevationConflict = $true so Smart-Deploy reports them as
+# Skipped (with a "relaunch at the other elevation level" instruction)
+# instead of Failed.
+$Script:WingetElevationConflictCodes = @(-1978335146, -1978335107, -1978335207)
+
 function Resolve-WingetExitCode {
     <#
     .SYNOPSIS
@@ -238,6 +248,17 @@ function Resolve-WingetExitCode {
         # MSYS2 when a previous MSYS2/MinGW terminal is still open (locked
         # files) - Stop-LockingProcesses now covers it (see LockProcessMap).
         -1978335226  { return @{ Success = $false; AlreadyCurrent = $false; Message = "The installer itself reported a failure - often caused by a previous install still open (close any MSYS2/MinGW terminals for GCC, for example) or a locked file. Try again after closing related apps." } }
+        # 0x8A150056 INSTALLER_PROHIBITS_ELEVATION - the installer's own
+        # manifest refuses to run under an Administrator token (Spotify is
+        # the well-known example). Not fixable with --scope or --force;
+        # the only fix is running winget at the OTHER elevation level.
+        -1978335146  { return @{ Success = $false; AlreadyCurrent = $false; ElevationConflict = $true; Message = "This app's installer refuses to run while Pulse is elevated (Administrator). Use Pulse's GUI without elevating to install it (the interactive console menu always runs elevated, so it can't install this app either)." } }
+        # 0x8A15007D ADMIN_CONTEXT_REPAIR_PROHIBITED - same family as
+        # above, scoped to a repair/modify path specifically.
+        -1978335107  { return @{ Success = $false; AlreadyCurrent = $false; ElevationConflict = $true; Message = "This app's repair/modify path is blocked while Pulse is elevated (Administrator). Use Pulse's GUI without elevating instead." } }
+        # 0x8A150019 COMMAND_REQUIRES_ADMIN - the reverse case: this
+        # operation genuinely needs elevation and Pulse doesn't have it.
+        -1978335207  { return @{ Success = $false; AlreadyCurrent = $false; ElevationConflict = $true; Message = "This app requires Administrator rights to install. Click the NOT ELEVATED badge in the title bar to relaunch elevated, then retry." } }
         1602         { return @{ Success = $false; AlreadyCurrent = $false; Message = "Installer was cancelled." } }
         1            { return @{ Success = $false; AlreadyCurrent = $false; Message = "Generic failure (Exit Code 1)." } }
         default      { return @{ Success = $false; AlreadyCurrent = $false; Message = "Unhandled exit code ($Code)." } }
@@ -439,6 +460,17 @@ function Smart-Deploy {
         }
     }
 
+    # Known elevation-prohibited apps (Spotify et al - see
+    # $Script:KnownElevationProhibitedAppIds) are a guaranteed
+    # INSTALLER_PROHIBITS_ELEVATION failure while Pulse runs elevated.
+    # Skip the doomed winget call entirely instead of burning an attempt +
+    # a force retry that would only reproduce the identical failure.
+    if ($Script:IsAdminSession -and $Script:KnownElevationProhibitedAppIds -contains $AppId) {
+        $Message = "This app's installer refuses to run while Pulse is elevated (Administrator). Use Pulse's GUI without elevating to install it (the interactive console menu always runs elevated, so it can't install this app either)."
+        Write-Warn "$AppName skipped: $Message"
+        return @{Status='Skipped'; Message=$Message}
+    }
+
     Stop-LockingProcesses -AppId $AppId
     Write-Info "Running winget - live progress:"
     if ($CurrentVersion) {
@@ -447,9 +479,11 @@ function Smart-Deploy {
         $Code = Invoke-Winget -ArgList @("install", "--id", $AppId, "--exact", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity")
     }
 
-    if ($Code -ne 0 -and $Script:WingetAlreadyCurrentCodes -notcontains $Code) {
-        # Never force-retry a code that just means "nothing to do" - that
-        # would force an unnecessary reinstall instead of honoring the skip.
+    if ($Code -ne 0 -and $Script:WingetAlreadyCurrentCodes -notcontains $Code -and $Script:WingetElevationConflictCodes -notcontains $Code) {
+        # Never force-retry a code that means "nothing to do" or "the
+        # elevation state itself is wrong" - force changes neither, so it
+        # would either force an unnecessary reinstall or just reproduce
+        # the identical elevation failure a second time.
         Write-Warn "First attempt failed. Retrying with force flags..."
         Start-Sleep -Seconds 3
         if ($CurrentVersion) {
@@ -472,6 +506,13 @@ function Smart-Deploy {
             Test-DevDependencySuggestion -AppId $AppId
         }
         return @{Status='Success'; AlreadyCurrent=$Result.AlreadyCurrent; Message=$Result.Message}
+    } elseif ($Result.ElevationConflict) {
+        # Not a real failure - Pulse's CURRENT elevation state is simply
+        # wrong for this one app. Write-Warn (not Write-ErrorX) so this
+        # never bumps $Script:SessionFailCount and flips an otherwise
+        # clean bulk run to an ERROR verdict (see Complete-GuiTask).
+        Write-Warn "$AppName skipped: $($Result.Message)"
+        return @{Status='Skipped'; Message=$Result.Message}
     } else {
         Write-ErrorX "$AppName failed: $($Result.Message)"
         if (-not $Bulk -and -not $Script:NonInteractive) {

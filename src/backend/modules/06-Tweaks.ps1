@@ -107,7 +107,11 @@ function Disable-MouseAcceleration {
         Set-RegValue -Path $Path -Name "MouseThreshold2" -Value "0"
         Write-Success "Raw pointer precision applied (mouse acceleration fully disabled)."
     } catch {
-        Write-Warn "Skipped: Mouse registry keys are restricted."
+        # A real failure (registry keys restricted by policy) - Write-ErrorX,
+        # not Write-Warn, so Complete-GuiTask's fail counter (30-GuiDispatcher.ps1)
+        # actually reflects it instead of reporting "Mouse acceleration disabled"
+        # to the GUI when it wasn't.
+        Write-ErrorX "Could not disable mouse acceleration: $($_.Exception.Message)"
     }
 }
 
@@ -128,7 +132,9 @@ function Enable-MinimalistTaskbar {
         Set-RegValue -Path $Path -Name "TaskbarMn" -Value 0
         Write-Success "Taskbar alignments updated."
     } catch {
-        Write-Warn "Skipped: Windows 11 taskbar mutation blocked."
+        # Real failure, not an informational skip - see the same note on
+        # Disable-MouseAcceleration above.
+        Write-ErrorX "Could not update taskbar layout: $($_.Exception.Message)"
     }
 }
 
@@ -143,20 +149,30 @@ function Remove-OneDrivePackage {
         Write-AlreadyOK "OneDrive is already removed/not installed."
         return
     }
-    Backup-OneDriveFiles
+    if (-not (Backup-OneDriveFiles)) {
+        Write-ErrorX "Aborting OneDrive removal: the backup did not complete successfully. Resolve the issue above and try again."
+        return
+    }
     try {
         Invoke-Mutation -Description "Terminate OneDrive.exe" -Action {
             Stop-Process -Name "OneDrive" -Force -ErrorAction SilentlyContinue
         } | Out-Null
         if (Test-Path $ODSetup) {
             if (Test-DryRun "Run OneDriveSetup.exe /uninstall") { return }
-            Start-Process $ODSetup -ArgumentList "/uninstall" -Wait -NoNewWindow
-            Write-Success "OneDrive uninstall sequence executed."
+            # -PassThru + exit-code check: without it, Write-Success fired
+            # unconditionally regardless of whether the uninstaller actually
+            # succeeded (Start-Process doesn't throw on a non-zero exit code).
+            $Proc = Start-Process $ODSetup -ArgumentList "/uninstall" -Wait -NoNewWindow -PassThru
+            if ($Proc.ExitCode -eq 0) {
+                Write-Success "OneDrive uninstall sequence executed."
+            } else {
+                Write-ErrorX "OneDrive's uninstaller exited with code $($Proc.ExitCode)."
+            }
         } else {
             Write-Warn "Skipped: OneDrive standalone installer payload not found."
         }
     } catch {
-        Write-Warn "Skipped: Active locks prevented OneDrive termination."
+        Write-ErrorX "OneDrive removal failed: $($_.Exception.Message)"
     }
 }
 
@@ -172,7 +188,12 @@ function Remove-MicrosoftEdge {
         Backup-EdgeState
         if (Test-DryRun "Run Edge setup.exe --uninstall --force-uninstall --system-level") { return }
         $Removed = Invoke-WithRetry -OperationName "Remove Microsoft Edge" -Action {
-            Start-Process -FilePath $UninstallPath.FullName -ArgumentList "--uninstall --force-uninstall --system-level" -Wait -NoNewWindow -ErrorAction Stop
+            # Start-Process doesn't throw on a non-zero exit code, so without
+            # this check a failed uninstall (e.g. blocked by policy) would
+            # still report success - throwing here is what lets Invoke-WithRetry
+            # actually see the failure and offer a retry.
+            $Proc = Start-Process -FilePath $UninstallPath.FullName -ArgumentList "--uninstall --force-uninstall --system-level" -Wait -NoNewWindow -PassThru -ErrorAction Stop
+            if ($Proc.ExitCode -ne 0) { throw "Edge's uninstaller exited with code $($Proc.ExitCode)." }
         }
         if ($Removed) {
             Write-Success "Microsoft Edge has been uninstalled (a system restart is recommended). A version/settings backup was saved to Desktop\Pulse_EdgeBackup."
@@ -223,9 +244,16 @@ function Invoke-NetworkOptimization {
     # static configs, flaky Wi-Fi drivers), and the Winsock/IP-stack reset
     # below requires a reboot to apply anyway.
     ipconfig /flushdns
+    $DnsOk = ($LASTEXITCODE -eq 0)
     netsh winsock reset
+    $WinsockOk = ($LASTEXITCODE -eq 0)
     netsh int ip reset
-    Write-Success "Network stack reset and DNS flushed. Ping latency should improve."
+    $IpOk = ($LASTEXITCODE -eq 0)
+    if ($DnsOk -and $WinsockOk -and $IpOk) {
+        Write-Success "Network stack reset and DNS flushed. Ping latency should improve."
+    } else {
+        Write-ErrorX "One or more network reset commands failed (flushdns=$DnsOk, winsock=$WinsockOk, ip=$IpOk) - see the operation log."
+    }
     Write-Warn "A restart is recommended for the Winsock/IP reset to fully apply."
     $Script:PendingRestart = $true
 }
@@ -255,7 +283,14 @@ function Enable-UltimatePerformancePowerPlan {
                 $guid = $matches[1]
                 if ($Name -ne $PlanName) { powercfg /changename $guid $PlanName > $null }
                 powercfg /setactive $guid > $null
-                Write-Success "$PlanName activated (existing profile)."
+                # powercfg /setactive can exit 0 without actually switching
+                # (e.g. a policy-restricted machine) - verify against the
+                # ACTUAL active scheme instead of trusting the exit code.
+                if ((powercfg /getactivescheme | Out-String) -match [regex]::Escape($guid)) {
+                    Write-Success "$PlanName activated (existing profile)."
+                } else {
+                    Write-ErrorX "Could not activate $PlanName - the scheme switch did not take effect (policy restriction?)."
+                }
                 return
             }
         }
@@ -272,7 +307,11 @@ function Enable-UltimatePerformancePowerPlan {
         if ($newGuid) {
             powercfg /changename $newGuid $PlanName > $null
             powercfg /setactive $newGuid > $null
-            Write-Success "$PlanName activated successfully."
+            if ((powercfg /getactivescheme | Out-String) -match [regex]::Escape($newGuid)) {
+                Write-Success "$PlanName activated successfully."
+            } else {
+                Write-ErrorX "Could not activate $PlanName - the scheme switch did not take effect (policy restriction?)."
+            }
         } else {
             Write-ErrorX "Could not create or activate $PlanName."
         }

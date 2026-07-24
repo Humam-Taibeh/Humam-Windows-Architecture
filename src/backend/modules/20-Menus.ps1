@@ -444,7 +444,12 @@ function Show-InformationUtilitiesMenu {
                             Export-WindowsDriver -Online -Destination $BackupPath -ErrorAction Stop | Out-Null
                             Write-Success "Backup saved to Desktop\Pulse_DriverBackup"
                         } catch {
-                            Write-Warn "Driver Backup halted."
+                            # A real failure (DISM/COM error, no admin rights,
+                            # disk full) - Write-ErrorX, not Write-Warn, so it's
+                            # counted and consistent with the driver scan case
+                            # a few lines below, which already uses Write-ErrorX
+                            # for the same failure class.
+                            Write-ErrorX "Driver Backup failed: $($_.Exception.Message)"
                         }
                     }
                 }

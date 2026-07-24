@@ -30,7 +30,11 @@ function Remove-Bloatware {
                 Write-Success "Removed $Pkg"
                 $RemovedAny = $true
             } catch {
-                Write-Warn "Could not remove $Pkg (may be protected by policy)."
+                # A real failure (often policy-protected packages like Xbox/
+                # Widgets on some editions) - Write-ErrorX, not Write-Warn, so
+                # "RemoveBloatware" doesn't report full success when packages
+                # actually remain installed.
+                Write-ErrorX "Could not remove $Pkg (may be protected by policy): $($_.Exception.Message)"
             }
         }
     }

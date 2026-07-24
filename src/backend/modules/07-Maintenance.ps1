@@ -190,7 +190,11 @@ function Optimize-AllDrives {
             Optimize-Volume -DriveLetter $Vol.DriveLetter -ErrorAction Stop
             Write-Success "$($Vol.DriveLetter): optimized (TRIM for SSD / defrag for HDD, auto-detected)."
         } catch {
-            Write-Warn "Skipped $($Vol.DriveLetter): $($_.Exception.Message)"
+            # A real per-drive failure (active VSS snapshot, BitLocker,
+            # network mount are all plausible) - Write-ErrorX, not Write-Warn,
+            # so "OptimizeDrives" doesn't report full success when a drive
+            # was actually skipped due to an error.
+            Write-ErrorX "Could not optimize $($Vol.DriveLetter): $($_.Exception.Message)"
         }
     }
 }
