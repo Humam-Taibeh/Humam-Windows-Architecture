@@ -104,11 +104,15 @@ _DARK = {
     "accent2":     "#a78bfa",
 
     # text (contrast ≥ WCAG AA on the surfaces above; four deliberate
-    # steps so hierarchy comes from tone, not from size alone)
+    # steps so hierarchy comes from tone, not from size alone).
+    # text_faint sits one step brighter than the v6.2 value (#5a6272):
+    # it carries 10px captions and section headers, and at that size the
+    # old step dipped under 3.5:1 on the charcoal canvas — readable on a
+    # desktop panel, murky on dimmer laptop screens.
     "text":        "#e8ebf0",
     "text_soft":   "#c3cad7",
     "text_muted":  "#8b93a5",
-    "text_faint":  "#5a6272",
+    "text_faint":  "#646e80",
 
     # status — GitHub-dark grade: unmistakable but never neon
     "ok":          "#3fb950",
@@ -148,7 +152,10 @@ _LIGHT = {
     "panel_line":  "rgba(22, 28, 38, 0.085)",
     "card":        "rgba(255, 255, 255, 0.70)",
     "card_hover":  "rgba(0, 103, 192, 0.06)",
-    "card_line":   "rgba(22, 28, 38, 0.11)",
+    # One notch up from v6.2's 0.11: white-on-porcelain cards need the
+    # hairline to do all the separating (no dark-mode lightness step to
+    # help), and at 0.11 card edges dissolved on bright panels.
+    "card_line":   "rgba(22, 28, 38, 0.14)",
     "card_sheen":  "rgba(255, 255, 255, 0.80)",   # top stop of the glass gradient
     # Same opacity rule as dark: overlays never let text bleed through.
     "dialog_bg":   "rgba(247, 249, 252, 1.0)",
@@ -158,10 +165,15 @@ _LIGHT = {
     "accent":      "#0067c0",
     "accent2":     "#6f5fd8",
 
+    # Both lower steps run one shade deeper than v6.2 (#5d6879 / #8d97a8):
+    # body/desc text lives on text_muted and captions on text_faint, and on
+    # the porcelain canvas the old values were the single biggest source of
+    # "washed-out" reading in light mode — muted now clears ~6:1 and faint
+    # ~4:1 while both keep their place in the four-step hierarchy.
     "text":        "#1d222b",
     "text_soft":   "#39404d",
-    "text_muted":  "#5d6879",
-    "text_faint":  "#8d97a8",
+    "text_muted":  "#4e5a6c",
+    "text_faint":  "#75808f",
 
     # status — GitHub-light grade
     "ok":          "#1a7f37",
@@ -512,12 +524,20 @@ def dialog_panel_qss(t: dict, accent: str) -> str:
 
 
 def dialog_cancel_qss(t: dict) -> str:
+    """Secondary dialog action. font-weight matches dialog_go_qss (600) so
+    the Cancel/Close label doesn't render optically lighter than the
+    primary button it sits beside; hover also firms the border — the
+    fill-only hover left the button reading half-disabled in light mode."""
     return f"""
         QPushButton {{
             background: {t['panel']}; border: 1px solid {t['card_line']};
-            border-radius: 10px; color: {t['text_soft']}; font-size: 12px;
+            border-radius: 10px; color: {t['text_soft']};
+            font-size: 12px; font-weight: 600;
         }}
-        QPushButton:hover {{ background: {t['card_hover']}; color: {t['text']}; }}
+        QPushButton:hover {{
+            background: {t['card_hover']}; color: {t['text']};
+            border: 1px solid {alpha(t['accent'], 0.35)};
+        }}
         QPushButton:pressed {{ background: {alpha(t['accent'], 0.14)}; }}
     """
 
@@ -605,6 +625,10 @@ def state_pill_qss(t: dict) -> str:
 
 
 def checkbox_qss(t: dict, accent: str) -> str:
+    """Selector checkbox. Every state transition answers the pointer:
+    unchecked hover pre-tints the well with the accent (a preview of the
+    checked fill, not just a border flip), and checked hover brightens the
+    ring so an about-to-be-unchecked box visibly acknowledges the cursor."""
     return f"""
         QCheckBox {{
             color: {t['text_soft']}; font-size: 12px; font-weight: 500;
@@ -614,9 +638,16 @@ def checkbox_qss(t: dict, accent: str) -> str:
             width: 16px; height: 16px; border-radius: 5px;
             border: 1px solid {t['card_line']}; background: {t['card']};
         }}
-        QCheckBox::indicator:hover {{ border: 1px solid {alpha(accent, 0.55)}; }}
+        QCheckBox::indicator:hover {{
+            border: 1px solid {alpha(accent, 0.55)};
+            background: {alpha(accent, 0.10)};
+        }}
         QCheckBox::indicator:checked {{
             border: 1px solid {accent}; background: {accent};
+        }}
+        QCheckBox::indicator:checked:hover {{
+            border: 1px solid {t['text']};
+            background: {accent};
         }}
     """
 
@@ -662,19 +693,44 @@ def dev_hub_row_qss(t: dict) -> str:
     one unified row style) with a 'suggested' state: a soft amber
     highlight when this tool is a checked-off IDE's unmet runtime
     dependency (see widgets.DevHubRow / DevHubSelectorDialog's
-    dependency-hint nudge — 'subtly suggests', never auto-forces a check)."""
+    dependency-hint nudge — 'subtly suggests', never auto-forces a check).
+    Hover lifts the fill as well as the border — border-only hover read as
+    inert next to GlassCard, whose hover changes both."""
     return f"""
         QFrame {{
             background: {t['card']};
             border: 1px solid {t['card_line']};
             border-radius: 10px;
         }}
-        QFrame:hover {{ border: 1px solid {alpha(t['accent'], 0.35)}; }}
+        QFrame:hover {{
+            background: {t['card_hover']};
+            border: 1px solid {alpha(t['accent'], 0.35)};
+        }}
         QFrame[suggested="true"] {{
             border: 1px solid {alpha(t['warn'], 0.55)};
             background: {alpha(t['warn'], 0.07)};
         }}
     """
+
+
+def hub_group_header_qss(t: dict, accent: str) -> str:
+    """Sub-group title inside a grouped hub's landing screen (System Tools
+    & Utilities): the 'section' typographic role, lifted from text_faint
+    to a soft accent tint so group boundaries register on first scan —
+    the label half of the header row; hub_group_rule_qss is the other."""
+    return (f"color: {alpha(accent, 0.90)}; font-size: 10px; font-weight: 700;"
+            f"background: transparent; border: none; letter-spacing: 4px;")
+
+
+def hub_group_rule_qss(t: dict, accent: str) -> str:
+    """The hairline that finishes a hub group header: a 1px rule fading
+    from the accent at the label's edge to nothing at the panel's right
+    side, carrying the eye across the row exactly like the section
+    dividers in commercial dashboard UIs. Painted as a QFrame background
+    (gradient, not border) so the fade is smooth on any panel width."""
+    return (f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            f"stop:0 {alpha(accent, 0.38)}, stop:1 {alpha(accent, 0.0)});"
+            "border: none;")
 
 
 def icon_ghost_button_qss(t: dict, accent: str) -> str:

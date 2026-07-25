@@ -15,6 +15,21 @@ GUI version, with core changes called out explicitly.
 ## [Unreleased]
 
 ### Changed
+- **Dual-theme legibility & finish pass** — light mode's two lower text
+  steps deepened (`text_muted` #5d6879 → #4e5a6c ≈ 6:1, `text_faint`
+  #8d97a8 → #75808f ≈ 4:1) killing the washed-out body/caption reading,
+  and card hairlines strengthened (0.11 → 0.14 alpha) so white-on-porcelain
+  cards keep distinct edges; dark mode's `text_faint` lifted one step
+  (#5a6272 → #646e80) for 10px captions on dim laptop panels. Grouped hub
+  landing screens gained commercial-grade section headers: accent-tinted
+  letter-spaced titles finished with a 1px accent rule fading toward the
+  panel edge (`hub_group_header_qss` / `hub_group_rule_qss`), with
+  proximity-correct rhythm (headers sit tight over their own cards, a
+  full step clear of the previous group). Interaction polish: selector
+  rows now lift fill *and* border on hover (matching GlassCard),
+  checkbox wells pre-tint with the accent on hover and acknowledge the
+  cursor when checked, and dialog Cancel/Close buttons match the primary
+  button's 600 weight with a firmer hover border.
 - **System Tools & Utilities hub is now grouped, not a flat list** — its
   eight sub-actions are split into three scannable sub-groups the
   HubDialog renders under small section headers: **Diagnostics &

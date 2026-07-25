@@ -972,19 +972,31 @@ class HubDialog(PulseDialog):
         host_lay.setSpacing(14)
         groups = hub.get("groups")
         if groups:
-            # Grouped hub (System Tools & Utilities): render each group's
-            # title as a small letter-spaced "section" header, then its
-            # cards at their natural height, and top-anchor the whole list
-            # with a trailing stretch. With this many sub-actions the point
-            # is a tidy, scannable list that scrolls - NOT the equal-stretch
-            # "fill the screen" treatment used for the sparse flat hubs
-            # below, which would balloon each card and swallow the headers.
+            # Grouped hub (System Tools & Utilities): each group opens with
+            # a header ROW — an accent-tinted section title plus a 1px rule
+            # fading out to the right (hub_group_header_qss /
+            # hub_group_rule_qss) — then its cards at natural height, the
+            # whole list top-anchored with a trailing stretch. Rhythm is
+            # proximity-correct: a header sits tight over its own cards and
+            # a full extra step away from the previous group's last card,
+            # so the three clusters read at a glance. With this many
+            # sub-actions the point is a tidy, scannable list that scrolls
+            # - NOT the equal-stretch "fill the screen" treatment used for
+            # the sparse flat hubs below, which would balloon each card and
+            # swallow the headers.
             for gi, group in enumerate(groups):
-                header = QLabel(group["title"])
-                header.setStyleSheet(TH.label_qss(t, "section"))
                 if gi > 0:
-                    host_lay.addSpacing(4)
-                host_lay.addWidget(header)
+                    host_lay.addSpacing(10)
+                head_row = QHBoxLayout()
+                head_row.setSpacing(12)
+                header = QLabel(group["title"])
+                header.setStyleSheet(TH.hub_group_header_qss(t, accent))
+                head_row.addWidget(header)
+                rule = QFrame()
+                rule.setFixedHeight(1)
+                rule.setStyleSheet(TH.hub_group_rule_qss(t, accent))
+                head_row.addWidget(rule, 1)
+                host_lay.addLayout(head_row)
                 for item in group["items"]:
                     card = GlassCard(item, accent, t)
                     card.setMinimumHeight(96)
