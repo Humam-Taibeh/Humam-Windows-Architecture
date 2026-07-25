@@ -579,6 +579,11 @@ def _derive_card_meta(item: dict) -> list[str]:
     hand-authored metadata. A hub reports how many options it holds; a
     selector reports its app count; the specialised launchers name their
     action. Plain one-shot actions return [] (no footer, no chevron)."""
+    # Explicit override — the Welcome dashboard's module launchpad cards
+    # pass their own 'N operations' label so they read as enterable modules
+    # (pill + drill-in chevron) without being a hub/selector themselves.
+    if item.get("meta_label"):
+        return [item["meta_label"]]
     if item.get("hub"):
         subs = item.get("items")
         if not subs and item.get("groups"):
@@ -1003,7 +1008,19 @@ class AmbientGlow(QWidget):
         diameter = int(span * 1.25)
 
         # --- aurora orbs: drifting + breathing, blitted from cache --------
-        peaks = ((0.05, 0.045, 0.04) if self._light else (0.17, 0.12, 0.11))
+        # Per-theme visibility is the whole game here. On the DEEP-SPACE dark
+        # canvas a light-colored orb ADDS light (normal SourceOver) and reads
+        # instantly. On the PORCELAIN light canvas that same additive light
+        # orb is invisible — lightening near-white does nothing — so light
+        # mode switches to a MULTIPLY blend: the saturated brand orbs now
+        # DARKEN the porcelain into soft, clearly-visible drifting colored
+        # clouds (dusty indigo / rose / violet), with the alpha pushed up to
+        # match. Same motion, opposite blend, visible in both worlds.
+        if self._light:
+            peaks = (0.30, 0.27, 0.24)
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
+        else:
+            peaks = (0.17, 0.12, 0.11)
         colors = (self._c1, self._c3, self._c2)   # indigo, magenta, violet
         amp_x, amp_y = w * 0.06, h * 0.06
         for i, (bx, by, dspd, dph, bspd, bph) in enumerate(self._orb_motion):
@@ -1016,11 +1033,12 @@ class AmbientGlow(QWidget):
             p.setOpacity(max(0.0, min(1.0, breathe)))
             p.drawPixmap(int(cx), int(cy), pm)
         p.setOpacity(1.0)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
         # --- particle field: slow upward drift + twinkle -----------------
         if self._light:
-            base = QColor(60, 78, 150)     # soft indigo motes on porcelain
-            pmax = 0.16
+            base = QColor(38, 50, 120)     # deep indigo motes, clearly readable
+            pmax = 0.34                     # on porcelain
         else:
             base = QColor(200, 214, 255)   # cool starlight on deep space
             pmax = 0.34

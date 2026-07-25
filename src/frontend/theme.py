@@ -1331,6 +1331,34 @@ def dock_qss(t: dict) -> str:
     """
 
 
+def hero_banner_qss(t: dict) -> str:
+    """The Welcome dashboard's identity banner (v9.2): the app's most
+    important surface, so it wears the full frosted-glass card material
+    (same glass_fill every premium surface shares) with a firm hairline —
+    an authoritative masthead, not a floating splash mark."""
+    return f"""
+        QFrame#heroBanner {{
+            background: {glass_fill(t, t['card'])};
+            border: 1px solid {t['card_line']};
+            border-radius: 22px;
+        }}
+    """
+
+
+def telemetry_qss(t: dict) -> str:
+    """The Welcome dashboard's system-snapshot ribbon (OS · CPU · RAM) —
+    one cohesive panel replacing the three floating insight tiles. A
+    subordinate panel tone (a step below the hero banner) so the vertical
+    hierarchy reads banner → telemetry → module launchpad."""
+    return f"""
+        QFrame#telemetry {{
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']};
+            border-radius: 16px;
+        }}
+    """
+
+
 def label_qss(t: dict, role: str) -> str:
     size, weight, color_key, extra = _LABEL_ROLES[role]
     return (f"color: {t[color_key]}; font-size: {size}; font-weight: {weight};"

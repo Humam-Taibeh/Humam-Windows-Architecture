@@ -540,6 +540,14 @@ def total_operations() -> int:
     return sum(_count_leaves(c["items"]) for c in CATEGORIES)
 
 
+def category_operations(category: dict) -> int:
+    """Runnable operations within a single category (expands hub
+    containers, exactly like total_operations does per-category). Used by
+    the Welcome dashboard's module launchpad cards to show a truthful
+    'N operations' count per module."""
+    return _count_leaves(category["items"])
+
+
 def iter_leaf_items():
     """Yields (item, breadcrumb) for every runnable action, expanding hub
     containers — used by the Ctrl+K command palette so a hub's sub-actions

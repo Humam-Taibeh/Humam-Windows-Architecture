@@ -53,8 +53,8 @@ from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
-    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, hub_items, iter_leaf_items,
-    total_operations,
+    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, category_operations, hub_items,
+    iter_leaf_items, total_operations,
 )
 from frontend.widgets import (  # noqa: E402
     ActivityDrawer, AmbientGlow, AppSelectorDialog, BreathingIcon,
@@ -160,137 +160,220 @@ def _system_insights() -> list[tuple[str, str, str]]:
 #  PAGES
 # ============================================================
 class WelcomePage(QWidget):
-    """Landing view: breathing brand mark, system insight dashboard and
-    the status chips grouped inside a unified glass dock."""
+    """Landing view — a majestic command-center DASHBOARD, not a splash:
 
-    INSIGHT_W, INSIGHT_H = 224, 86   # mini-card footprint
-    INSIGHT_GAP = 14
-    DOCK_H = 66
+        ┌──────────────────────────────────────────────────────────┐
+        │ ✦  PULSE                              Engine Ready         │  hero banner
+        │    Enterprise-Grade Windows Orchestration   Administrator  │
+        ├──────────────────────────────────────────────────────────┤
+        │ 🪟 Windows 11  │  🧠 16 Cores  │  💾 32 GB                  │  telemetry ribbon
+        ├──────────────────────────────────────────────────────────┤
+        │ EXPLORE MODULES ────────────────────────────────────────  │
+        │ ┌────────┐ ┌────────┐ ┌────────┐                          │
+        │ │ module │ │ module │ │ module │   … all 6, clickable      │  module launchpad
+        │ └────────┘ └────────┘ └────────┘                          │
+        └──────────────────────────────────────────────────────────┘
+
+    The launchpad is the centerpiece: every module is a live, accent-lit
+    GlassCard that opens its category on click (module_requested), so the
+    home screen is an intuitive entry point in its own right rather than a
+    decorative page you must leave via the sidebar."""
+
+    MODULE_MIN_W = 260   # responsive column threshold for the launchpad grid
+    MODULE_MAX_COLS = 3
+
+    module_requested = Signal(int)   # category index -> PulseApp.open_category
 
     def __init__(self, t: dict, engine_ok: bool, is_admin: bool):
         super().__init__()
         self._chip_meta: list[tuple[QLabel, bool]] = []
-        self._insight_frames: list[QFrame] = []
-        self._insight_values: list[QLabel] = []
-        self._insight_captions: list[QLabel] = []
+        self._tel_icons: list[QLabel] = []
+        self._tel_values: list[QLabel] = []
+        self._tel_captions: list[QLabel] = []
+        self._tel_divs: list[QFrame] = []
+        self._module_cards: list[GlassCard] = []
+        self._cols = 0
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(40, 16, 40, 16)
-        lay.setSpacing(0)
-        # v7: a slightly top-weighted centering (2:3) so the brand + insight
-        # composition sits with intent in the taller canvas the collapsed
-        # Activity drawer now frees up, rather than floating dead-center.
-        lay.addStretch(2)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(30, 18, 30, 20)
+        root.setSpacing(15)
 
-        # -- brand ------------------------------------------
-        self._logo = BreathingIcon("✦", size=110, accent=t["accent"])
-        logo_row = QHBoxLayout()
-        logo_row.addStretch()
-        logo_row.addWidget(self._logo)
-        logo_row.addStretch()
-        lay.addLayout(logo_row)
-        lay.addSpacing(2)
+        # ============ 1. HERO BANNER — unified identity masthead ==========
+        self._hero = DepthCard(radius=22)
+        self._hero.setObjectName("heroBanner")
+        self._hero.setFixedHeight(116)
+        hb = QHBoxLayout(self._hero)
+        hb.setContentsMargins(30, 0, 26, 0)
+        hb.setSpacing(20)
 
+        self._logo = BreathingIcon("✦", size=64, accent=t["accent"])
+        hb.addWidget(self._logo, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        id_col = QVBoxLayout()
+        id_col.setSpacing(4)
+        id_col.addStretch()
         self._name = QLabel(APP_NAME)
-        self._name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self._name)
-        lay.addSpacing(6)
-
+        id_col.addWidget(self._name)
         self._tag = QLabel("Enterprise-Grade Windows Orchestration")
-        self._tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self._tag)
-        lay.addSpacing(32)
+        id_col.addWidget(self._tag)
+        id_col.addStretch()
+        hb.addLayout(id_col)
+        hb.addStretch()
 
-        # -- system insight dashboard ------------------------
-        insights_row = QHBoxLayout()
-        insights_row.setSpacing(self.INSIGHT_GAP)
-        insights_row.addStretch()
-        for icon, value, caption in _system_insights():
-            frame = DepthCard(radius=14)
-            frame.setObjectName("insight")
-            frame.setFixedSize(self.INSIGHT_W, self.INSIGHT_H)
-            card = QVBoxLayout(frame)
-            card.setContentsMargins(16, 12, 16, 12)
-            card.setSpacing(3)
-
-            top = QHBoxLayout()
-            top.setSpacing(8)
-            icon_lbl = QLabel(icon)
-            icon_lbl.setStyleSheet("font-size: 16px; background: transparent; border: none;")
-            top.addWidget(icon_lbl)
-            # Long values ("Windows 11 Professional") must never clip
-            # mid-glyph against the fixed card width — elide with an
-            # ellipsis and keep the full string reachable as a tooltip.
-            value_font = QFont("Segoe UI")
-            value_font.setPixelSize(16)          # must match label_qss role "value"
-            value_font.setWeight(QFont.Weight.Bold)
-            budget = self.INSIGHT_W - 32 - 26 - top.spacing()
-            elided = QFontMetrics(value_font).elidedText(value, Qt.TextElideMode.ElideRight, budget)
-            value_lbl = QLabel(elided)
-            if elided != value:
-                value_lbl.setToolTip(value)
-            top.addWidget(value_lbl)
-            top.addStretch()
-            card.addLayout(top)
-
-            caption_lbl = QLabel(caption)
-            card.addWidget(caption_lbl)
-            card.addStretch()
-
-            self._insight_frames.append(frame)
-            self._insight_values.append(value_lbl)
-            self._insight_captions.append(caption_lbl)
-            insights_row.addWidget(frame)
-        insights_row.addStretch()
-        lay.addLayout(insights_row)
-        lay.addSpacing(26)
-
-        # -- unified glass dock (status chips) ----------------
-        self._dock = DepthCard(radius=22)
-        self._dock.setObjectName("dock")
-        self._dock.setFixedHeight(self.DOCK_H)
-        dock_lay = QHBoxLayout(self._dock)
-        dock_lay.setContentsMargins(18, 12, 18, 12)
-        dock_lay.setSpacing(12)
+        chip_col = QVBoxLayout()
+        chip_col.setSpacing(9)
+        chip_col.addStretch()
         for icon, text, ok in (
-            ("🗂️", f"{len(CATEGORIES)} Modules", True),
-            ("⚙️", f"{total_operations()} Operations", True),
             ("🧠", "Engine Ready" if engine_ok else "Engine Missing", engine_ok),
             ("🔑", "Administrator" if is_admin else "Not Elevated", is_admin),
         ):
             chip = QLabel(f"{icon}  {text}")
             self._chip_meta.append((chip, ok))
-            dock_lay.addWidget(chip)
+            chip_col.addWidget(chip, 0, Qt.AlignmentFlag.AlignRight)
+        chip_col.addStretch()
+        hb.addLayout(chip_col)
+        root.addWidget(self._hero)
 
-        dock_row = QHBoxLayout()
-        dock_row.addStretch()
-        dock_row.addWidget(self._dock)
-        dock_row.addStretch()
-        lay.addLayout(dock_row)
-        lay.addSpacing(24)
+        # ============ 2. SYSTEM TELEMETRY RIBBON ==========================
+        # The three OS/CPU/RAM readouts, folded from floating tiles into one
+        # cohesive glass strip with hairline dividers — a real system-status
+        # bar rather than scattered mini-cards.
+        self._telemetry = DepthCard(radius=16)
+        self._telemetry.setObjectName("telemetry")
+        self._telemetry.setFixedHeight(62)
+        tb = QHBoxLayout(self._telemetry)
+        tb.setContentsMargins(10, 8, 10, 8)
+        tb.setSpacing(0)
+        insights = _system_insights()
+        for i, (icon, value, caption) in enumerate(insights):
+            if i > 0:
+                div = QFrame()
+                div.setFixedWidth(1)
+                div.setFixedHeight(30)
+                self._tel_divs.append(div)
+                tb.addWidget(div, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self._hint = QLabel("Select a module from the left panel to begin")
-        self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self._hint)
-        lay.addStretch(3)
+            cell = QHBoxLayout()
+            cell.setContentsMargins(18, 0, 18, 0)
+            cell.setSpacing(12)
+            icon_lbl = QLabel(icon)
+            self._tel_icons.append(icon_lbl)
+            cell.addWidget(icon_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            text_col = QVBoxLayout()
+            text_col.setSpacing(0)
+            # elide long OS strings ("Windows 11 Professional") against a
+            # generous per-cell budget so nothing clips mid-glyph
+            value_font = QFont("Segoe UI")
+            value_font.setPixelSize(15)
+            value_font.setWeight(QFont.Weight.DemiBold)
+            elided = QFontMetrics(value_font).elidedText(
+                value, Qt.TextElideMode.ElideRight, 210)
+            value_lbl = QLabel(elided)
+            if elided != value:
+                value_lbl.setToolTip(value)
+            self._tel_values.append(value_lbl)
+            text_col.addWidget(value_lbl)
+            caption_lbl = QLabel(caption)
+            self._tel_captions.append(caption_lbl)
+            text_col.addWidget(caption_lbl)
+            cell.addLayout(text_col)
+            cell.addStretch()
+            tb.addLayout(cell, 1)
+        root.addWidget(self._telemetry)
+
+        root.addSpacing(2)
+
+        # ============ 3. MODULE LAUNCHPAD =================================
+        head = QHBoxLayout()
+        head.setSpacing(14)
+        self._section = QLabel("EXPLORE MODULES")
+        head.addWidget(self._section)
+        self._rule = QFrame()
+        self._rule.setFixedHeight(1)
+        head.addWidget(self._rule, 1)
+        root.addLayout(head)
+
+        grid_host = QWidget()
+        grid_host.setStyleSheet("background: transparent;")
+        self._grid = QGridLayout(grid_host)
+        self._grid.setContentsMargins(0, 2, 0, 0)
+        self._grid.setSpacing(14)
+        for i, cat in enumerate(CATEGORIES):
+            n = category_operations(cat)
+            item = {
+                "title": cat["title"],
+                "desc": cat["tagline"],
+                "glyph": cat["glyph"],
+                "meta_label": f"{n} operations" if n != 1 else "1 operation",
+            }
+            card = GlassCard(item, cat["accent"], t)
+            card.setMinimumHeight(108)
+            card.clicked.connect(
+                lambda idx=i: self.module_requested.emit(idx))
+            self._module_cards.append(card)
+        self._relayout_modules(3)
+        root.addWidget(grid_host, 1)
 
         self.apply_theme(t)
 
+    # -- responsive launchpad grid ------------------------------------
+    def _columns_for(self, width: int) -> int:
+        gap = self._grid.spacing()
+        return max(1, min(self.MODULE_MAX_COLS,
+                          (width + gap) // (self.MODULE_MIN_W + gap)))
+
+    def _relayout_modules(self, cols: int):
+        if cols == self._cols:
+            return
+        self._cols = cols
+        for card in self._module_cards:
+            self._grid.removeWidget(card)
+        for col in range(self.MODULE_MAX_COLS):
+            self._grid.setColumnStretch(col, 1 if col < cols else 0)
+        n_rows = (len(self._module_cards) + cols - 1) // cols
+        for row in range(max(self._grid.rowCount(), n_rows) + 1):
+            self._grid.setRowStretch(row, 1 if row < n_rows else 0)
+        for i, card in enumerate(self._module_cards):
+            self._grid.addWidget(card, i // cols, i % cols)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout_modules(self._columns_for(self.width() - 60))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._relayout_modules(self._columns_for(self.width() - 60))
+
     def apply_theme(self, t: dict):
         self._logo.apply_theme(t)
-        self._name.setStyleSheet(TH.label_qss(t, "hero"))
+        self._hero.setStyleSheet(TH.hero_banner_qss(t))
+        # authoritative masthead wordmark — larger and tighter than the old
+        # spread-out splash "hero" role
+        self._name.setStyleSheet(
+            f"color: {t['text']}; font-size: 34px; font-weight: 800;"
+            "letter-spacing: 2px; background: transparent; border: none;")
         self._tag.setStyleSheet(
-            TH.label_qss(t, "body") + "font-size: 13px; letter-spacing: 1px;")
-        self._hint.setStyleSheet(TH.label_qss(t, "faint"))
-        for frame in self._insight_frames:
-            frame.setStyleSheet(TH.insight_card_qss(t))
-        for lbl in self._insight_values:
-            lbl.setStyleSheet(TH.label_qss(t, "value"))
-        for lbl in self._insight_captions:
-            lbl.setStyleSheet(TH.label_qss(t, "caption"))
-        self._dock.setStyleSheet(TH.dock_qss(t))
+            TH.label_qss(t, "tagline") + "font-size: 12px; letter-spacing: 1px;")
         for chip, ok in self._chip_meta:
             chip.setStyleSheet(TH.chip_qss(t, ok))
+
+        self._telemetry.setStyleSheet(TH.telemetry_qss(t))
+        for lbl in self._tel_icons:
+            lbl.setStyleSheet("font-size: 17px; background: transparent; border: none;")
+        for lbl in self._tel_values:
+            lbl.setStyleSheet(
+                f"color: {t['text']}; font-size: 15px; font-weight: 600;"
+                "background: transparent; border: none;")
+        for lbl in self._tel_captions:
+            lbl.setStyleSheet(TH.label_qss(t, "caption"))
+        for div in self._tel_divs:
+            div.setStyleSheet(f"background: {t['panel_line']}; border: none;")
+
+        self._section.setStyleSheet(TH.label_qss(t, "section"))
+        self._rule.setStyleSheet(TH.hub_group_rule_qss(t, t["accent"]))
+        for card in self._module_cards:
+            card.apply_theme(t)
 
 
 class CategoryPage(QWidget):
@@ -620,6 +703,7 @@ class PulseApp(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
         self.welcome = WelcomePage(t, bool(self.ps1_path), self.is_admin)
+        self.welcome.module_requested.connect(self.open_category)
         self.stack.addWidget(self.welcome)
         self.pages: list[CategoryPage] = []
         for cat in CATEGORIES:
