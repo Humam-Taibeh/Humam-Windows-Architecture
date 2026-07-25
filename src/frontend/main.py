@@ -302,8 +302,8 @@ class CategoryPage(QWidget):
     gets 3 columns; a small floating window falls back to a single,
     fully-readable column."""
 
-    MAX_COLUMNS = 3
-    MIN_CARD_W = 340   # narrower than this and descriptions start clipping
+    MAX_COLUMNS = 4
+    MIN_CARD_W = 288   # v9.1: tighter cards → more columns, higher density
 
     home_requested = Signal()
     task_requested = Signal(dict, object)  # (item, GlassCard)
@@ -369,7 +369,7 @@ class CategoryPage(QWidget):
         grid_host.setStyleSheet("background: transparent;")
         self._grid = QGridLayout(grid_host)
         self._grid.setContentsMargins(2, 4, 12, 4)
-        self._grid.setSpacing(18)
+        self._grid.setSpacing(14)
 
         for idx, item in enumerate(category["items"]):
             # v7 bento: the first card of a hub landing page (Software
@@ -392,7 +392,20 @@ class CategoryPage(QWidget):
 
     # -- responsive grid ------------------------------------------
     def _columns_for(self, viewport_w: int) -> int:
-        return max(1, min(self.MAX_COLUMNS, viewport_w // self.MIN_CARD_W))
+        """Column count that ACTUALLY fits. Two guards beyond the naive
+        `viewport // MIN_CARD_W`: (1) it is spacing-aware — N columns need
+        N·MIN_CARD_W plus (N-1) gaps — and (2) it never returns more columns
+        than the widest card's real content minimum allows, so a card can
+        never be squeezed below its minimum and pushed off the right edge
+        (the v9.1 density pass exposed this: note-badge cards had a wide
+        minimum that overflowed a 3-up grid). The result is dense where the
+        content permits and gracefully drops a column where it doesn't."""
+        gap = self._grid.spacing()
+        widest = max((c.minimumSizeHint().width() for c in self.cards),
+                     default=self.MIN_CARD_W)
+        unit = max(self.MIN_CARD_W, widest)
+        fits = (viewport_w + gap) // (unit + gap)
+        return max(1, min(self.MAX_COLUMNS, fits))
 
     def _relayout(self, cols: int):
         if cols == self._cols:

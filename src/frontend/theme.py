@@ -117,7 +117,7 @@ def bevel_alphas(t: dict) -> tuple[float, float]:
         # bevel entirely on a firmer bottom-right contact shadow — the 1px
         # stand-in for the drop shadow QSS can't cast, lifting the card off
         # the deeper v8 slate canvas.
-        return (0.0, 0.28)
+        return (0.0, 0.34)
     return (0.14, 0.20)
 
 
@@ -341,34 +341,43 @@ _LIGHT = {
     "name":        "light",
     "font":        "Segoe UI",
 
-    "bg":          "rgba(230, 234, 241, 0.98)",
-    "bg_solid":    "#e6eaf1",
-    # v8 shell gradient — a genuinely DEEPER cool-gray floor (was a near-white
-    # #f6f8fc→#e4e8ef whisper). Light mode's whole "washed out, no depth"
-    # problem was that canvas, panels and cards all sat within a few % of pure
-    # white, so nothing separated. Dropping the canvas to a soft slate gives
-    # the elevation stack room: canvas (this) < panels < near-white cards.
-    "bg_grad_top":    "#eaeef5",
-    "bg_grad_bottom": "#d6dce8",
-    # content-area veil: intentionally LOW alpha so the deeper canvas reads
-    # through it as a soft, tinted mid-surface — the middle elevation tier
-    # cards float above, instead of a second sheet of white.
-    "overlay":     "rgba(255, 255, 255, 0.30)",
-    "panel":       "rgba(255, 255, 255, 0.62)",
-    "panel_line":  "rgba(22, 28, 38, 0.095)",
-    # cards jump to near-opaque white so they read a clear step ABOVE the
-    # tinted content veil and slate canvas — the pop the old 0.70 lacked.
-    "card":        "rgba(255, 255, 255, 0.94)",
-    # NEW hero/featured elevation tier — the brightest, fully-opaque white so
-    # the featured bento card lifts off even without a dark-mode lightness step.
+    # ---- v9.1 "Porcelain Glass" — soothing premium light -------------
+    # The prior light mode read as a harsh, flat white void: canvas, content
+    # veil and cards all sat within a few % of pure white, so nothing
+    # separated and the brightness fatigued the eye. v9.1 rebuilds it as a
+    # layered PORCELAIN GLASS stack — a soft, cool off-white canvas with a
+    # real top-to-bottom gradient for depth, a distinctly deeper content
+    # veil, frosted panels, and clean off-white cards lifted by firm
+    # hairlines + a painted contact shadow. Nothing is pure #ffffff except
+    # the hero tier, so the whole mode reads as paper under studio light,
+    # not a lightbox.
+    "bg":          "rgba(227, 232, 241, 0.98)",
+    "bg_solid":    "#e3e8f1",
+    # A genuine depth gradient: soft porcelain top settling into a deeper
+    # cool slate — this fall is what gives the empty canvas its calm depth.
+    "bg_grad_top":    "#eef1f8",
+    "bg_grad_bottom": "#c8d2e3",
+    # content veil — deliberately LOW alpha so the deeper canvas gradient
+    # reads through as a soft tinted mid-tier; cards float clearly above it
+    # instead of dissolving into a second sheet of white.
+    "overlay":     "rgba(255, 255, 255, 0.20)",
+    # frosted panels (sidebar / dock) — a soft white glass, clearly a step
+    # above the tinted content veil, clearly below the crisp cards.
+    "panel":       "rgba(255, 255, 255, 0.58)",
+    "panel_line":  "rgba(28, 38, 56, 0.10)",
+    # clean off-white cards (not pure white) — the crisp top layer, kept
+    # legible and separated by a firm hairline + contact shadow rather than
+    # blinding brightness.
+    "card":        "rgba(253, 254, 255, 0.97)",
     "card_hi":     "rgba(255, 255, 255, 1.0)",
-    "card_hover":  "rgba(74, 92, 224, 0.07)",
-    # A firm hairline: white-on-slate cards lean on the border + painted
-    # contact shadow (bevel_alphas) to separate, so it can't be timid.
-    "card_line":   "rgba(22, 28, 38, 0.13)",
-    "card_sheen":  "rgba(255, 255, 255, 0.80)",   # top stop of the glass gradient
+    "card_hover":  "rgba(74, 92, 224, 0.06)",
+    # A firm, clean hairline — the "clean borders" the redesign calls for;
+    # cards lean on this + the painted contact shadow (bevel_alphas) to
+    # separate, so it can't be timid.
+    "card_line":   "rgba(28, 38, 56, 0.16)",
+    "card_sheen":  "rgba(255, 255, 255, 0.85)",   # top stop of the glass gradient
     # Same opacity rule as dark: overlays never let text bleed through.
-    "dialog_bg":   "rgba(247, 249, 252, 1.0)",
+    "dialog_bg":   "rgba(248, 250, 253, 1.0)",
     "toast_bg":    "rgba(252, 253, 255, 0.99)",
 
     # brand — Aurora tri-tone, ink-saturated for paper: indigo → violet → magenta

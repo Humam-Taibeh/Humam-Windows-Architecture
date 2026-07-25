@@ -13,7 +13,9 @@ Import graph: theme.py <- animations.py <- widgets.py <- main.py
 """
 from __future__ import annotations
 
+import math
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -23,7 +25,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QLinearGradient, QPainter, QPainterPath,
-    QPen, QRadialGradient, QTextCursor,
+    QPen, QPixmap, QRadialGradient, QTextCursor,
 )
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
@@ -600,9 +602,9 @@ def _derive_card_meta(item: dict) -> list[str]:
 class GlassCard(QFrame):
     clicked = Signal()
 
-    _ICON_BASE_PX = 22
+    _ICON_BASE_PX = 21
     _ICON_GROW_PX = 2   # subtle hover "pop" — see _sync_icon_scale()
-    _PLAQUE = 48        # icon plaque footprint
+    _PLAQUE = 42        # icon plaque footprint (v9.1: tighter, denser card)
 
     def __init__(self, item: dict, accent: str, t: dict,
                  featured: bool = False):
@@ -626,8 +628,12 @@ class GlassCard(QFrame):
         # featured card keeps its distinction through its squircle body +
         # Aurora edge, not extra size — every card in every section now shares
         # one height envelope, so rows lock to a single rhythm everywhere.
-        self.setMinimumHeight(140)
-        self.setMaximumHeight(178)
+        # v9.1 density pass: a tighter height envelope (was 140/178) so cards
+        # stop ballooning into empty slabs — content sits closer together and
+        # reads denser, and the equal-row-stretch grid distributes the saved
+        # space as clean breathing room between rows.
+        self.setMinimumHeight(112)
+        self.setMaximumHeight(146)
         self.setProperty("running", False)
 
         glow_color = t["err"] if self._danger else accent
@@ -644,8 +650,8 @@ class GlassCard(QFrame):
         self._press_anim.valueChanged.connect(self._on_press_frame)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(18, 16, 20, 16)
-        lay.setSpacing(15)
+        lay.setContentsMargins(15, 13, 16, 13)
+        lay.setSpacing(13)
 
         # -- icon plaque (v7) — a Fluent glyph in an accent-tinted well ----
         char, self._glyph_fluent = (
@@ -666,17 +672,23 @@ class GlassCard(QFrame):
         lay.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignTop)
 
         col = QVBoxLayout()
-        col.setSpacing(6)
+        col.setSpacing(4)
         head = QHBoxLayout()
         head.setSpacing(8)
         self._title = QLabel(item["title"])
         # Long titles wrap instead of clipping at narrow card widths.
         self._title.setWordWrap(True)
         head.addWidget(self._title, 1)
+        # v9.1 density fix: the note badge ('Windows 11 only') used to sit on
+        # the TITLE's row, so a card's minimum width became plaque + title +
+        # badge (~416px) — which forced the responsive grid to overflow once
+        # cards were narrowed for a denser 3-column layout. Moving the badge
+        # into the footer row means the card minimum is the MAX of its rows,
+        # not their SUM, so dense columns fit cleanly — and a small pill in
+        # the bottom-right reads more premium than a chip crowding the title.
         self._badge: QLabel | None = None
         if item.get("note"):
             self._badge = QLabel(item["note"])
-            head.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignTop)
         # Drill-in chevron — shown only for cards that open a further screen
         # (hubs / selectors), i.e. exactly the cards that have a meta footer.
         self._meta_texts = _derive_card_meta(item)
@@ -695,9 +707,10 @@ class GlassCard(QFrame):
         col.addWidget(self._desc)
         col.addStretch()
 
-        # -- meta footer (v7) — count/hint pills fill the card with signal --
+        # -- meta footer (v7) — count/hint pills fill the card with signal,
+        #    plus the relocated note badge pinned bottom-right (v9.1) --------
         self._meta_pills: list[QLabel] = []
-        if self._meta_texts:
+        if self._meta_texts or self._badge is not None:
             foot = QHBoxLayout()
             foot.setSpacing(7)
             for i, text in enumerate(self._meta_texts):
@@ -705,6 +718,8 @@ class GlassCard(QFrame):
                 self._meta_pills.append(pill)
                 foot.addWidget(pill)
             foot.addStretch()
+            if self._badge is not None:
+                foot.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
             col.addLayout(foot)
 
         lay.addLayout(col, 1)
@@ -844,31 +859,76 @@ class GlassCard(QFrame):
 #  AMBIENT GLOW — static brand-pair light wash behind the shell
 # ============================================================
 class AmbientGlow(QWidget):
-    """Two large, very soft radial-gradient blobs of the brand accent
-    pair, painted once behind the sidebar/content frames (lowest widget
-    in the shell's z-order, transparent to mouse events). Pure static
-    paintEvent — repainted only on resize or theme change, never on a
-    timer — this is the 'rich luminescence' cue an otherwise flat
-    charcoal/porcelain canvas is missing at wide or maximized window
-    sizes. Opacity stays deliberately low (0.06–0.10): theme.py already
-    documents why the brand pair reads as neon past that on long
-    sessions, so this reuses the same restraint, just spread wide instead
-    of concentrated."""
+    """A LIVING canvas behind the sidebar/content frames (lowest widget in
+    the shell's z-order, transparent to mouse events).
+
+    Two motion layers, both engineered to stay cheap:
+
+    1. Aurora orbs — three large, soft brand-tinted radial blobs (indigo /
+       violet / magenta) that slowly DRIFT on independent sine paths and
+       BREATHE (a gentle opacity pulse). Each orb is a radial-gradient
+       PIXMAP rendered once and cached, then blitted at its drifting
+       position every frame — a GPU-friendly blit, not a per-frame gradient
+       rasterization, so the animation costs microseconds even full-screen.
+    2. Particle field — a scatter of tiny soft 'stars' drifting slowly
+       upward and twinkling, wrapping around the top. ~40 small ellipses a
+       frame, negligible.
+
+    Driven by one QTimer at ~28 fps (slow drift stays perfectly smooth at
+    that rate) that suspends whenever the widget is hidden, so a minimized
+    or backgrounded window pays nothing. Opacities stay low (theme.py
+    documents why the brand pair reads neon past ~0.16) — this is ambient
+    luminescence, never a light show."""
+
+    _INTERVAL_MS = 36          # ~28 fps — slow motion reads smooth, CPU low
+    _N_PARTICLES = 42
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._c1 = QColor("#58a6ff")
-        self._c2 = QColor("#a78bfa")
+        self._c1 = QColor("#7d9bff")
+        self._c2 = QColor("#a184ff")
         self._c3 = QColor("#e784ff")
         self._light = False
         self._radius = 24   # must track shell_qss's floating corner radius
+        self._t = 0.0
+        self._orb_cache: dict = {}
+        self._particles: list[dict] = []
+        self._build_particles()
 
+        # Independent drift/breathe parameters per orb: (base_x_frac,
+        # base_y_frac, drift_speed, drift_phase, breathe_speed, breathe_phase)
+        self._orb_motion = [
+            (0.16, -0.06, 0.055, 0.0, 0.42, 0.0),
+            (1.02,  0.28, 0.041, 2.1, 0.37, 1.3),
+            (0.70,  1.06, 0.048, 4.0, 0.31, 3.4),
+        ]
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._INTERVAL_MS)
+        self._timer.timeout.connect(self._tick)
+
+    # -- particle field ---------------------------------------
+    def _build_particles(self):
+        rng = random.Random(7)   # fixed seed → stable, reproducible scatter
+        self._particles = []
+        for _ in range(self._N_PARTICLES):
+            self._particles.append({
+                "x": rng.random(),
+                "y": rng.random(),
+                "r": rng.uniform(0.7, 2.0),
+                "spd": rng.uniform(0.008, 0.028),   # frac of height / second, upward
+                "tw": rng.random() * math.tau,       # twinkle phase
+                "tws": rng.uniform(0.6, 1.5),        # twinkle speed
+            })
+
+    # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
         self._c1 = QColor(t["accent"])
         self._c2 = QColor(t["accent2"])
         self._c3 = QColor(t["accent3"])
         self._light = t["name"] == "light"
+        self._orb_cache.clear()   # colors changed — cached orb pixmaps stale
         self.update()
 
     def set_radius(self, radius: int):
@@ -880,36 +940,98 @@ class AmbientGlow(QWidget):
             self._radius = radius
             self.update()
 
+    # -- lifecycle: animate only while visible ----------------
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._timer.start()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._timer.stop()
+
+    def _tick(self):
+        dt = self._INTERVAL_MS / 1000.0
+        self._t += dt
+        for pt in self._particles:
+            pt["y"] -= pt["spd"] * dt
+            if pt["y"] < -0.03:
+                pt["y"] += 1.06   # wrap back to just below the bottom edge
+        self.update()
+
+    # -- orb pixmap cache -------------------------------------
+    def _orb_pixmap(self, color: QColor, diameter: int, peak: float) -> QPixmap:
+        key = (color.rgb(), diameter, round(peak * 1000))
+        pm = self._orb_cache.get(key)
+        if pm is not None:
+            return pm
+        pm = QPixmap(diameter, diameter)
+        pm.fill(Qt.GlobalColor.transparent)
+        pp = QPainter(pm)
+        pp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        grad = QRadialGradient(diameter / 2.0, diameter / 2.0, diameter / 2.0)
+        c = QColor(color)
+        c.setAlphaF(peak)
+        grad.setColorAt(0.0, c)
+        # a soft, wide falloff — most of the gradient is the tail, so orbs
+        # blend seamlessly into the canvas with no visible hard rim
+        mid = QColor(color)
+        mid.setAlphaF(peak * 0.35)
+        grad.setColorAt(0.45, mid)
+        c_out = QColor(color)
+        c_out.setAlphaF(0.0)
+        grad.setColorAt(1.0, c_out)
+        pp.setPen(Qt.PenStyle.NoPen)
+        pp.setBrush(grad)
+        pp.drawEllipse(0, 0, diameter, diameter)
+        pp.end()
+        self._orb_cache[key] = pm
+        return pm
+
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         if self._radius:
             path = QPainterPath()
             path.addRoundedRect(QRectF(self.rect()), self._radius, self._radius)
             p.setClipPath(path)
         w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            p.end()
+            return
         span = max(w, h)
+        diameter = int(span * 1.25)
 
-        # v9 "Spectrum": a richer TRI-TONE aurora wash — indigo top-left,
-        # magenta mid-right, violet bottom — so the deep-space canvas reads
-        # as genuinely lit, not a flat cutout. Dark mode leans into it
-        # (stronger alpha now that the content veil is lighter and lets it
-        # through); light mode keeps a whisper so paper stays paper.
-        a1, a2, a3 = (0.055, 0.05, 0.045) if self._light else (0.16, 0.11, 0.10)
+        # --- aurora orbs: drifting + breathing, blitted from cache --------
+        peaks = ((0.05, 0.045, 0.04) if self._light else (0.17, 0.12, 0.11))
+        colors = (self._c1, self._c3, self._c2)   # indigo, magenta, violet
+        amp_x, amp_y = w * 0.06, h * 0.06
+        for i, (bx, by, dspd, dph, bspd, bph) in enumerate(self._orb_motion):
+            dx = math.sin(self._t * dspd * math.tau + dph) * amp_x
+            dy = math.cos(self._t * dspd * math.tau * 0.8 + dph) * amp_y
+            cx = bx * w + dx - diameter / 2.0
+            cy = by * h + dy - diameter / 2.0
+            breathe = 1.0 + 0.16 * math.sin(self._t * bspd * math.tau + bph)
+            pm = self._orb_pixmap(colors[i], diameter, peaks[i])
+            p.setOpacity(max(0.0, min(1.0, breathe)))
+            p.drawPixmap(int(cx), int(cy), pm)
+        p.setOpacity(1.0)
 
-        def blob(cx, cy, reach, color, a):
-            grad = QRadialGradient(cx, cy, reach)
-            c = QColor(color)
-            c.setAlphaF(a)
-            grad.setColorAt(0.0, c)
-            c_out = QColor(color)
-            c_out.setAlphaF(0.0)
-            grad.setColorAt(1.0, c_out)
-            p.fillRect(self.rect(), grad)
-
-        blob(w * 0.16, h * -0.10, span * 0.58, self._c1, a1)   # indigo, top-left
-        blob(w * 1.02, h * 0.30, span * 0.52, self._c3, a3)    # magenta, upper-right
-        blob(w * 0.70, h * 1.08, span * 0.55, self._c2, a2)    # violet, bottom
+        # --- particle field: slow upward drift + twinkle -----------------
+        if self._light:
+            base = QColor(60, 78, 150)     # soft indigo motes on porcelain
+            pmax = 0.16
+        else:
+            base = QColor(200, 214, 255)   # cool starlight on deep space
+            pmax = 0.34
+        p.setPen(Qt.PenStyle.NoPen)
+        for pt in self._particles:
+            tw = 0.5 + 0.5 * math.sin(self._t * pt["tws"] * math.tau + pt["tw"])
+            col = QColor(base)
+            col.setAlphaF(pmax * (0.25 + 0.75 * tw))
+            p.setBrush(col)
+            r = pt["r"] * (0.7 + 0.5 * tw)
+            p.drawEllipse(QPointF(pt["x"] * w, pt["y"] * h), r, r)
         p.end()
 
 
