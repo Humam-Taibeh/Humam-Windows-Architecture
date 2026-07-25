@@ -186,7 +186,7 @@ CATEGORIES = [
         "glyph": "package",
         "title": "Software Management",
         "tagline": "Deploy apps, runtimes and audit startup programs",
-        "accent": "#58a6ff",
+        "accent": "#4d8bff",
         "items": [
             # -- HUB 1: everyday consumer/productivity apps ---------------
             {"icon": "🧰", "glyph": "globe", "title": "Browsers & Daily Apps",
@@ -372,7 +372,7 @@ CATEGORIES = [
         "glyph": "bolt",
         "title": "System Optimization",
         "tagline": "Smart tweaks, performance and gaming optimizations",
-        "accent": "#e3b341",
+        "accent": "#e0a12e",
         "items": [
             {"icon": "🌙", "title": "Global Dark Mode",
              "desc": "Force the dark theme across Windows and all apps.",
@@ -406,7 +406,7 @@ CATEGORIES = [
         "glyph": "repair",
         "title": "Maintenance & Repair",
         "tagline": "System file repair, cache cleanup and disk optimization",
-        "accent": "#4dd0b1",
+        "accent": "#2ec4a6",
         "items": [
             {"icon": "🛠️", "title": "System Repair (SFC + DISM)",
              "desc": "Scan and repair protected system files and the component store.",
@@ -440,7 +440,7 @@ CATEGORIES = [
         "glyph": "shield",
         "title": "Privacy & Security",
         "tagline": "Debloat, kill telemetry and stop data collection",
-        "accent": "#ec8fa3",
+        "accent": "#ec6b93",
         "items": [
             {"icon": "📦", "title": "Remove Bloatware",
              "desc": "Uninstall the pre-loaded Store apps you never asked for.",
@@ -468,7 +468,7 @@ CATEGORIES = [
         "glyph": "info",
         "title": "Information & Utilities",
         "tagline": "System insight, driver tools and the operation log",
-        "accent": "#8ab4f8",
+        "accent": "#6f9bf5",
         "items": [
             {"icon": "📊", "title": "System Info Snapshot",
              "desc": "Hardware summary, uptime and drive space — written to the log.",
@@ -496,7 +496,7 @@ CATEGORIES = [
         "glyph": "restore",
         "title": "Safety & Recovery",
         "tagline": "Undo tweaks, restore services and recover backups",
-        "accent": "#7ec699",
+        "accent": "#52bd83",
         "items": [
             {"icon": "↩️", "title": "Reset All Tweaks",
              "desc": "Revert every registry tweak to your original backed-up values.",

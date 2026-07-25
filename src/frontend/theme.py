@@ -113,7 +113,11 @@ def bevel_alphas(t: dict) -> tuple[float, float]:
     off the page — the painted stand-in for the shadow QSS can't give. Dark
     mode keeps the original balanced glass bevel."""
     if t["name"] == "light":
-        return (0.10, 0.16)
+        # near-white cards make a top-left WHITE highlight moot, so spend the
+        # bevel entirely on a firmer bottom-right contact shadow — the 1px
+        # stand-in for the drop shadow QSS can't cast, lifting the card off
+        # the deeper v8 slate canvas.
+        return (0.0, 0.28)
     return (0.14, 0.20)
 
 
@@ -325,24 +329,31 @@ _LIGHT = {
     "name":        "light",
     "font":        "Segoe UI",
 
-    "bg":          "rgba(238, 241, 246, 0.98)",
-    "bg_solid":    "#eef1f6",
-    # shell gradient stops — a whisper of depth, warmed toward studio-white.
-    "bg_grad_top":    "#f6f8fc",
-    "bg_grad_bottom": "#e4e8ef",
-    "overlay":     "rgba(255, 255, 255, 0.42)",
-    "panel":       "rgba(255, 255, 255, 0.52)",
-    "panel_line":  "rgba(22, 28, 38, 0.085)",
-    "card":        "rgba(255, 255, 255, 0.70)",
-    # NEW hero/featured elevation tier — brighter, near-opaque white so the
-    # featured bento card lifts off the porcelain even without a lightness
-    # step to lean on (the light-mode counterpart to dark's `card_hi`).
-    "card_hi":     "rgba(255, 255, 255, 0.88)",
-    "card_hover":  "rgba(74, 92, 224, 0.06)",
-    # One notch up from v6.2's 0.11: white-on-porcelain cards need the
-    # hairline to do all the separating (no dark-mode lightness step to
-    # help), and at 0.11 card edges dissolved on bright panels.
-    "card_line":   "rgba(22, 28, 38, 0.14)",
+    "bg":          "rgba(230, 234, 241, 0.98)",
+    "bg_solid":    "#e6eaf1",
+    # v8 shell gradient — a genuinely DEEPER cool-gray floor (was a near-white
+    # #f6f8fc→#e4e8ef whisper). Light mode's whole "washed out, no depth"
+    # problem was that canvas, panels and cards all sat within a few % of pure
+    # white, so nothing separated. Dropping the canvas to a soft slate gives
+    # the elevation stack room: canvas (this) < panels < near-white cards.
+    "bg_grad_top":    "#eaeef5",
+    "bg_grad_bottom": "#d6dce8",
+    # content-area veil: intentionally LOW alpha so the deeper canvas reads
+    # through it as a soft, tinted mid-surface — the middle elevation tier
+    # cards float above, instead of a second sheet of white.
+    "overlay":     "rgba(255, 255, 255, 0.30)",
+    "panel":       "rgba(255, 255, 255, 0.62)",
+    "panel_line":  "rgba(22, 28, 38, 0.095)",
+    # cards jump to near-opaque white so they read a clear step ABOVE the
+    # tinted content veil and slate canvas — the pop the old 0.70 lacked.
+    "card":        "rgba(255, 255, 255, 0.94)",
+    # NEW hero/featured elevation tier — the brightest, fully-opaque white so
+    # the featured bento card lifts off even without a dark-mode lightness step.
+    "card_hi":     "rgba(255, 255, 255, 1.0)",
+    "card_hover":  "rgba(74, 92, 224, 0.07)",
+    # A firm hairline: white-on-slate cards lean on the border + painted
+    # contact shadow (bevel_alphas) to separate, so it can't be timid.
+    "card_line":   "rgba(22, 28, 38, 0.13)",
     "card_sheen":  "rgba(255, 255, 255, 0.80)",   # top stop of the glass gradient
     # Same opacity rule as dark: overlays never let text bleed through.
     "dialog_bg":   "rgba(247, 249, 252, 1.0)",
@@ -606,6 +617,47 @@ def exit_button_qss(t: dict) -> str:
         }}
         QPushButton:hover {{ background-color: {alpha(t['err'], 0.22)}; color: {t['text']}; }}
         QPushButton:pressed {{ background-color: {alpha(t['err'], 0.32)}; }}
+    """
+
+
+def elevate_button_qss(t: dict) -> str:
+    """Sidebar-footer 'Run as Administrator' call-to-action — the relocated,
+    far more discoverable home for elevation (was a cramped title-bar badge).
+    Amber `warn` tone: a standing 'do this to unlock system actions' prompt,
+    not a red failure. Full-width, left-aligned with room for a leading shield
+    glyph, sitting in the sidebar's app-control zone right above Exit."""
+    return f"""
+        QPushButton {{
+            background: {alpha(t['warn'], 0.13)};
+            border: 1px solid {alpha(t['warn'], 0.42)};
+            border-radius: 12px;
+            color: {t['warn']};
+            font-size: 12px; font-weight: 600;
+            text-align: left; padding-left: 16px;
+        }}
+        QPushButton:hover {{
+            background: {alpha(t['warn'], 0.24)};
+            border: 1px solid {alpha(t['warn'], 0.65)};
+            color: {t['text']};
+        }}
+        QPushButton:pressed {{ background: {alpha(t['warn'], 0.36)}; color: {t['text']}; }}
+    """
+
+
+def admin_status_qss(t: dict) -> str:
+    """Sidebar-footer counterpart shown when Pulse IS already elevated — a
+    quiet, non-interactive green `ok` status chip confirming Administrator
+    rights, so the elevation state is always legible in the same spot whether
+    or not action is needed."""
+    return f"""
+        QLabel {{
+            background: {alpha(t['ok'], 0.10)};
+            border: 1px solid {alpha(t['ok'], 0.32)};
+            border-radius: 12px;
+            color: {t['ok']};
+            font-size: 12px; font-weight: 600;
+            padding: 0 16px;
+        }}
     """
 
 

@@ -311,20 +311,13 @@ class TitleBar(QWidget):
         if channel:
             self._channel = QLabel(channel.upper())
             lay.addWidget(self._channel)
-        # Persistent, always-visible counterpart to the once-only startup
-        # toast — a user browsing categories before ever clicking anything
-        # should already know why an elevated action will fail, instead of
-        # finding out from a red error after the fact.
+        # v8: elevation state/action moved OUT of the title bar into the
+        # sidebar footer (main.PulseApp._build_ui), where "app-level system
+        # controls" already live (identity line + Exit). The title bar keeps
+        # a clean brand-only left cluster; `_admin_badge` stays defined as
+        # None so the native-hit-test carve-out (main._over_admin_badge)
+        # remains a harmless no-op.
         self._admin_badge: QPushButton | None = None
-        if not is_admin:
-            self._admin_badge = QPushButton("⚠ NOT ELEVATED")
-            self._admin_badge.setCursor(Qt.CursorShape.PointingHandCursor)
-            self._admin_badge.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            self._admin_badge.setToolTip(
-                "Some system-level actions need Administrator rights. "
-                "Click to relaunch Pulse elevated (you'll get a UAC prompt).")
-            self._admin_badge.clicked.connect(self._on_admin_badge_clicked)
-            lay.addWidget(self._admin_badge)
         lay.addStretch()
 
         btns = QHBoxLayout()
@@ -616,7 +609,14 @@ class GlassCard(QFrame):
         self._danger = bool(item.get("danger"))
         self._featured = featured
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(150 if featured else 138)
+        # v8 proportion fix: a min AND a max so cards never balloon. The
+        # equal-row-stretch grid (main.CategoryPage._relayout) still fills the
+        # canvas, but a capped card can't grow into a tall, empty slab — it
+        # settles at a natural height and the leftover space becomes balanced
+        # inter-row breathing room, so a 4- or 5-card page reads evenly
+        # distributed instead of either top-anchored-with-a-void or stretched.
+        self.setMinimumHeight(150 if featured else 140)
+        self.setMaximumHeight(198 if featured else 178)
         self.setProperty("running", False)
 
         glow_color = t["err"] if self._danger else accent

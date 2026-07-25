@@ -305,7 +305,6 @@ class CategoryPage(QWidget):
     MAX_COLUMNS = 3
     MIN_CARD_W = 340   # narrower than this and descriptions start clipping
 
-    back_requested = Signal()
     home_requested = Signal()
     task_requested = Signal(dict, object)  # (item, GlassCard)
 
@@ -319,36 +318,32 @@ class CategoryPage(QWidget):
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(16)
 
-        # -- header -------------------------------------------
-        # Standardized action-bar cluster: Back + Home sit adjacent at the
-        # left edge (one nav group, not scattered corner-to-corner), a
-        # hairline divider separates "navigation" from "where you are",
-        # then the breadcrumb-style title/tagline. Every category page
-        # reads the same way — the pattern a File Explorer / VS Code
-        # breadcrumb bar already teaches users.
+        # -- header: breadcrumb trail -------------------------
+        # v8 navigation doctrine: a single, depth-aware breadcrumb path —
+        # `⌂ Home  ›  Module` — replaces the old redundant Back+Home pill
+        # pair (both did the same thing on a two-level app, so "Back" on a
+        # top-level page pointed nowhere the sidebar didn't already reach).
+        # Only the HOME crumb is interactive; the trailing crumb is the
+        # current location, led by the module's own accent rail — the exact
+        # Finder / VS Code path-bar pattern, which scales cleanly if the app
+        # ever nests deeper (each new level just appends another crumb).
         head = QHBoxLayout()
-        head.setSpacing(12)
+        head.setSpacing(10)
 
-        nav_cluster = QHBoxLayout()
-        nav_cluster.setSpacing(6)
-        self._back = NavPill("‹  Back", t, width=84)
-        self._back.setToolTip("Back to modules")
-        self._back.clicked.connect(self.back_requested)
-        nav_cluster.addWidget(self._back)
-        self._home = NavPill("⌂  Home", t, width=84)
-        self._home.setToolTip("Jump to the welcome screen")
+        self._home = NavPill("⌂  Home", t, width=88)
+        self._home.setToolTip("Back to the welcome screen")
         self._home.clicked.connect(self.home_requested)
-        nav_cluster.addWidget(self._home)
-        head.addLayout(nav_cluster)
+        head.addWidget(self._home)
 
-        self._divider = QFrame()
-        self._divider.setFixedWidth(1)
-        self._divider.setFixedHeight(26)
-        head.addWidget(self._divider)
+        self._crumb_sep = QLabel("›")
+        self._crumb_sep.setFixedWidth(10)
+        self._crumb_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(self._crumb_sep)
+        head.addSpacing(4)
 
-        # v7 breadcrumb: a short vertical rail in the module's own accent
-        # leads the title — the same 'you are here, and this is its color'
-        # cue the sidebar's active-rail uses, carried into the page header.
+        # the current-location crumb: a short vertical rail in the module's
+        # own accent leads the title — the same 'you are here, and this is
+        # its color' cue the sidebar's active-rail uses.
         self._accent_rail = QFrame()
         self._accent_rail.setFixedWidth(3)
         self._accent_rail.setFixedHeight(34)
@@ -437,9 +432,10 @@ class CategoryPage(QWidget):
         self._relayout(self._columns_for(own_w))
 
     def apply_theme(self, t: dict):
-        self._back.apply_theme(t)
         self._home.apply_theme(t)
-        self._divider.setStyleSheet(f"background: {t['panel_line']}; border: none;")
+        self._crumb_sep.setStyleSheet(
+            f"color: {t['text_faint']}; font-size: 17px; font-weight: 400;"
+            "background: transparent; border: none;")
         self._accent_rail.setStyleSheet(
             f"background: {self.category['accent']}; border: none; border-radius: 2px;")
         self._title.setStyleSheet(TH.label_qss(t, "title"))
@@ -534,7 +530,6 @@ class PulseApp(QMainWindow):
         self.titlebar = TitleBar(self, t, APP_NAME, APP_VERSION, APP_CHANNEL,
                                   is_admin=self.is_admin)
         self.titlebar.theme_toggle_requested.connect(self._toggle_theme_animated)
-        self.titlebar.elevate_requested.connect(self._relaunch_as_admin)
         root.addWidget(self.titlebar)
 
         body = QHBoxLayout()
@@ -564,7 +559,31 @@ class PulseApp(QMainWindow):
             side.addWidget(btn)
         side.addStretch()
 
-        # -- sidebar footer: brand + build channel (v7) -------
+        # -- sidebar footer: elevation · identity · exit (v8) --
+        # The sidebar footer is the app's "system controls" zone. Elevation
+        # lives here now (relocated from the title bar): a prominent, always-
+        # visible amber CTA when unelevated, or a quiet green confirmation
+        # chip when already Administrator — far more discoverable than the
+        # old title-bar badge, and it drops the fragile native hit-test
+        # carve-out that badge required.
+        self._elevate_btn: QPushButton | None = None
+        self._admin_chip: QLabel | None = None
+        if self.is_admin:
+            self._admin_chip = QLabel("🛡  Administrator")
+            self._admin_chip.setFixedHeight(38)
+            self._admin_chip.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+            side.addWidget(self._admin_chip)
+        else:
+            self._elevate_btn = QPushButton("🛡  Run as Administrator")
+            self._elevate_btn.setFixedHeight(42)
+            self._elevate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._elevate_btn.setToolTip(
+                "Some system-level actions need Administrator rights. "
+                "Relaunch Pulse elevated (you'll get a UAC prompt).")
+            self._elevate_btn.clicked.connect(self._relaunch_as_admin)
+            side.addWidget(self._elevate_btn)
+        side.addSpacing(10)
+
         # Anchors the nav column so it no longer floats above a void — a
         # quiet identity line the way VS Code / Linear close their rails.
         self._side_footer = QLabel(f"PULSE  v{APP_VERSION}  ·  {APP_CHANNEL.upper()}")
@@ -592,7 +611,6 @@ class PulseApp(QMainWindow):
         self.pages: list[CategoryPage] = []
         for cat in CATEGORIES:
             page = CategoryPage(cat, t)
-            page.back_requested.connect(self.go_home)
             page.home_requested.connect(self.go_home)
             page.task_requested.connect(self.request_task)
             self.pages.append(page)
@@ -628,6 +646,10 @@ class PulseApp(QMainWindow):
         self._content.setStyleSheet(TH.content_qss(t))
         self._section.setStyleSheet(TH.label_qss(t, "section"))
         self._side_footer.setStyleSheet(TH.label_qss(t, "caption"))
+        if self._elevate_btn is not None:
+            self._elevate_btn.setStyleSheet(TH.elevate_button_qss(t))
+        if self._admin_chip is not None:
+            self._admin_chip.setStyleSheet(TH.admin_status_qss(t))
         self._exit_btn.setStyleSheet(TH.exit_button_qss(t))
         self.titlebar.apply_theme(t)
         self.welcome.apply_theme(t)
@@ -1024,14 +1046,14 @@ class PulseApp(QMainWindow):
                 "Click the ⚠ NOT ELEVATED badge above to relaunch elevated.", 8000)
 
     def _relaunch_as_admin(self):
-        """One-click UAC relaunch, triggered by the title bar's 'NOT
-        ELEVATED' badge. Spawns a second, elevated Pulse via the 'runas'
+        """One-click UAC relaunch, triggered by the sidebar footer's 'Run as
+        Administrator' button. Spawns a second, elevated Pulse via the 'runas'
         verb (which shows Windows' own UAC consent prompt) and quits this
         instance once it's confirmed launched — never before, so declining
         the prompt (or the launch failing outright) leaves the user with
         the still-running unelevated app instead of no app at all."""
         if sys.stdout is not None:
-            print("[Pulse] _relaunch_as_admin: elevate_requested received.")
+            print("[Pulse] _relaunch_as_admin: elevation requested.")
         if self._worker is not None:
             self.toasts.show(
                 "info", "Wait for the current task to finish before restarting elevated.", 4000)
