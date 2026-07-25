@@ -57,11 +57,10 @@ from frontend.menu_structure import (  # noqa: E402
     total_operations,
 )
 from frontend.widgets import (  # noqa: E402
-    AmbientGlow, AppSelectorDialog, BreathingIcon, CommandPalette,
-    ConfirmDialog, DepthCard, DevHubSelectorDialog, GlassCard, HubDialog,
-    LiveConsole, NavButton, NavPill, OfficeWizardDialog, PulseDialog,
-    StartupManagerDialog, StatePill, StatusDot, TitleBar, UpdateCenterDialog,
-    refit_dialog,
+    ActivityDrawer, AmbientGlow, AppSelectorDialog, BreathingIcon,
+    CommandPalette, ConfirmDialog, DepthCard, DevHubSelectorDialog, GlassCard,
+    HubDialog, NavButton, NavPill, OfficeWizardDialog, PulseDialog,
+    StartupManagerDialog, TitleBar, UpdateCenterDialog, refit_dialog,
 )
 
 # ============================================================
@@ -178,7 +177,10 @@ class WelcomePage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(40, 16, 40, 16)
         lay.setSpacing(0)
-        lay.addStretch(3)
+        # v7: a slightly top-weighted centering (2:3) so the brand + insight
+        # composition sits with intent in the taller canvas the collapsed
+        # Activity drawer now frees up, rather than floating dead-center.
+        lay.addStretch(2)
 
         # -- brand ------------------------------------------
         self._logo = BreathingIcon("✦", size=110, accent=t["accent"])
@@ -270,7 +272,7 @@ class WelcomePage(QWidget):
         self._hint = QLabel("Select a module from the left panel to begin")
         self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._hint)
-        lay.addStretch(4)
+        lay.addStretch(3)
 
         self.apply_theme(t)
 
@@ -344,9 +346,18 @@ class CategoryPage(QWidget):
         self._divider.setFixedHeight(26)
         head.addWidget(self._divider)
 
+        # v7 breadcrumb: a short vertical rail in the module's own accent
+        # leads the title — the same 'you are here, and this is its color'
+        # cue the sidebar's active-rail uses, carried into the page header.
+        self._accent_rail = QFrame()
+        self._accent_rail.setFixedWidth(3)
+        self._accent_rail.setFixedHeight(34)
+        head.addWidget(self._accent_rail)
+        head.addSpacing(2)
+
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
-        self._title = QLabel(f"{category['icon']}  {category['title']}")
+        self._title = QLabel(category["title"])
         title_col.addWidget(self._title)
         self._tagline = QLabel(category["tagline"])
         title_col.addWidget(self._tagline)
@@ -365,8 +376,14 @@ class CategoryPage(QWidget):
         self._grid.setContentsMargins(2, 4, 12, 4)
         self._grid.setSpacing(18)
 
-        for item in category["items"]:
-            card = GlassCard(item, category["accent"], t)
+        for idx, item in enumerate(category["items"]):
+            # v7 bento: the first card of a hub landing page (Software
+            # Management) is the featured hero — squircle + Aurora lit edge on
+            # the top elevation tier. Only hub cards qualify (they never enter
+            # the running/flash states the featured card's painted background
+            # forgoes), so dense action pages just get the balanced fill grid.
+            featured = idx == 0 and bool(item.get("hub"))
+            card = GlassCard(item, category["accent"], t, featured=featured)
             card.clicked.connect(
                 lambda it=item, c=card: self.task_requested.emit(it, c))
             self.cards.append(card)
@@ -390,11 +407,16 @@ class CategoryPage(QWidget):
             self._grid.removeWidget(card)
         for col in range(self.MAX_COLUMNS):
             self._grid.setColumnStretch(col, 1 if col < cols else 0)
-        for row in range(self._grid.rowCount()):
-            self._grid.setRowStretch(row, 0)
+        # v7 spatial fix: give every OCCUPIED row an equal stretch so the
+        # cards share the leftover vertical space and FILL the canvas, instead
+        # of the old single trailing spacer row that top-anchored the grid and
+        # stranded ~50% of the page as dead middle space (the redesign's #1
+        # complaint). Rows past the last occupied one collapse to zero.
+        n_rows = (len(self.cards) + cols - 1) // cols
+        for row in range(max(self._grid.rowCount(), n_rows) + 1):
+            self._grid.setRowStretch(row, 1 if row < n_rows else 0)
         for i, card in enumerate(self.cards):
             self._grid.addWidget(card, i // cols, i % cols)
-        self._grid.setRowStretch((len(self.cards) + cols - 1) // cols, 1)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -418,6 +440,8 @@ class CategoryPage(QWidget):
         self._back.apply_theme(t)
         self._home.apply_theme(t)
         self._divider.setStyleSheet(f"background: {t['panel_line']}; border: none;")
+        self._accent_rail.setStyleSheet(
+            f"background: {self.category['accent']}; border: none; border-radius: 2px;")
         self._title.setStyleSheet(TH.label_qss(t, "title"))
         self._tagline.setStyleSheet(TH.label_qss(t, "tagline"))
         self._scroll.setStyleSheet(TH.scroll_area_qss(t))
@@ -534,11 +558,19 @@ class PulseApp(QMainWindow):
         side.addSpacing(8)
 
         for i, cat in enumerate(CATEGORIES):
-            btn = NavButton(cat["icon"], cat["title"], cat["accent"], t)
+            btn = NavButton(cat["glyph"], cat["title"], cat["accent"], t)
             btn.clicked.connect(lambda checked=False, idx=i: self.open_category(idx))
             self._nav_buttons.append(btn)
             side.addWidget(btn)
         side.addStretch()
+
+        # -- sidebar footer: brand + build channel (v7) -------
+        # Anchors the nav column so it no longer floats above a void — a
+        # quiet identity line the way VS Code / Linear close their rails.
+        self._side_footer = QLabel(f"PULSE  v{APP_VERSION}  ·  {APP_CHANNEL.upper()}")
+        self._side_footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        side.addWidget(self._side_footer)
+        side.addSpacing(10)
 
         self._exit_btn = QPushButton("✕  Exit")
         self._exit_btn.setFixedHeight(40)
@@ -567,42 +599,21 @@ class PulseApp(QMainWindow):
             self.stack.addWidget(page)
         content.addWidget(self.stack, 1)
 
-        # -- console header: label · state pill · kill switch --
-        console_head = QHBoxLayout()
-        console_head.setSpacing(10)
-        self._console_label = QLabel("LIVE OUTPUT")
-        console_head.addWidget(self._console_label)
-        self.state_pill = StatePill(t)
-        console_head.addWidget(self.state_pill)
-        console_head.addStretch()
-        self.stop_btn = QPushButton("■  Stop Task")
-        self.stop_btn.setFixedSize(112, 26)
-        self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.stop_btn.setToolTip(
-            "Hard-stop the running task (kills the whole process tree)")
-        self.stop_btn.clicked.connect(self._cancel_running_task)
-        self.stop_btn.hide()   # visible only while a task runs
-        console_head.addWidget(self.stop_btn)
-        content.addLayout(console_head)
-
-        self.console = LiveConsole(t)
-        self.console.setFixedHeight(170)
-        content.addWidget(self.console)
-
-        self.shimmer = ShimmerBar()
-        content.addWidget(self.shimmer)
-
-        status = QHBoxLayout()
-        status.setSpacing(8)
-        self.status_dot = StatusDot("●")
-        status.addWidget(self.status_dot)
-        self.status_text = QLabel("System Ready")
-        status.addWidget(self.status_text)
-        status.addStretch()
-        grip = QSizeGrip(self._content)
-        grip.setStyleSheet("background: transparent;")
-        status.addWidget(grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
-        content.addLayout(status)
+        # -- Activity drawer (v7): auto-collapsing live output ----
+        # Replaces the always-open 170px console + separate status row. The
+        # drawer keeps a slim 44px rail visible (status dot, state pill, Stop,
+        # pin chevron) and only expands its console body while a task runs —
+        # reclaiming ~140px of canvas whenever the app is idle. The rest of
+        # the task pipeline still reaches console/state_pill/stop_btn/shimmer/
+        # status_dot/status_text as attributes, via the aliases below.
+        self.activity = ActivityDrawer(t, on_stop=self._cancel_running_task)
+        content.addWidget(self.activity)
+        self.console = self.activity.console
+        self.state_pill = self.activity.state_pill
+        self.stop_btn = self.activity.stop_btn
+        self.shimmer = self.activity.shimmer
+        self.status_dot = self.activity.status_dot
+        self.status_text = self.activity.status_text
 
         body.addWidget(self._content, 1)
         self.toasts = ToastManager(self._shell, t)
@@ -616,6 +627,7 @@ class PulseApp(QMainWindow):
         self._sidebar.setStyleSheet(TH.sidebar_qss(t))
         self._content.setStyleSheet(TH.content_qss(t))
         self._section.setStyleSheet(TH.label_qss(t, "section"))
+        self._side_footer.setStyleSheet(TH.label_qss(t, "caption"))
         self._exit_btn.setStyleSheet(TH.exit_button_qss(t))
         self.titlebar.apply_theme(t)
         self.welcome.apply_theme(t)
@@ -623,12 +635,7 @@ class PulseApp(QMainWindow):
             btn.apply_theme(t)
         for page in self.pages:
             page.apply_theme(t)
-        self.shimmer.set_theme(t)
-        self._console_label.setStyleSheet(TH.console_header_qss(t))
-        self.state_pill.apply_theme(t)
-        self.stop_btn.setStyleSheet(TH.stop_button_qss(t))
-        self.console.apply_theme(t)
-        self.status_text.setStyleSheet(TH.label_qss(t, "status"))
+        self.activity.apply_theme(t)
         self.toasts.apply_theme(t)
         self._set_status(self._status_state, self.status_text.text())
 
@@ -843,6 +850,7 @@ class PulseApp(QMainWindow):
         self._running_card = card
         if card is not None:
             card.set_running(True)
+        self.activity.set_running(True)   # expand the drawer for live output
         self._set_status("busy", f"Executing: {item['title']} …")
         self.state_pill.set_state("running")
         self.stop_btn.setText("■  Stop Task")
@@ -929,6 +937,9 @@ class PulseApp(QMainWindow):
             self._running_card = None
         self.shimmer.stop()
         self.stop_btn.hide()
+        # Collapse the drawer after a brief hold so the final verdict stays
+        # readable; a pinned drawer (or one still running) stays open.
+        self.activity.set_running(False)
 
     def _on_thread_finished(self):
         # Deferred cleanup so Qt never destroys a worker while one of its

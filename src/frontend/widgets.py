@@ -22,19 +22,20 @@ from PySide6.QtCore import (
     Qt, QThread, QTimer, QUrl, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
-    QColor, QDesktopServices, QFont, QPainter, QPainterPath, QRadialGradient,
-    QTextCursor,
+    QColor, QDesktopServices, QFont, QLinearGradient, QPainter, QPainterPath,
+    QPen, QRadialGradient, QTextCursor,
 )
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-    QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout,
-    QWidget,
+    QPlainTextEdit, QPushButton, QScrollArea, QSizeGrip, QStackedWidget,
+    QVBoxLayout, QWidget,
 )
 
 from frontend.animations import (
-    GlowController, RippleController, ShimmerBar, paint_bevel_frame,
-    paint_glow_frame, paint_nav_indicator, paint_ripple_frame,
+    GlowController, RippleController, ShimmerBar, paint_aurora_edge,
+    paint_bevel_frame, paint_glow_frame, paint_nav_indicator,
+    paint_ripple_frame, paint_top_sheen, squircle_path,
 )
 from frontend import theme as TH
 # Update Center / Startup Manager (v6.3) run their own background scans and
@@ -485,23 +486,44 @@ class TitleBar(QWidget):
 #  NAV BUTTON — sidebar category entry with painted glow
 # ============================================================
 class NavButton(QPushButton):
-    def __init__(self, icon: str, title: str, accent: str, t: dict):
+    """Sidebar module entry — v7: a painted, accent-tinted icon PLAQUE
+    holding one monochrome Fluent glyph, the module title, a left Aurora
+    active-rail when selected, and the effect-free painted glow/ripple. The
+    glyph comes from theme.GLYPHS via a semantic key, so the whole sidebar
+    reads as one coherent line-icon system instead of mismatched emoji."""
+
+    _PLAQUE = 30       # plaque edge (px)
+    _PLAQUE_X = 12     # left inset — must stay in sync with nav_button_qss padding
+
+    def __init__(self, glyph_key: str, title: str, accent: str, t: dict):
         # QPushButton treats a lone "&" as a mnemonic marker (it vanishes
         # and the following character gets an accelerator underline) —
         # category titles like "Maintenance & Repair" need it escaped to
-        # "&&" or the button renders "Maintenance _Repair".
-        super().__init__(f"{icon}  {title}".replace("&", "&&"))
+        # "&&" or the button renders "Maintenance _Repair". The icon is now
+        # PAINTED (a plaque), so only the title is button text.
+        super().__init__(title.replace("&", "&&"))
+        self._glyph_key = glyph_key
         self.setFixedHeight(46)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setProperty("selected", False)
         self._glow = GlowController(self, accent)
         self._ripple = RippleController(self)
+        self._accent = QColor(accent)
         self._accent2 = QColor(t["accent2"])
+        self._icon_font: QFont | None = None
         self.apply_theme(t)
 
     def apply_theme(self, t: dict):
         self.setStyleSheet(TH.nav_button_qss(t))
+        self._accent = QColor(t["accent"])
         self._accent2 = QColor(t["accent2"])
+        self._glyph_char, self._glyph_fluent = TH.glyph(self._glyph_key)
+        self._icon_font = TH.icon_font(16) if self._glyph_fluent else None
+        self._plaque_fill = QColor(self._accent)
+        self._plaque_fill.setAlphaF(0.12)
+        self._plaque_line = QColor(self._accent)
+        self._plaque_line.setAlphaF(0.30)
+        self._glyph_color_idle = QColor(t["text_soft"])
 
     def set_selected(self, on: bool):
         self.setProperty("selected", on)
@@ -513,9 +535,33 @@ class NavButton(QPushButton):
             self._ripple.trigger(e.position())
         super().mousePressEvent(e)
 
+    def _paint_plaque(self, p: QPainter):
+        selected = bool(self.property("selected"))
+        y = (self.height() - self._PLAQUE) / 2.0
+        box = QRectF(self._PLAQUE_X, y, self._PLAQUE, self._PLAQUE)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # brighter fill/glyph when selected — the plaque lights with the module
+        fill = QColor(self._accent)
+        fill.setAlphaF(0.20 if selected else 0.12)
+        line = QColor(self._accent)
+        line.setAlphaF(0.45 if selected else 0.30)
+        p.setPen(QPen(line, 1.0))
+        p.setBrush(fill)
+        p.drawRoundedRect(box, 9, 9)
+        # glyph
+        p.setPen(self._accent if selected else self._glyph_color_idle)
+        if self._icon_font is not None:
+            p.setFont(self._icon_font)
+        else:
+            f = QFont(self.font())
+            f.setPixelSize(15)
+            p.setFont(f)
+        p.drawText(box, Qt.AlignmentFlag.AlignCenter, self._glyph_char)
+
     def paintEvent(self, e):
         super().paintEvent(e)  # QSS background/text first
         p = QPainter(self)
+        self._paint_plaque(p)
         paint_bevel_frame(p, self.rect(), 13)
         paint_ripple_frame(p, self.rect(), 13, self._glow.color,
                            self._ripple.progress, self._ripple.origin)
@@ -529,19 +575,48 @@ class NavButton(QPushButton):
 # ============================================================
 #  GLASS CARD — one operation, painted glow, live re-skin
 # ============================================================
+def _derive_card_meta(item: dict) -> list[str]:
+    """The count/hint pills a card shows in its v7 meta footer — derived
+    from the item's own shape so the footer stays truthful without any
+    hand-authored metadata. A hub reports how many options it holds; a
+    selector reports its app count; the specialised launchers name their
+    action. Plain one-shot actions return [] (no footer, no chevron)."""
+    if item.get("hub"):
+        subs = item.get("items")
+        if not subs and item.get("groups"):
+            subs = [s for g in item["groups"] for s in g.get("items", [])]
+        n = len(subs or [])
+        return [f"{n} options" if n != 1 else "1 option"]
+    if item.get("apps"):
+        n = len(item["apps"])
+        return [f"{n} apps"]
+    if item.get("devhub"):
+        return ["Pick & deploy"]
+    if item.get("update_center"):
+        return ["Live scan"]
+    if item.get("startup_manager"):
+        return ["Audit & toggle"]
+    if item.get("wizard"):
+        return ["Guided setup"]
+    return []
+
+
 class GlassCard(QFrame):
     clicked = Signal()
 
-    _ICON_BASE_PX = 28
-    _ICON_GROW_PX = 3  # subtle hover "pop" — see _sync_icon_scale()
+    _ICON_BASE_PX = 22
+    _ICON_GROW_PX = 2   # subtle hover "pop" — see _sync_icon_scale()
+    _PLAQUE = 48        # icon plaque footprint
 
-    def __init__(self, item: dict, accent: str, t: dict):
+    def __init__(self, item: dict, accent: str, t: dict,
+                 featured: bool = False):
         super().__init__()
         self.item = item
         self._accent = accent
         self._danger = bool(item.get("danger"))
+        self._featured = featured
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(132)
+        self.setMinimumHeight(150 if featured else 138)
         self.setProperty("running", False)
 
         glow_color = t["err"] if self._danger else accent
@@ -558,24 +633,29 @@ class GlassCard(QFrame):
         self._press_anim.valueChanged.connect(self._on_press_frame)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
-        lay.setSpacing(14)
+        lay.setContentsMargins(18, 16, 20, 16)
+        lay.setSpacing(15)
 
-        self._icon = QLabel(item["icon"])
-        self._icon.setFixedWidth(40)
-        self._icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        # -- icon plaque (v7) — a Fluent glyph in an accent-tinted well ----
+        char, self._glyph_fluent = (
+            TH.glyph(item["glyph"]) if item.get("glyph")
+            else (item.get("icon", "•"), False))
+        self._icon = QLabel(char)
+        self._icon.setFixedSize(self._PLAQUE, self._PLAQUE)
+        self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Font is managed as a QFont object, not inline QSS: hover "pop" is
-        # a handful of setFont() calls per hover-in (one per distinct
-        # integer pixel size), never a per-frame setStyleSheet() rebuild —
-        # the exact anti-pattern the animations.py doctrine forbids.
-        self._icon_font = QFont()
+        # a handful of setFont() calls per hover-in (one per distinct integer
+        # pixel size), never a per-frame setStyleSheet() rebuild — the exact
+        # anti-pattern the animations.py doctrine forbids.
+        base_font = TH.icon_font(self._ICON_BASE_PX) if self._glyph_fluent else QFont()
+        self._icon_font = base_font if base_font is not None else QFont()
         self._icon_font.setPixelSize(self._ICON_BASE_PX)
         self._icon.setFont(self._icon_font)
         self._icon_px = self._ICON_BASE_PX
-        lay.addWidget(self._icon)
+        lay.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignTop)
 
         col = QVBoxLayout()
-        col.setSpacing(7)
+        col.setSpacing(6)
         head = QHBoxLayout()
         head.setSpacing(8)
         self._title = QLabel(item["title"])
@@ -585,29 +665,64 @@ class GlassCard(QFrame):
         self._badge: QLabel | None = None
         if item.get("note"):
             self._badge = QLabel(item["note"])
-            head.addWidget(self._badge)
-        head.addStretch()
+            head.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignTop)
+        # Drill-in chevron — shown only for cards that open a further screen
+        # (hubs / selectors), i.e. exactly the cards that have a meta footer.
+        self._meta_texts = _derive_card_meta(item)
+        self._chevron: QLabel | None = None
+        if self._meta_texts:
+            self._chevron = QLabel(TH.glyph("chevron")[0])
+            cf = TH.icon_font(15) if TH.glyph("chevron")[1] else QFont()
+            if cf is not None:
+                cf.setPixelSize(15)
+                self._chevron.setFont(cf)
+            head.addWidget(self._chevron, 0, Qt.AlignmentFlag.AlignVCenter)
         col.addLayout(head)
 
         self._desc = QLabel(item["desc"])
         self._desc.setWordWrap(True)
         col.addWidget(self._desc)
         col.addStretch()
+
+        # -- meta footer (v7) — count/hint pills fill the card with signal --
+        self._meta_pills: list[QLabel] = []
+        if self._meta_texts:
+            foot = QHBoxLayout()
+            foot.setSpacing(7)
+            for i, text in enumerate(self._meta_texts):
+                pill = QLabel(text)
+                self._meta_pills.append(pill)
+                foot.addWidget(pill)
+            foot.addStretch()
+            col.addLayout(foot)
+
         lay.addLayout(col, 1)
 
         self.apply_theme(t)
 
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
-        self.setStyleSheet(TH.card_qss(t, self._accent, self._danger))
-        # No font-size here: the icon's size is a managed QFont (see
-        # _sync_icon_scale) so the hover "pop" never needs a QSS rebuild.
-        self._icon.setStyleSheet("background: transparent; border: none;")
+        self.setStyleSheet(TH.card_qss(t, self._accent, self._danger, self._featured))
+        plaque_accent = t["err"] if self._danger else self._accent
+        self._icon.setStyleSheet(TH.icon_plaque_qss(t, plaque_accent, self._featured))
         self._title.setStyleSheet(TH.label_qss(t, "card"))
         self._desc.setStyleSheet(TH.label_qss(t, "desc"))
         if self._badge is not None:
             self._badge.setStyleSheet(TH.badge_qss(t))
-        self._glow.set_accent(t["err"] if self._danger else self._accent)
+        if self._chevron is not None:
+            self._chevron.setStyleSheet(TH.card_chevron_qss(t, self._accent))
+        for i, pill in enumerate(self._meta_pills):
+            # the lead pill on the featured card carries the accent tint
+            tint = plaque_accent if (self._featured and i == 0) else ""
+            pill.setStyleSheet(TH.card_meta_pill_qss(t, tint))
+        self._glow.set_accent(plaque_accent)
+        # painted-material state, read in paintEvent
+        self._bevel = TH.bevel_alphas(t)
+        self._feat_base = TH.to_qcolor(t["card_hi"])
+        self._feat_sheen = TH.to_qcolor(t["card_sheen"])
+        self._aur1 = QColor(t["accent"])
+        self._aur2 = QColor(t["accent2"])
+        self._aur3 = QColor(t["accent3"])
 
     # -- state ------------------------------------------------
     def set_running(self, on: bool):
@@ -669,11 +784,39 @@ class GlassCard(QFrame):
             self._icon_font.setPixelSize(grown)
             self._icon.setFont(self._icon_font)
 
+    def _paint_featured(self, p: QPainter):
+        """The hero card's fully-painted material: a squircle (continuous-
+        corner) glass surface on the top elevation tier, a hover-reactive
+        accent wash, and the signature Aurora lit edge. Only ever a hub card,
+        so no running/flash QSS state is lost by owning the background."""
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        path = squircle_path(self.rect().adjusted(1, 1, -1, -1), 20)
+        # frosted-glass fill: top sheen falling into the card_hi base
+        grad = QLinearGradient(self.rect().topLeft(), self.rect().bottomLeft())
+        grad.setColorAt(0.0, self._feat_sheen)
+        grad.setColorAt(0.16, self._feat_base)
+        grad.setColorAt(1.0, self._feat_base)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(grad)
+        p.drawPath(path)
+        # hover wash — reuses the already-running glow intensity, no new anim
+        if self._glow.intensity > 0.01:
+            wash = QColor(self._glow.color)
+            wash.setAlphaF(0.07 * self._glow.intensity)
+            p.setBrush(wash)
+            p.drawPath(path)
+        paint_aurora_edge(p, path, self._aur1, self._aur2, self._aur3,
+                          width=1.4, intensity=0.85)
+
     def paintEvent(self, e):
-        super().paintEvent(e)  # QSS glass background/border first
+        super().paintEvent(e)  # QSS glass background/border first (transparent if featured)
         self._sync_icon_scale()
         p = QPainter(self)
-        paint_bevel_frame(p, self.rect(), 16)
+        if self._featured:
+            self._paint_featured(p)
+        else:
+            paint_bevel_frame(p, self.rect(), 16, *self._bevel)
+            paint_top_sheen(p, self.rect(), 16, strength=0.55)
         if self._press_tint > 0.01:
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setPen(Qt.PenStyle.NoPen)
@@ -1238,6 +1381,166 @@ class StatusDot(QLabel):
         p.setFont(self._font)
         p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
         p.end()
+
+
+# ============================================================
+#  ACTIVITY DRAWER — auto-collapsing live-output console (v7)
+# ============================================================
+class ActivityDrawer(QWidget):
+    """The v7 replacement for the always-open 170px console block — the
+    single biggest spatial win of the redesign.
+
+    A slim 44px 'rail' (status dot · LIVE OUTPUT · state pill · Stop · a
+    pin/expand chevron) is always visible; the heavy console + shimmer live
+    in a BODY that is collapsed to zero height while idle and animates open
+    the instant a task runs (set_running(True)), then animates shut again
+    when it finishes — handing ~140px of vertical canvas back to the card
+    grid whenever nothing is executing. The chevron lets the user PIN it
+    open across tasks.
+
+    Doctrine-compliant: the open/close motion is a QPropertyAnimation on the
+    body's maximumHeight — no QGraphicsEffect, no per-frame QSS. main.py
+    reaches the console / state pill / stop button / shimmer / status dot as
+    plain attributes, so the existing task pipeline wires to them unchanged."""
+
+    BODY_H = 186   # console (172) + spacing (8) + shimmer (6)
+    ANIM_MS = 200
+
+    def __init__(self, t: dict, on_stop=None, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._pinned = False
+        self._active = False   # a task is currently running
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        # -- always-visible rail ------------------------------
+        self._rail = QFrame()
+        self._rail.setObjectName("activityRail")
+        self._rail.setFixedHeight(44)
+        rail = QHBoxLayout(self._rail)
+        rail.setContentsMargins(14, 0, 8, 0)
+        rail.setSpacing(10)
+
+        self.status_dot = StatusDot("●")
+        self.status_dot.setFixedWidth(12)
+        rail.addWidget(self.status_dot)
+        self.status_text = QLabel("System Ready")
+        rail.addWidget(self.status_text)
+        rail.addStretch()
+
+        self._console_label = QLabel("LIVE OUTPUT")
+        rail.addWidget(self._console_label)
+        self.state_pill = StatePill(t)
+        rail.addWidget(self.state_pill)
+
+        self.stop_btn = QPushButton("■  Stop Task")
+        self.stop_btn.setFixedSize(112, 26)
+        self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stop_btn.setToolTip(
+            "Hard-stop the running task (kills the whole process tree)")
+        if on_stop is not None:
+            self.stop_btn.clicked.connect(on_stop)
+        self.stop_btn.hide()
+        rail.addWidget(self.stop_btn)
+
+        self._toggle = QPushButton(TH.glyph("chevron")[0])
+        self._toggle.setCheckable(True)
+        self._toggle.setFixedSize(28, 28)
+        self._toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle.setToolTip("Pin the live output open")
+        tf = TH.icon_font(13) if TH.glyph("chevron")[1] else None
+        if tf is not None:
+            self._toggle.setFont(tf)
+        self._toggle.toggled.connect(self._on_toggle)
+        rail.addWidget(self._toggle)
+
+        self._grip = QSizeGrip(self._rail)
+        self._grip.setFixedSize(14, 14)
+        rail.addWidget(self._grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+        outer.addWidget(self._rail)
+
+        # -- collapsible body ---------------------------------
+        self._body = QWidget()
+        body = QVBoxLayout(self._body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(8)
+        self.console = LiveConsole(t)
+        self.console.setFixedHeight(172)
+        body.addWidget(self.console)
+        self.shimmer = ShimmerBar()
+        body.addWidget(self.shimmer)
+        outer.addWidget(self._body)
+
+        # start collapsed (idle) — the whole point of the drawer
+        self._body.setMaximumHeight(0)
+        self._body.setVisible(False)
+
+        self._anim = QPropertyAnimation(self._body, b"maximumHeight", self)
+        self._anim.setDuration(self.ANIM_MS)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.finished.connect(self._on_anim_done)
+
+        self.apply_theme(t)
+
+    # -- theming ----------------------------------------------
+    def apply_theme(self, t: dict):
+        self._rail.setStyleSheet(TH.activity_rail_qss(t))
+        self._console_label.setStyleSheet(TH.console_header_qss(t))
+        self.status_text.setStyleSheet(TH.label_qss(t, "status"))
+        self.state_pill.apply_theme(t)
+        self.stop_btn.setStyleSheet(TH.stop_button_qss(t))
+        self._toggle.setStyleSheet(TH.activity_toggle_qss(t))
+        self.console.apply_theme(t)
+        self.shimmer.set_theme(t)
+
+    # -- open / close animation -------------------------------
+    def _animate_to(self, target: int):
+        self._anim.stop()
+        if target > 0:
+            self._body.setVisible(True)
+        self._anim.setStartValue(self._body.maximumHeight())
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def _on_anim_done(self):
+        # fully hide the body once closed so the console stops painting
+        if self._body.maximumHeight() == 0:
+            self._body.setVisible(False)
+
+    def _open(self):
+        self._animate_to(self.BODY_H)
+
+    def _close(self):
+        self._animate_to(0)
+
+    def _on_toggle(self, checked: bool):
+        self._pinned = checked
+        self._toggle.setToolTip(
+            "Unpin the live output" if checked else "Pin the live output open")
+        if checked:
+            self._open()
+        elif not self._active:
+            self._close()
+
+    # -- public API (called by main.py's task pipeline) --------
+    HOLD_MS = 1500   # keep the final verdict visible before auto-collapsing
+
+    def set_running(self, running: bool):
+        """A task started (True) → expand immediately; finished (False) →
+        collapse after a brief hold so the final verdict/output stays
+        readable, unless the user has pinned the drawer open."""
+        self._active = running
+        if running:
+            self._open()
+        else:
+            QTimer.singleShot(self.HOLD_MS, self._collapse_if_idle)
+
+    def _collapse_if_idle(self):
+        # a new task may have started (or the user pinned it) during the hold
+        if not self._active and not self._pinned:
+            self._close()
 
 
 # ============================================================

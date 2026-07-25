@@ -183,12 +183,13 @@ CATEGORIES = [
     {
         "id": "software",
         "icon": "📦",
+        "glyph": "package",
         "title": "Software Management",
         "tagline": "Deploy apps, runtimes and audit startup programs",
         "accent": "#58a6ff",
         "items": [
             # -- HUB 1: everyday consumer/productivity apps ---------------
-            {"icon": "🧰", "title": "Browsers & Daily Apps",
+            {"icon": "🧰", "glyph": "globe", "title": "Browsers & Daily Apps",
              "desc": "Browsers, chat, media and productivity essentials — pick a pack below.",
              "hub": True,
              "items": [
@@ -266,7 +267,7 @@ CATEGORIES = [
                   ]},
              ]},
             # -- HUB 2: developer tooling (single flow -> direct passthrough) --
-            {"icon": "🎓", "title": "Developer & University Hub",
+            {"icon": "🎓", "glyph": "code", "title": "Developer & University Hub",
              "desc": "VS Code, Cursor, Python, Java, Git, Node.js and more — pick exactly what you need.",
              "hub": True,
              "items": [
@@ -275,7 +276,7 @@ CATEGORIES = [
                   "task": "InstallDevHub", "timeout": 3600, "devhub": True},
              ]},
             # -- HUB 3: gaming (single flow -> direct passthrough) --------
-            {"icon": "🎮", "title": "Gaming & Launchers",
+            {"icon": "🎮", "glyph": "game", "title": "Gaming & Launchers",
              "desc": "Steam, Epic, Rockstar and BlueStacks — matching GPU software added automatically.",
              "hub": True,
              "items": [
@@ -308,7 +309,7 @@ CATEGORIES = [
             # side. `groups` is the grouped analogue of a hub's flat `items`;
             # menu_structure's hub_items() flattens it for the command
             # palette / counters and main.py's hub navigation.
-            {"icon": "🛠️", "title": "System Tools & Utilities",
+            {"icon": "🛠️", "glyph": "tools", "title": "System Tools & Utilities",
              "desc": "Hardware diagnostics, environment repair, startup optimization, live update audits, and Edge/OneDrive removal & restore.",
              "hub": True,
              "groups": [
@@ -368,6 +369,7 @@ CATEGORIES = [
     {
         "id": "optimization",
         "icon": "⚡",
+        "glyph": "bolt",
         "title": "System Optimization",
         "tagline": "Smart tweaks, performance and gaming optimizations",
         "accent": "#e3b341",
@@ -401,6 +403,7 @@ CATEGORIES = [
     {
         "id": "maintenance",
         "icon": "🔧",
+        "glyph": "repair",
         "title": "Maintenance & Repair",
         "tagline": "System file repair, cache cleanup and disk optimization",
         "accent": "#4dd0b1",
@@ -434,6 +437,7 @@ CATEGORIES = [
     {
         "id": "privacy",
         "icon": "🛡️",
+        "glyph": "shield",
         "title": "Privacy & Security",
         "tagline": "Debloat, kill telemetry and stop data collection",
         "accent": "#ec8fa3",
@@ -461,6 +465,7 @@ CATEGORIES = [
     {
         "id": "information",
         "icon": "📊",
+        "glyph": "info",
         "title": "Information & Utilities",
         "tagline": "System insight, driver tools and the operation log",
         "accent": "#8ab4f8",
@@ -488,6 +493,7 @@ CATEGORIES = [
     {
         "id": "safety",
         "icon": "🛟",
+        "glyph": "restore",
         "title": "Safety & Recovery",
         "tagline": "Undo tweaks, restore services and recover backups",
         "accent": "#7ec699",

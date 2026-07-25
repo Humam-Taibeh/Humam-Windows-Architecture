@@ -28,6 +28,7 @@ import ctypes
 import sys
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QColor, QFont, QFontDatabase
 
 # ============================================================
 #  COLOR UTILITIES
@@ -41,6 +42,23 @@ def alpha(color: str, opacity: float) -> str:
     """'#00d4ff', 0.25 -> 'rgba(0, 212, 255, 0.25)' — for QSS."""
     r, g, b = _hex_to_rgb(color)
     return f"rgba({r}, {g}, {b}, {opacity:.3f})"
+
+
+def to_qcolor(value: str) -> QColor:
+    """Parse a token string ('#rrggbb' or 'rgba(r, g, b, a)') into a QColor,
+    so painted widgets (the featured card's squircle fill, for example) can
+    render from the SAME tokens the QSS surfaces use — no second, drifting
+    copy of a color hardcoded in a widget."""
+    s = value.strip()
+    if s.startswith("rgba") or s.startswith("rgb"):
+        inner = s[s.index("(") + 1: s.index(")")]
+        parts = [p.strip() for p in inner.split(",")]
+        r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
+        c = QColor(r, g, b)
+        if len(parts) > 3:
+            c.setAlphaF(float(parts[3]))
+        return c
+    return QColor(s)
 
 
 def glass_fill(t: dict, base: str, sheen_stop: float = 0.13) -> str:
@@ -67,41 +85,171 @@ def brand_gradient(t: dict, a1: float, a2: float | None = None) -> str:
             f"stop:0 {alpha(t['accent'], a1)}, stop:1 {alpha(t['accent2'], a2)})")
 
 
+def aurora_gradient(t: dict, a1: float, a2: float | None = None,
+                    a3: float | None = None) -> str:
+    """The v7 signature: the full Aurora tri-tone sweep, indigo → violet →
+    magenta (accent → accent2 → accent3). This is the *bolder* successor to
+    brand_gradient's two-stop pair — reserved for the app's most important
+    moments (the featured hero card's fill/edge, the primary deploy CTA),
+    where the extra magenta stop makes the surface read as a lit aurora
+    band rather than a flat tint. Everyday interactive surfaces keep the
+    calmer two-tone brand_gradient so the tri-tone stays a signal, not
+    wallpaper."""
+    if a2 is None:
+        a2 = a1
+    if a3 is None:
+        a3 = a2
+    return (f"qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            f"stop:0 {alpha(t['accent'], a1)}, "
+            f"stop:0.5 {alpha(t['accent2'], a2)}, "
+            f"stop:1 {alpha(t['accent3'], a3)})")
+
+
+def bevel_alphas(t: dict) -> tuple[float, float]:
+    """(light_alpha, dark_alpha) for animations.paint_bevel_frame, tuned per
+    mode. Qt QSS has no box-shadow, so cards can't cast a real drop shadow;
+    in LIGHT mode a white card on porcelain therefore leans on a deeper
+    bottom-right edge (dark_alpha up) to read as a contact shadow lifting it
+    off the page — the painted stand-in for the shadow QSS can't give. Dark
+    mode keeps the original balanced glass bevel."""
+    if t["name"] == "light":
+        return (0.10, 0.16)
+    return (0.14, 0.20)
+
+
 # ============================================================
-#  TOKENS — GRAPHITE DARK (v6.2)
+#  ICON SYSTEM — monochrome Fluent line-icons (v7)
 # ============================================================
-# Design intent: a deep charcoal/slate register (Linear / GitHub-dark /
-# VS Code territory) — near-black neutral surfaces, elevation expressed
-# through *lightness*, never through saturated color. The old bright cyan
-# (#4cc2ff) accent read as neon on long sessions; the brand pair is now a
-# calm azure + soft violet, reserved for interactive states.
+# The v7 iconography is a single monochrome line-icon family with ZERO new
+# asset pipeline: Segoe Fluent Icons (Windows 11) / Segoe MDL2 Assets
+# (Windows 10) — the same OS-native icon font the title-bar caption buttons
+# already use (see widgets.TitleBar). Every icon is one glyph rendered in
+# an accent-tinted plaque; because it's a font, it inherits the theme color
+# for free and re-skins live.
+#
+# GLYPHS maps a semantic name -> (fluent_codepoint, emoji_fallback). The
+# codepoint is used whenever the OS font is present; the emoji is used only
+# when it is NOT (non-Windows dev, or a stripped Win10 without the font),
+# so nothing ever renders blank. Menu items opt in by adding a `glyph` key
+# (see menu_structure.py); an item WITHOUT one still renders its plain
+# emoji `icon` inside the same plaque, so the system is incrementally
+# adoptable and never regresses.
+_ICON_FONT_FAMILY: str | None | bool = False   # False = "not resolved yet"
+
+
+def _resolve_icon_family() -> str | None:
+    """The best available OS icon font family, resolved once and cached.
+    None on non-Windows / when neither font is installed."""
+    global _ICON_FONT_FAMILY
+    if _ICON_FONT_FAMILY is not False:
+        return _ICON_FONT_FAMILY  # type: ignore[return-value]
+    family: str | None = None
+    if sys.platform == "win32":
+        installed = set(QFontDatabase.families())
+        for candidate in ("Segoe Fluent Icons", "Segoe MDL2 Assets"):
+            if candidate in installed:
+                family = candidate
+                break
+    _ICON_FONT_FAMILY = family
+    return family
+
+
+def icon_font(px: int = 18, weight: QFont.Weight = QFont.Weight.Normal) -> QFont | None:
+    """A QFont for the OS icon family at `px` pixels, or None when no icon
+    font is available (the caller then renders the emoji fallback in the
+    UI's default font). Sized in *pixels* so it stays crisp under fractional
+    DPI, exactly like the caption glyphs."""
+    family = _resolve_icon_family()
+    if family is None:
+        return None
+    font = QFont(family)
+    font.setPixelSize(px)
+    font.setWeight(weight)
+    return font
+
+
+def has_icon_font() -> bool:
+    return _resolve_icon_family() is not None
+
+
+# Semantic name -> (Segoe Fluent / MDL2 codepoint, emoji fallback).
+# Codepoints are drawn from the long-stable Segoe MDL2 Assets set (all also
+# present in Segoe Fluent Icons) — the same well-known PUA glyphs Microsoft
+# documents for custom app chrome.
+GLYPHS: dict[str, tuple[str, str]] = {
+    # --- navigation / chrome ---
+    "home":         ("", "⌂"),   # Home
+    "chevron":      ("", "›"),   # ChevronRight
+    "back":         ("", "‹"),   # ChevronLeft
+    # --- top-level modules (sidebar) ---
+    "package":      ("", "📦"),  # Software Management  (Package)
+    "bolt":         ("", "⚡"),  # System Optimization  (LightningBolt)
+    "repair":       ("", "🔧"),  # Maintenance & Repair (Repair)
+    "shield":       ("", "🛡️"),  # Privacy & Security   (Lock)
+    "info":         ("", "📊"),  # Information & Utils   (Info)
+    "restore":      ("", "🛟"),  # Safety & Recovery    (Undo)
+    # --- software-management hub cards ---
+    "globe":        ("", "🧰"),  # Browsers & Daily Apps (Globe)
+    "code":         ("", "🎓"),  # Developer & Uni Hub   (Code)
+    "game":         ("", "🎮"),  # Gaming & Launchers    (Game)
+    "tools":        ("", "🛠️"),  # System Tools & Utils  (Setting)
+}
+
+
+def glyph(name: str) -> tuple[str, str]:
+    """(display_char, is_fluent-safe) — returns the Fluent codepoint when the
+    OS font is available, else the emoji fallback. The second tuple element
+    tells the caller whether to render it in icon_font() (True) or the
+    default UI font (False, for the emoji)."""
+    fluent, emoji = GLYPHS.get(name, ("", ""))
+    if fluent and has_icon_font():
+        return (fluent, True)  # type: ignore[return-value]
+    return (emoji, False)      # type: ignore[return-value]
+
+
+# ============================================================
+#  TOKENS — OBSIDIAN DARK (v7 "Aurora")
+# ============================================================
+# Design intent: a deeper obsidian register than v6.2's charcoal — the
+# canvas floor drops toward near-black (#070809) so elevated surfaces read
+# as genuinely floating, and a NEW top elevation tier (`card_hi`) lets the
+# featured/hero bento card sit a visible step above the standard cards.
+# The v7 brand is the signature "Aurora" tri-tone — indigo → violet →
+# magenta — used deliberately (painted, saturated) on hero edges, the
+# selected nav rail and primary CTAs, while every neutral surface stays
+# calm obsidian. The primary interactive `accent` is indigo-forward so
+# body UI (borders, focus, hovers) never gets loud.
 _DARK = {
     "name":        "dark",
     "font":        "Segoe UI",
 
-    # surfaces — charcoal base, cards one perceptual step lighter
-    "bg":          "rgba(15, 17, 21, 0.97)",
-    "bg_solid":    "#0f1115",
-    # shell gradient stops — a faint top-to-bottom deepening (never a flat
-    # single tone) so the app reads as one lit surface, not a cutout.
-    "bg_grad_top":    "#161922",
-    "bg_grad_bottom": "#0a0b0e",
-    "overlay":     "rgba(9, 11, 15, 0.50)",    # blur-backing layer behind card grids
+    # surfaces — obsidian floor, cards stepped up through *lightness*
+    "bg":          "rgba(13, 15, 19, 0.97)",
+    "bg_solid":    "#0d0f13",
+    # shell gradient stops — a deeper top-to-bottom fall than v6.2 so the
+    # app reads as one lit obsidian surface, not a flat cutout.
+    "bg_grad_top":    "#12151d",
+    "bg_grad_bottom": "#070809",
+    "overlay":     "rgba(7, 8, 11, 0.52)",     # blur-backing layer behind card grids
     "panel":       "rgba(255, 255, 255, 0.032)",
     "panel_line":  "rgba(255, 255, 255, 0.065)",
     "card":        "rgba(24, 27, 34, 0.62)",
-    "card_hover":  "rgba(88, 166, 255, 0.06)",
+    # NEW hero/featured elevation tier — one perceptual step above `card`,
+    # so a featured bento card visibly floats above its siblings.
+    "card_hi":     "rgba(33, 37, 47, 0.74)",
+    "card_hover":  "rgba(124, 147, 255, 0.06)",
     "card_line":   "rgba(255, 255, 255, 0.085)",
-    "card_sheen":  "rgba(255, 255, 255, 0.04)",   # top stop of the glass gradient
+    "card_sheen":  "rgba(255, 255, 255, 0.045)",  # top stop of the glass gradient
     # Dialogs and toasts sit OVER dense text (card grids, the console):
     # fully/near-fully opaque, or the content underneath bleeds through
     # and reads as overlapping text.
-    "dialog_bg":   "rgba(17, 19, 24, 1.0)",
+    "dialog_bg":   "rgba(16, 18, 23, 1.0)",
     "toast_bg":    "rgba(22, 25, 31, 0.99)",
 
-    # brand — calm azure + soft violet (interactive states only)
-    "accent":      "#58a6ff",
-    "accent2":     "#a78bfa",
+    # brand — Aurora tri-tone: indigo (primary) → violet → magenta
+    "accent":      "#7c93ff",
+    "accent2":     "#9e7bff",
+    "accent3":     "#e27bff",
 
     # text (contrast ≥ WCAG AA on the surfaces above; four deliberate
     # steps so hierarchy comes from tone, not from size alone).
@@ -122,7 +270,7 @@ _DARK = {
 
     # chrome
     "scroll":      "rgba(255, 255, 255, 0.13)",
-    "scroll_hov":  "rgba(88, 166, 255, 0.50)",
+    "scroll_hov":  "rgba(124, 147, 255, 0.50)",
     "shimmer_track": (255, 255, 255, 12),      # QColor args for painted widgets
     "titlebar_hover": "rgba(255, 255, 255, 0.06)",
     "close_hover":    "#c42b1c",               # native Win11 caption red
@@ -132,26 +280,32 @@ _DARK = {
 }
 
 # ============================================================
-#  TOKENS — PORCELAIN LIGHT (v6.2)
+#  TOKENS — PORCELAIN LIGHT (v7 "Aurora")
 # ============================================================
-# Design intent: comfortable, not blinding — a cool porcelain gray canvas
-# with soft-white raised surfaces. Pure #ffffff appears only on cards
-# (and translucently), never as the page itself, so the mode reads like
-# paper under studio light instead of a lightbox.
+# Design intent: comfortable studio-white, not blinding — a warm porcelain
+# canvas (nudged ~2% off cool-gray toward paper-white) with soft-white
+# raised surfaces. Pure #ffffff appears only on cards (and translucently),
+# never as the page itself, so the mode reads like paper under studio
+# light instead of a lightbox. The Aurora sweep is restated here in
+# deeper, ink-saturated stops so it reads BOLD on paper, not pastel.
 _LIGHT = {
     "name":        "light",
     "font":        "Segoe UI",
 
-    "bg":          "rgba(236, 239, 244, 0.98)",
-    "bg_solid":    "#eceff4",
-    # shell gradient stops — a whisper of depth instead of flat porcelain.
-    "bg_grad_top":    "#f4f6fa",
-    "bg_grad_bottom": "#e2e6ed",
-    "overlay":     "rgba(255, 255, 255, 0.40)",
+    "bg":          "rgba(238, 241, 246, 0.98)",
+    "bg_solid":    "#eef1f6",
+    # shell gradient stops — a whisper of depth, warmed toward studio-white.
+    "bg_grad_top":    "#f6f8fc",
+    "bg_grad_bottom": "#e4e8ef",
+    "overlay":     "rgba(255, 255, 255, 0.42)",
     "panel":       "rgba(255, 255, 255, 0.52)",
     "panel_line":  "rgba(22, 28, 38, 0.085)",
     "card":        "rgba(255, 255, 255, 0.70)",
-    "card_hover":  "rgba(0, 103, 192, 0.06)",
+    # NEW hero/featured elevation tier — brighter, near-opaque white so the
+    # featured bento card lifts off the porcelain even without a lightness
+    # step to lean on (the light-mode counterpart to dark's `card_hi`).
+    "card_hi":     "rgba(255, 255, 255, 0.88)",
+    "card_hover":  "rgba(74, 92, 224, 0.06)",
     # One notch up from v6.2's 0.11: white-on-porcelain cards need the
     # hairline to do all the separating (no dark-mode lightness step to
     # help), and at 0.11 card edges dissolved on bright panels.
@@ -161,9 +315,10 @@ _LIGHT = {
     "dialog_bg":   "rgba(247, 249, 252, 1.0)",
     "toast_bg":    "rgba(252, 253, 255, 0.99)",
 
-    # brand — Fluent blue + muted violet
-    "accent":      "#0067c0",
-    "accent2":     "#6f5fd8",
+    # brand — Aurora tri-tone, ink-saturated for paper: indigo → violet → magenta
+    "accent":      "#4a5ce0",
+    "accent2":     "#7a4fd0",
+    "accent3":     "#c24fd0",
 
     # Both lower steps run one shade deeper than v6.2 (#5d6879 / #8d97a8):
     # body/desc text lives on text_muted and captions on text_faint, and on
@@ -182,7 +337,7 @@ _LIGHT = {
     "danger_line": "rgba(207, 34, 46, 0.35)",
 
     "scroll":      "rgba(22, 28, 38, 0.16)",
-    "scroll_hov":  "rgba(0, 103, 192, 0.55)",
+    "scroll_hov":  "rgba(74, 92, 224, 0.55)",
     "shimmer_track": (22, 28, 38, 16),
     "titlebar_hover": "rgba(22, 28, 38, 0.06)",
     "close_hover":    "#c42b1c",               # native Win11 caption red
@@ -281,7 +436,9 @@ def nav_button_qss(t: dict) -> str:
             border-radius: 13px;
             color: {t['text_soft']};
             font-size: 13px; font-weight: 500;
-            text-align: left; padding-left: 18px;
+            /* padding clears the painted icon plaque (12px inset + 30px
+               plaque + gap) — see widgets.NavButton.paintEvent */
+            text-align: left; padding-left: 54px;
         }}
         QPushButton:hover {{
             background-color: {t['card_hover']};
@@ -297,7 +454,16 @@ def nav_button_qss(t: dict) -> str:
     """
 
 
-def card_qss(t: dict, accent: str, danger: bool = False) -> str:
+def card_qss(t: dict, accent: str, danger: bool = False,
+             featured: bool = False) -> str:
+    # The featured (hero) card paints its OWN squircle background, Aurora lit
+    # edge and hover tint (widgets.GlassCard._paint_featured). QSS must
+    # therefore draw NOTHING in every state — a rounded-rect fill would peek
+    # out past the squircle's continuous corners. It's only ever a hub card
+    # (set in main.CategoryPage), which never enters the running/flash
+    # states, so losing those QSS rules here costs nothing.
+    if featured:
+        return "GlassCard { background: transparent; border: none; }"
     line = t["danger_line"] if danger else t["card_line"]
     hover_line = alpha(t["err"], 0.55) if danger else alpha(accent, 0.55)
     # Frosted-glass base: a subtle top sheen via qlineargradient (QSS-native,
@@ -327,6 +493,51 @@ def card_qss(t: dict, accent: str, danger: bool = False) -> str:
             border: 1px solid {alpha(t['err'], 0.85)};
         }}
     """
+
+
+def icon_plaque_qss(t: dict, accent: str, featured: bool = False) -> str:
+    """The v7 card icon container — a rounded, accent-tinted plaque holding
+    one monochrome Fluent glyph (or its emoji fallback). This is the single
+    biggest 'premium app' cue: instead of a bare emoji floating in the card,
+    every icon sits in a consistent, color-coordinated well. The featured
+    (hero) card gets a slightly stronger tint + the accent as the glyph
+    color so it reads a step brighter than its siblings."""
+    fill = alpha(accent, 0.16 if featured else 0.10)
+    line = alpha(accent, 0.42 if featured else 0.26)
+    glyph_color = accent if featured else t["text_soft"]
+    return f"""
+        QLabel {{
+            background: {fill};
+            border: 1px solid {line};
+            border-radius: 13px;
+            color: {glyph_color};
+        }}
+    """
+
+
+def card_meta_pill_qss(t: dict, accent: str = "") -> str:
+    """A small count/hint pill in a card's meta footer row ('14 apps',
+    'Office', 'Runtimes'). Neutral card-chrome by default; pass an accent to
+    tint it (used for the featured card's lead pill)."""
+    if accent:
+        return f"""
+            color: {accent}; font-size: 10px; font-weight: 700;
+            background: {alpha(accent, 0.12)}; border: 1px solid {alpha(accent, 0.32)};
+            border-radius: 8px; padding: 2px 9px; letter-spacing: 0.5px;
+        """
+    return f"""
+        color: {t['text_muted']}; font-size: 10px; font-weight: 600;
+        background: {t['panel']}; border: 1px solid {t['panel_line']};
+        border-radius: 8px; padding: 2px 9px; letter-spacing: 0.5px;
+    """
+
+
+def card_chevron_qss(t: dict, accent: str) -> str:
+    """The trailing '›' drill-in affordance on a hub/action card. Muted at
+    rest; the card's own hover glow does the lighting, so this stays a quiet
+    directional cue rather than a second competing accent."""
+    return (f"color: {t['text_faint']}; font-size: 18px; font-weight: 400;"
+            "background: transparent; border: none;")
 
 
 def nav_pill_qss(t: dict) -> str:
@@ -573,6 +784,36 @@ def console_qss(t: dict) -> str:
 def console_header_qss(t: dict) -> str:
     return (f"color: {t['text_faint']}; font-size: 10px; font-weight: 700;"
             "background: transparent; border: none; letter-spacing: 2px;")
+
+
+def activity_rail_qss(t: dict) -> str:
+    """The always-visible header rail of the collapsing Activity drawer
+    (widgets.ActivityDrawer). A slim frosted bar carrying the status dot,
+    'LIVE OUTPUT' label, the execution-state pill and the expand chevron —
+    when the drawer is collapsed this 40px rail is ALL the console footprint
+    costs, handing ~140px of vertical canvas back to the card grid."""
+    return f"""
+        QFrame#activityRail {{
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']};
+            border-radius: 12px;
+        }}
+    """
+
+
+def activity_toggle_qss(t: dict) -> str:
+    """The chevron button that expands / pins the Activity drawer."""
+    return f"""
+        QPushButton {{
+            background: transparent; border: none; border-radius: 8px;
+            color: {t['text_faint']}; font-size: 13px; font-weight: 700;
+        }}
+        QPushButton:hover {{
+            background: {t['card_hover']}; color: {t['text']};
+        }}
+        QPushButton:pressed {{ background: {alpha(t['accent'], 0.16)}; }}
+        QPushButton:checked {{ color: {t['accent']}; }}
+    """
 
 
 def stop_button_qss(t: dict) -> str:
@@ -922,22 +1163,27 @@ def dialog_go_qss(t: dict, accent: str) -> str:
 
 
 # -- label roles ---------------------------------------------
-# v6.2 typographic scale: one step more air across the board — reading
-# sizes (body/desc/tagline) moved off the 11px floor, which read as
-# "cramped and cheap" at typical laptop DPI.
+# v7 typographic scale: the v6.2 ramp was flat in the middle — card(14) /
+# body(13) / desc(12) sat nearly indistinguishable, so cards had no clear
+# focal point. v7 WIDENS that middle: the card TITLE jumps to 16/650 to
+# lead unmistakably, while `desc` lifts to 13px on the brighter `text_soft`
+# so the title-vs-description gap now reads in BOTH size and tone (hierarchy
+# from contrast, per the app's standing philosophy — just tuned harder).
+# A new `meta` role carries the card footer's count pills / hints.
 _LABEL_ROLES = {
-    "hero":     ("32px", "650", "text",       "letter-spacing: 6px;"),
-    "title":    ("20px", "650", "text",       ""),
+    "hero":     ("34px", "700", "text",       "letter-spacing: 6px;"),
+    "title":    ("22px", "680", "text",       ""),
     "version":  ("11px", "500", "text_faint", ""),
-    "card":     ("14px", "600", "text",       ""),
+    "card":     ("16px", "650", "text",       ""),
     "body":     ("13px", "400", "text_muted", ""),
-    "desc":     ("12px", "400", "text_muted", ""),
+    "desc":     ("13px", "400", "text_soft",  ""),
     "tagline":  ("12px", "400", "text_muted", ""),
     "status":   ("11px", "500", "text_muted", ""),
     "faint":    ("12px", "400", "text_faint", ""),
     "section":  ("10px", "700", "text_faint", "letter-spacing: 4px;"),
     "brand":    ("11px", "600", "text_muted", "letter-spacing: 2px;"),
     "value":    ("16px", "650", "text",       ""),
+    "meta":     ("11px", "600", "text_faint", "letter-spacing: 0.5px;"),
     "caption":  ("10px", "500", "text_faint", "letter-spacing: 1px;"),
 }
 

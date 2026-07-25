@@ -215,6 +215,84 @@ def paint_bevel_frame(painter: QPainter, rect, radius: int,
 
 
 # ============================================================
+#  v7 MATERIAL — squircle corners, top sheen, Aurora lit edge
+# ============================================================
+def squircle_path(rect, radius: float, smoothing: float = 0.55) -> QPainterPath:
+    """A continuous-corner ("squircle") rounded-rect path — the Apple-style
+    super-ellipse Qt's own `drawRoundedRect` (plain circular arcs) can't
+    produce. Each corner is a single cubic Bézier whose transition spreads
+    WIDER along the edge than a circular arc (d > radius), so curvature eases
+    in and out of the straight edges instead of meeting them abruptly. Used
+    only on the featured/hero bento card, where the softer corner is worth
+    the (still microsecond) extra path cost; standard cards keep the cheaper
+    QSS radius."""
+    rf = QRectF(rect)
+    d = min(float(radius) * (1.0 + smoothing),
+            min(rf.width(), rf.height()) / 2.0)
+    h = d * 0.45   # Bézier handle length — < d keeps the corner continuous
+    x0, y0, x1, y1 = rf.left(), rf.top(), rf.right(), rf.bottom()
+    path = QPainterPath()
+    path.moveTo(x0 + d, y0)
+    path.lineTo(x1 - d, y0)
+    path.cubicTo(x1 - h, y0, x1, y0 + h, x1, y0 + d)
+    path.lineTo(x1, y1 - d)
+    path.cubicTo(x1, y1 - h, x1 - h, y1, x1 - d, y1)
+    path.lineTo(x0 + d, y1)
+    path.cubicTo(x0 + h, y1, x0, y1 - h, x0, y1 - d)
+    path.lineTo(x0, y0 + d)
+    path.cubicTo(x0, y0 + h, x0 + h, y0, x0 + d, y0)
+    path.closeSubpath()
+    return path
+
+
+def paint_top_sheen(painter: QPainter, rect, radius: int, strength: float = 1.0):
+    """A crisp 1px highlight hugging the TOP edge of a surface, fading to
+    nothing within a few pixels — the 'lit from above' tell that separates a
+    premium material from a flat translucent panel. A perimeter stroke whose
+    pen brush is a short vertical gradient (bright white at the very top,
+    transparent just below, PadSpread keeping the sides/bottom clear), so
+    only the top edge lights up. Microseconds, no offscreen buffer."""
+    if strength <= 0.01:
+        return
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    inner = QRectF(rect).adjusted(0.75, 0.75, -0.75, -0.75)
+    grad = QLinearGradient(inner.left(), inner.top(),
+                           inner.left(), inner.top() + 3.0)
+    hi = QColor(255, 255, 255, int(150 * strength))
+    lo = QColor(255, 255, 255, 0)
+    grad.setColorAt(0.0, hi)
+    grad.setColorAt(1.0, lo)
+    painter.setPen(QPen(QBrush(grad), 1.0))
+    painter.drawRoundedRect(inner, radius, radius)
+    painter.restore()
+
+
+def paint_aurora_edge(painter: QPainter, path: QPainterPath,
+                      c1: QColor, c2: QColor, c3: QColor,
+                      width: float = 1.4, intensity: float = 0.9):
+    """Stroke a path (typically a squircle_path) with the signature Aurora
+    tri-tone sweep — indigo → violet → magenta running diagonally — for the
+    featured card's lit edge and any 'this is the important surface' accent.
+    One gradient-pen stroke; the caller supplies the already-themed QColors."""
+    if intensity <= 0.01:
+        return
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    br = path.boundingRect()
+    grad = QLinearGradient(br.topLeft(), br.bottomRight())
+    for stop, col in ((0.0, c1), (0.5, c2), (1.0, c3)):
+        c = QColor(col)
+        c.setAlphaF(intensity)
+        grad.setColorAt(stop, c)
+    painter.setPen(QPen(QBrush(grad), width))
+    painter.drawPath(path)
+    painter.restore()
+
+
+# ============================================================
 #  RIPPLE — one-shot expanding click feedback, effect-free
 # ============================================================
 class RippleController(QObject):
