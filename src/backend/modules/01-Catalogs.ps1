@@ -74,12 +74,14 @@ $Apps_Tools = @(
 # default config, giving up the configuration.xml control the ODT wizard
 # (InstallOfficeODT task, 10-Office.ps1's Invoke-GuiOfficeODTInstall,
 # widgets.OfficeWizardDialog) exists specifically to preserve - so Office
-# itself is NOT in this catalog. Teams and OneDrive DO ship as real
-# standalone winget packages and stay on the ordinary Smart-Deploy path.
-$Apps_OfficeCompanions = @(
-    @("Microsoft.Teams", "Microsoft Teams"),
-    @("Microsoft.OneDrive", "Microsoft OneDrive")
-)
+# itself is NOT in this catalog. Microsoft Teams was dropped from the
+# catalog entirely. OneDrive DOES ship as a real standalone winget
+# package; in the GUI its install/restore lives beside Purge OneDrive
+# under System Tools & Utilities (RestoreOneDrive task), and the console
+# App Deployment Hub still exposes it here as a Smart-Deploy category.
+# Leading comma forces the single-element array to stay nested (same
+# PowerShell flattening pitfall documented for $Apps_DevContainers).
+$Apps_OfficeCompanions = ,@("Microsoft.OneDrive", "Microsoft OneDrive")
 $Runtimes = @(
     @("Microsoft.DirectX", "DirectX End-User Runtime"),
     @("Microsoft.VCRedist.2015+.x64", "Visual C++ Redistributables"),
@@ -180,7 +182,6 @@ $Script:DownloadUrls = @{
     "Ollama.Ollama"                 = "https://ollama.com/download"
     "7zip.7zip"                     = "https://www.7-zip.org/download.html"
     "VideoLAN.VLC"                  = "https://www.videolan.org/vlc/"
-    "Microsoft.Teams"               = "https://www.microsoft.com/microsoft-teams/download-app"
     "Microsoft.OneDrive"            = "https://www.microsoft.com/microsoft-365/onedrive/download"
     "TheDocumentFoundation.LibreOffice" = "https://www.libreoffice.org/download/download/"
     "Python.Python.3.12"            = "https://www.python.org/downloads/"
@@ -204,7 +205,6 @@ $Script:LockProcessMap = @{
     "Microsoft.VisualStudioCode" = @("Code")
     "Spotify.Spotify"            = @("Spotify")
     "Valve.Steam"                = @("steam", "steamwebhelper")
-    "Microsoft.Teams"            = @("Teams", "ms-teams")
     "Microsoft.OneDrive"         = @("OneDrive")
     "Docker.DockerDesktop"       = @("Docker Desktop", "com.docker.backend", "com.docker.build")
     # MSYS2's installer is a shell-executed process (winget exit code

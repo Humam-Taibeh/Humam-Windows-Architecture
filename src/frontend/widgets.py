@@ -970,20 +970,42 @@ class HubDialog(PulseDialog):
         host_lay = QVBoxLayout(host)
         host_lay.setContentsMargins(0, 0, 6, 0)
         host_lay.setSpacing(14)
-        # Every card gets an EQUAL stretch factor and no trailing spacer -
-        # with only a handful of sub-actions per hub, top-anchoring them
-        # with dead space below (the old behavior) read as an empty,
-        # unfinished sub-menu on the new, much taller responsive panel.
-        # Stretching each card to share the leftover height instead makes
-        # 2-4 sub-actions fill the screen generously, exactly like the
-        # premium, fully-populated feel of a normal category page; once
-        # there are enough items to exceed the natural minimum heights,
-        # the scroll area takes over automatically.
-        for item in hub.get("items", []):
-            card = GlassCard(item, accent, t)
-            card.setMinimumHeight(110)
-            card.clicked.connect(lambda it=item: self._choose(it))
-            host_lay.addWidget(card, 1)
+        groups = hub.get("groups")
+        if groups:
+            # Grouped hub (System Tools & Utilities): render each group's
+            # title as a small letter-spaced "section" header, then its
+            # cards at their natural height, and top-anchor the whole list
+            # with a trailing stretch. With this many sub-actions the point
+            # is a tidy, scannable list that scrolls - NOT the equal-stretch
+            # "fill the screen" treatment used for the sparse flat hubs
+            # below, which would balloon each card and swallow the headers.
+            for gi, group in enumerate(groups):
+                header = QLabel(group["title"])
+                header.setStyleSheet(TH.label_qss(t, "section"))
+                if gi > 0:
+                    host_lay.addSpacing(4)
+                host_lay.addWidget(header)
+                for item in group["items"]:
+                    card = GlassCard(item, accent, t)
+                    card.setMinimumHeight(96)
+                    card.clicked.connect(lambda it=item: self._choose(it))
+                    host_lay.addWidget(card)
+            host_lay.addStretch(1)
+        else:
+            # Every card gets an EQUAL stretch factor and no trailing spacer -
+            # with only a handful of sub-actions per hub, top-anchoring them
+            # with dead space below (the old behavior) read as an empty,
+            # unfinished sub-menu on the new, much taller responsive panel.
+            # Stretching each card to share the leftover height instead makes
+            # 2-4 sub-actions fill the screen generously, exactly like the
+            # premium, fully-populated feel of a normal category page; once
+            # there are enough items to exceed the natural minimum heights,
+            # the scroll area takes over automatically.
+            for item in hub.get("items", []):
+                card = GlassCard(item, accent, t)
+                card.setMinimumHeight(110)
+                card.clicked.connect(lambda it=item: self._choose(it))
+                host_lay.addWidget(card, 1)
         scroll.setWidget(host)
         # Stretch factor, not a maximumHeight cap: the panel itself is now
         # a fixed size derived from the host window (see _dialog_chrome's
@@ -1331,7 +1353,7 @@ class ToggleSwitch(QWidget):
 # ============================================================
 class AppSelectorDialog(PulseDialog):
     """The selector for every `apps` catalog card (Essential Apps, Gaming
-    Launchers, Diagnostics, Runtimes, Teams & OneDrive…).
+    Launchers, Diagnostics, Core API Runtimes…).
 
     v6.2: rebuilt on the exact same components and layout grammar as the
     Developer & University Hub — the same DevHubRow (checkbox + per-tool

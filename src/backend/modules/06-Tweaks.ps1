@@ -335,21 +335,30 @@ function Remove-MicrosoftEdge {
 
     $Removed = $false
 
-    # setup.exe's real location varies by install (64-bit Edge normally
-    # lands in Program Files, but the Installer payload some builds/branches
-    # ship is still found under Program Files (x86)) - both are checked,
-    # first hit wins.
-    $EdgeUninstallers = @(
-        "$env:ProgramFiles\Microsoft\Edge\Application\*\Installer\setup.exe"
-        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\*\Installer\setup.exe"
+    # setup.exe's real location is DYNAMIC: it lives under a per-version
+    # folder ("...\Edge\Application\<VERSION>\Installer\setup.exe") whose
+    # name changes with every Edge update, so a hard-coded path is stale the
+    # moment Edge patches itself - the previous cause of setup.exe never
+    # being invoked (or a stale copy exiting with code 93). Resolve it at
+    # run time by recursively hunting "setup.exe" under the Application root
+    # in BOTH Program Files locations (64-bit Edge normally lands in Program
+    # Files, but the Installer payload some builds ship still sits under
+    # Program Files (x86)). Sort descending so the NEWEST version folder's
+    # uninstaller wins when an old version was left behind alongside it.
+    $EdgeAppRoots = @(
+        "$env:ProgramFiles\Microsoft\Edge\Application"
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application"
     )
     $UninstallPath = $null
-    foreach ($Pattern in $EdgeUninstallers) {
-        $Found = Get-ChildItem -Path $Pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+    foreach ($Root in $EdgeAppRoots) {
+        if (-not (Test-Path -LiteralPath $Root)) { continue }
+        $Found = Get-ChildItem -Path $Root -Filter "setup.exe" -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
         if ($Found) { $UninstallPath = $Found; break }
     }
 
     if ($UninstallPath) {
+        Write-Info "Located Edge uninstaller at: $($UninstallPath.FullName)"
         $Removed = Invoke-WithRetry -OperationName "Remove Microsoft Edge (setup.exe)" -Action {
             # Start-Process doesn't throw on a non-zero exit code, so without
             # this check a failed uninstall (e.g. blocked by policy) would
@@ -359,7 +368,7 @@ function Remove-MicrosoftEdge {
             if ($Proc.ExitCode -ne 0) { throw "Edge's uninstaller exited with code $($Proc.ExitCode)." }
         }
     } else {
-        Write-Info "Edge's own setup.exe was not found in either Program Files location - falling back to winget/Appx cleanup."
+        Write-Info "Edge's own setup.exe was not found under either Program Files Application root - falling back to winget/Appx cleanup."
     }
 
     # setup.exe is absent entirely on builds that register Edge as a
@@ -380,10 +389,19 @@ function Remove-MicrosoftEdge {
     # PWA host, etc.) either path above can leave behind - these aren't
     # the browser itself, but they're what makes Windows keep reporting
     # Edge as "installed" once the Win32 payload is already gone.
+    #
+    # Microsoft.MicrosoftEdgeDevToolsClient is deliberately EXCLUDED: on
+    # Windows 11 it is a hard-protected OS component and Remove-AppxPackage
+    # always fails it with 0x80070032 (ERROR_NOT_SUPPORTED). Left in the
+    # pipeline it throws mid-loop, aborting the removal of the stubs that
+    # ARE removable and turning a real success into a false failure - so we
+    # filter it out up front rather than fighting a block Windows will never
+    # lift.
     if (-not $Removed) {
         $Removed = Invoke-WithRetry -OperationName "Remove Microsoft Edge (Appx cleanup)" -Action {
-            $Packages = Get-AppxPackage -AllUsers -Name "*MicrosoftEdge*" -ErrorAction SilentlyContinue
-            if (-not $Packages) { throw "No Edge Appx package registration found to remove." }
+            $Packages = Get-AppxPackage -AllUsers -Name "*MicrosoftEdge*" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notlike "*MicrosoftEdgeDevToolsClient*" }
+            if (-not $Packages) { throw "No removable Edge Appx package registration found (DevToolsClient is OS-protected and skipped)." }
             $Packages | Remove-AppxPackage -AllUsers -ErrorAction Stop
         }
     }

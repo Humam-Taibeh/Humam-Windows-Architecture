@@ -15,6 +15,43 @@ GUI version, with core changes called out explicitly.
 ## [Unreleased]
 
 ### Changed
+- **System Tools & Utilities hub is now grouped, not a flat list** — its
+  eight sub-actions are split into three scannable sub-groups the
+  HubDialog renders under small section headers: **Diagnostics &
+  Optimization** (Hardware Diagnostics, PATH Doctor, Startup Manager,
+  Check for Updates), **Microsoft Edge** (Remove / Install-Restore), and
+  **Microsoft OneDrive** (Purge / Install-Restore) — each app's teardown
+  now sits directly beside its restore. Hubs may now carry `groups`
+  (titled sections) in place of a flat `items` list; `menu_structure.hub_items()`
+  flattens either shape so the command palette, counters and hub
+  navigation are unaffected.
+- **Browsers & Daily Apps trimmed to three core selections** — Browsers,
+  Chat & Media / Microsoft Office Suite / Core API Runtimes. The combined
+  "Teams & OneDrive" card was removed; OneDrive's install/restore now
+  lives beside Purge OneDrive under System Tools & Utilities
+  (`RestoreOneDrive`).
+
+### Removed
+- **Microsoft Teams dropped from the catalog entirely** — purged from
+  `$Apps_OfficeCompanions`, the download-URL and lock-process maps
+  (`01-Catalogs.ps1`), the retired `InstallOfficeApps` GUI task
+  (`30-GuiDispatcher.ps1`) and the console App Deployment Hub
+  (`20-Menus.ps1`, now a OneDrive-only category).
+
+### Fixed
+- **Edge force-removal now resolves `setup.exe` dynamically** — Edge's
+  uninstaller lives under a per-version folder
+  (`…\Edge\Application\<VERSION>\Installer\setup.exe`) that changes on
+  every update; `Remove-MicrosoftEdge` (`06-Tweaks.ps1`) now hunts it
+  recursively under both Program Files roots (newest version wins)
+  instead of relying on a path that went stale (the cause of setup.exe
+  exiting with code 93 / never running). The Appx cleanup pass now
+  **excludes `Microsoft.MicrosoftEdgeDevToolsClient`**, a hard-protected
+  Windows 11 OS component that always fails `Remove-AppxPackage` with
+  `0x80070032` and previously aborted the whole removal into a false
+  failure.
+
+### Changed
 - **Modal presentation system** — every dialog now shares one
   construction path (`widgets._dialog_chrome`): frameless panel at its
   exact content width inside a transparent shadow gutter, a soft

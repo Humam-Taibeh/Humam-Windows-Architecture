@@ -53,7 +53,8 @@ from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
-    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, iter_leaf_items, total_operations,
+    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, hub_items, iter_leaf_items,
+    total_operations,
 )
 from frontend.widgets import (  # noqa: E402
     AmbientGlow, AppSelectorDialog, BreathingIcon, CommandPalette,
@@ -731,7 +732,7 @@ class PulseApp(QMainWindow):
         Developer & University Hub and Gaming & Launchers cards behave
         exactly as they did before Software Management collapsed to 4
         primary cards. A hub with several sub-actions opens HubDialog."""
-        sub_items = hub.get("items", [])
+        sub_items = hub_items(hub)
         if len(sub_items) == 1:
             self.request_task(sub_items[0], None)
             return

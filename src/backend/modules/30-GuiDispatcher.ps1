@@ -178,7 +178,10 @@ function Invoke-GuiTask {
                 break
             }
             "InstallRuntimes"        { Invoke-GuiBulkDeploy $Runtimes "Core API Runtimes" -SelectedIds $Script:SelectedAppIds; break }
-            "InstallOfficeApps"      { Invoke-GuiBulkDeploy $Apps_OfficeCompanions "Microsoft Teams & OneDrive" -SelectedIds $Script:SelectedAppIds; break }
+            # (InstallOfficeApps retired: Microsoft Teams was dropped and
+            #  OneDrive's GUI install/restore now runs through RestoreOneDrive
+            #  under System Tools & Utilities. $Apps_OfficeCompanions survives
+            #  only as the console App Deployment Hub's OneDrive category.)
             "InstallOfficeODT" {
                 if ([string]::IsNullOrWhiteSpace($OfficeSetupPath) -or [string]::IsNullOrWhiteSpace($OfficeConfigPath)) {
                     Write-Output "##PULSE##ERROR|No Office setup.exe / configuration.xml path was supplied by the wizard."

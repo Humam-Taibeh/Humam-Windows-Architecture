@@ -75,6 +75,14 @@ Item schema:
              see CATEGORIES["software"] for the 4-hub Software Management
              layout. iter_leaf_items() below expands every hub so leaf
              actions stay reachable from the Ctrl+K command palette.
+             A hub may instead supply `groups` (list of
+             {"title": str, "items": list[dict]}) in place of a flat
+             `items` list: the HubDialog then renders each group's title as
+             a small "section" header above its cards, so a hub with many
+             sub-actions stays tidy and scannable (System Tools &
+             Utilities uses this). hub_items() flattens either shape, so
+             counters, the command palette and hub navigation treat grouped
+             and flat hubs identically.
 """
 
 # ============================================================
@@ -234,17 +242,11 @@ CATEGORIES = [
                  {"icon": "📄", "title": "Microsoft Office Suite",
                   "desc": "Word, Excel, PowerPoint, Outlook and more — via the official Deployment Tool wizard.",
                   "task": "InstallOfficeODT", "timeout": 3600, "wizard": "office"},
-                 {"icon": "🤝", "title": "Teams & OneDrive",
-                  "desc": "Microsoft Teams and OneDrive — real standalone winget packages.",
-                  "task": "InstallOfficeApps", "timeout": 3600, "confirm": True,
-                  "apps": [
-                      ("Microsoft.Teams", "Microsoft Teams",
-                       "Meetings, chat and collaboration.",
-                       "https://www.microsoft.com/en-us/microsoft-teams/download-app"),
-                      ("Microsoft.OneDrive", "Microsoft OneDrive",
-                       "Cloud file sync client for OneDrive.",
-                       "https://www.microsoft.com/en-us/microsoft-365/onedrive/download"),
-                  ]},
+                 # OneDrive install/restore was moved OUT of here to live
+                 # beside 'Purge OneDrive' under System Tools & Utilities (all
+                 # OneDrive tools in one place); Microsoft Teams was dropped
+                 # from the catalog entirely. This hub is now exactly three
+                 # core app selections: apps, Office and runtimes.
                  {"icon": "🧩", "title": "Core API Runtimes",
                   "desc": "DirectX, Visual C++, .NET and Java runtimes — the invisible prerequisites most apps need.",
                   "task": "InstallRuntimes", "timeout": 3600, "confirm": True,
@@ -296,55 +298,67 @@ CATEGORIES = [
                   ]},
              ]},
             # -- HUB 4: diagnostics, environment repair, optimization -----
+            #
+            # Grouped, not flat: eight sub-actions read as clutter in one
+            # undifferentiated list, so they're split into three scannable
+            # sub-groups the HubDialog renders under small "section" headers
+            # — Diagnostics & Optimization (the always-useful utilities),
+            # then the Edge and OneDrive remove/restore pairs kept together
+            # so each app's teardown and its counterpart restore sit side by
+            # side. `groups` is the grouped analogue of a hub's flat `items`;
+            # menu_structure's hub_items() flattens it for the command
+            # palette / counters and main.py's hub navigation.
             {"icon": "🛠️", "title": "System Tools & Utilities",
              "desc": "Hardware diagnostics, environment repair, startup optimization, live update audits, and Edge/OneDrive removal & restore.",
              "hub": True,
-             "items": [
-                 {"icon": "🔬", "title": "Hardware Diagnostics",
-                  "desc": "Monitoring and diagnostic utilities for CPU, GPU, RAM and disks.",
-                  "task": "InstallDiagnosticApps", "timeout": 3600, "confirm": True,
-                  "apps": [
-                      ("CPUID.CPU-Z", "CPU-Z",
-                       "CPU, motherboard and memory identification tool.",
-                       "https://www.cpuid.com/softwares/cpu-z.html"),
-                      ("TechPowerUp.GPU-Z", "GPU-Z",
-                       "Graphics card information, sensors and BIOS tools.",
-                       "https://www.techpowerup.com/gpuz/"),
-                      ("CPUID.HWMonitor", "HWMonitor",
-                       "Live voltages, temperatures and fan speeds.",
-                       "https://www.cpuid.com/softwares/hwmonitor.html"),
-                      ("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo",
-                       "Drive health and S.M.A.R.T. monitoring.",
-                       "https://crystalmark.info/en/software/crystaldiskinfo/"),
-                      ("Guru3D.Afterburner", "MSI Afterburner",
-                       "GPU overclocking and on-screen performance monitoring.",
-                       "https://www.msi.com/Landing/afterburner"),
-                  ]},
-                 {"icon": "🧭", "title": "PATH Doctor (Auto-Fix Environment)",
-                  "desc": "Makes sure Windows can find your dev tools by name in any terminal — checks Git, Python, Java, VS Code, GCC, Node & Ollama and fixes any that aren't wired up yet.",
-                  "task": "VerifyEnvironment", "timeout": 300},
-                 {"icon": "🚀", "title": "Startup Manager",
-                  "desc": "Smart boot-impact audit of everything that launches at sign-in, with instant enable/disable toggles.",
-                  "task": "StartupReport", "timeout": 300, "startup_manager": True},
-                 {"icon": "🔄", "title": "Check for Updates",
-                  "desc": "Live winget scan for every installed app — audit current vs. available versions, then update exactly what you pick.",
-                  "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
-                 # -- Browser & cloud cleanup: Edge/OneDrive removal + their
-                 # restore counterparts live together here (their single
-                 # logical home) rather than split across the Optimization
-                 # and Safety & Recovery categories.
-                 {"icon": "🌐", "title": "Remove Microsoft Edge",
-                  "desc": "Force-purge Chromium Edge — kills locking processes, clears registry protection flags and cleans up leftover stubs (backup kept).",
-                  "task": "RemoveEdge", "timeout": 900, "confirm": True, "danger": True},
-                 {"icon": "🔁", "title": "Install / Restore Microsoft Edge",
-                  "desc": "Reinstall Microsoft Edge via winget and restore your backed-up settings.",
-                  "task": "RestoreEdge", "timeout": 1800},
-                 {"icon": "☁️", "title": "Purge OneDrive",
-                  "desc": "Back up local OneDrive files, then terminate and uninstall OneDrive.",
-                  "task": "RemoveOneDrive", "timeout": 900, "confirm": True, "danger": True},
-                 {"icon": "🔁", "title": "Restore OneDrive",
-                  "desc": "Reinstall Microsoft OneDrive via winget so it's back and syncing.",
-                  "task": "RestoreOneDrive", "timeout": 1800},
+             "groups": [
+                 {"title": "DIAGNOSTICS & OPTIMIZATION", "items": [
+                     {"icon": "🔬", "title": "Hardware Diagnostics",
+                      "desc": "Monitoring and diagnostic utilities for CPU, GPU, RAM and disks.",
+                      "task": "InstallDiagnosticApps", "timeout": 3600, "confirm": True,
+                      "apps": [
+                          ("CPUID.CPU-Z", "CPU-Z",
+                           "CPU, motherboard and memory identification tool.",
+                           "https://www.cpuid.com/softwares/cpu-z.html"),
+                          ("TechPowerUp.GPU-Z", "GPU-Z",
+                           "Graphics card information, sensors and BIOS tools.",
+                           "https://www.techpowerup.com/gpuz/"),
+                          ("CPUID.HWMonitor", "HWMonitor",
+                           "Live voltages, temperatures and fan speeds.",
+                           "https://www.cpuid.com/softwares/hwmonitor.html"),
+                          ("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo",
+                           "Drive health and S.M.A.R.T. monitoring.",
+                           "https://crystalmark.info/en/software/crystaldiskinfo/"),
+                          ("Guru3D.Afterburner", "MSI Afterburner",
+                           "GPU overclocking and on-screen performance monitoring.",
+                           "https://www.msi.com/Landing/afterburner"),
+                      ]},
+                     {"icon": "🧭", "title": "PATH Doctor (Auto-Fix Environment)",
+                      "desc": "Makes sure Windows can find your dev tools by name in any terminal — checks Git, Python, Java, VS Code, GCC, Node & Ollama and fixes any that aren't wired up yet.",
+                      "task": "VerifyEnvironment", "timeout": 300},
+                     {"icon": "🚀", "title": "Startup Manager",
+                      "desc": "Smart boot-impact audit of everything that launches at sign-in, with instant enable/disable toggles.",
+                      "task": "StartupReport", "timeout": 300, "startup_manager": True},
+                     {"icon": "🔄", "title": "Check for Updates",
+                      "desc": "Live winget scan for every installed app — audit current vs. available versions, then update exactly what you pick.",
+                      "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
+                 ]},
+                 {"title": "MICROSOFT EDGE", "items": [
+                     {"icon": "🌐", "title": "Remove Microsoft Edge",
+                      "desc": "Force-purge Chromium Edge — kills locking processes, clears registry protection flags and cleans up leftover stubs (backup kept).",
+                      "task": "RemoveEdge", "timeout": 900, "confirm": True, "danger": True},
+                     {"icon": "🔁", "title": "Install / Restore Microsoft Edge",
+                      "desc": "Reinstall Microsoft Edge via winget and restore your backed-up settings.",
+                      "task": "RestoreEdge", "timeout": 1800},
+                 ]},
+                 {"title": "MICROSOFT ONEDRIVE", "items": [
+                     {"icon": "☁️", "title": "Purge OneDrive",
+                      "desc": "Back up local OneDrive files, then terminate and uninstall OneDrive.",
+                      "task": "RemoveOneDrive", "timeout": 900, "confirm": True, "danger": True},
+                     {"icon": "🔁", "title": "Install / Restore OneDrive",
+                      "desc": "Reinstall Microsoft OneDrive via winget so it's back and syncing.",
+                      "task": "RestoreOneDrive", "timeout": 1800},
+                 ]},
              ]},
         ],
     },
@@ -494,9 +508,21 @@ CATEGORIES = [
     },
 ]
 
+def hub_items(hub: dict) -> list[dict]:
+    """Flat list of a hub's runnable sub-actions, regardless of whether the
+    hub stores them directly under `items` or split across titled `groups`
+    (the System Tools & Utilities hub uses `groups` so the HubDialog can
+    render them under section headers). Every consumer that needs the leaf
+    actions — the command palette, the operation counter, hub navigation —
+    goes through here so grouped and flat hubs behave identically."""
+    if hub.get("groups"):
+        return [sub for group in hub["groups"] for sub in group["items"]]
+    return hub.get("items", [])
+
+
 def _count_leaves(items: list[dict]) -> int:
     return sum(
-        _count_leaves(it["items"]) if it.get("hub") else 1
+        _count_leaves(hub_items(it)) if it.get("hub") else 1
         for it in items
     )
 
@@ -517,7 +543,7 @@ def iter_leaf_items():
     for cat in CATEGORIES:
         for item in cat["items"]:
             if item.get("hub"):
-                for sub in item["items"]:
+                for sub in hub_items(item):
                     yield sub, f"{cat['title']} › {item['title']}"
             else:
                 yield item, cat["title"]
