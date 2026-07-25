@@ -260,33 +260,45 @@ _DARK = {
     "name":        "dark",
     "font":        "Segoe UI",
 
-    # surfaces — obsidian floor, cards stepped up through *lightness*
-    "bg":          "rgba(13, 15, 19, 0.97)",
-    "bg_solid":    "#0d0f13",
-    # shell gradient stops — a deeper top-to-bottom fall than v6.2 so the
-    # app reads as one lit obsidian surface, not a flat cutout.
-    "bg_grad_top":    "#12151d",
-    "bg_grad_bottom": "#070809",
-    "overlay":     "rgba(7, 8, 11, 0.52)",     # blur-backing layer behind card grids
-    "panel":       "rgba(255, 255, 255, 0.032)",
-    "panel_line":  "rgba(255, 255, 255, 0.065)",
-    "card":        "rgba(24, 27, 34, 0.62)",
-    # NEW hero/featured elevation tier — one perceptual step above `card`,
-    # so a featured bento card visibly floats above its siblings.
-    "card_hi":     "rgba(33, 37, 47, 0.74)",
-    "card_hover":  "rgba(124, 147, 255, 0.06)",
-    "card_line":   "rgba(255, 255, 255, 0.085)",
-    "card_sheen":  "rgba(255, 255, 255, 0.045)",  # top stop of the glass gradient
+    # ---- v9 "Spectrum" surfaces --------------------------------------
+    # The v7/v8 obsidian floor (#070809, near-black) was the whole "too
+    # dark, lifeless" problem: cards barely cleared the canvas, so the app
+    # read as one flat dark sheet with no elevation. v9 lifts the floor into
+    # a refined BLUE-GRAPHITE deep-space register — every neutral now carries
+    # a little blue chroma (the Linear/Vercel "alive dark" tell, vs. dead
+    # gray) — and, crucially, opens a real perceptual GAP between the canvas
+    # and the card tier so surfaces genuinely float.
+    "bg":          "rgba(16, 18, 27, 0.97)",
+    "bg_solid":    "#10121b",
+    # shell gradient — a lit deep-space fall: a lifted indigo top settling
+    # into a rich near-black-blue floor (not cold near-black).
+    "bg_grad_top":    "#1b1f2e",
+    "bg_grad_bottom": "#0b0c13",
+    # content veil — LOWER alpha than v8 (0.52 → 0.34) so the ambient aurora
+    # wash behind the shell reads THROUGH the content area as living
+    # luminescence instead of being smothered flat.
+    "overlay":     "rgba(10, 12, 20, 0.34)",
+    "panel":       "rgba(255, 255, 255, 0.035)",
+    "panel_line":  "rgba(255, 255, 255, 0.078)",
+    # cards jump a clear, deliberate step above the canvas — lighter AND
+    # bluer — so the elevation is unmistakable even before the bevel/glow.
+    "card":        "rgba(38, 43, 60, 0.72)",
+    # hero/featured tier — another visible step up in lightness.
+    "card_hi":     "rgba(52, 59, 82, 0.85)",
+    "card_hover":  "rgba(125, 155, 255, 0.10)",
+    "card_line":   "rgba(255, 255, 255, 0.10)",
+    "card_sheen":  "rgba(255, 255, 255, 0.06)",   # top stop of the glass gradient
     # Dialogs and toasts sit OVER dense text (card grids, the console):
     # fully/near-fully opaque, or the content underneath bleeds through
     # and reads as overlapping text.
-    "dialog_bg":   "rgba(16, 18, 23, 1.0)",
-    "toast_bg":    "rgba(22, 25, 31, 0.99)",
+    "dialog_bg":   "rgba(20, 23, 33, 1.0)",
+    "toast_bg":    "rgba(28, 32, 45, 0.99)",
 
-    # brand — Aurora tri-tone: indigo (primary) → violet → magenta
-    "accent":      "#7c93ff",
-    "accent2":     "#9e7bff",
-    "accent3":     "#e27bff",
+    # brand — Aurora tri-tone, tuned a touch more electric/vivid for v9:
+    # indigo (primary) → violet → magenta.
+    "accent":      "#7d9bff",
+    "accent2":     "#a184ff",
+    "accent3":     "#e784ff",
 
     # text (contrast ≥ WCAG AA on the surfaces above; four deliberate
     # steps so hierarchy comes from tone, not from size alone).
@@ -473,12 +485,18 @@ def content_qss(t: dict) -> str:
 
 
 def nav_button_qss(t: dict) -> str:
+    """v9 ghost rail: at rest the nav entry is a bare, transparent row —
+    only its colored icon plaque and label carry weight — so the sidebar
+    reads light, airy and modern (the Linear / VS Code activity-bar feel)
+    instead of a stack of heavy filled pills floating over a void. Hover and
+    the selected state are where surface and the Aurora brand sweep light
+    up, so the pointer always gets a clear, premium answer."""
     return f"""
         QPushButton {{
-            background-color: {t['card']};
-            border: 1px solid {t['panel_line']};
-            border-radius: 13px;
-            color: {t['text_soft']};
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 12px;
+            color: {t['text_muted']};
             font-size: 13px; font-weight: 500;
             /* padding clears the painted icon plaque (12px inset + 30px
                plaque + gap) — see widgets.NavButton.paintEvent */
@@ -486,13 +504,13 @@ def nav_button_qss(t: dict) -> str:
         }}
         QPushButton:hover {{
             background-color: {t['card_hover']};
-            border: 1px solid {alpha(t['accent'], 0.30)};
+            border: 1px solid {alpha(t['accent'], 0.24)};
             color: {t['text']};
         }}
         QPushButton:pressed {{ background-color: {alpha(t['accent'], 0.18)}; }}
         QPushButton[selected="true"] {{
-            background-color: {brand_gradient(t, 0.16, 0.11)};
-            border: 1px solid {alpha(t['accent'], 0.55)};
+            background-color: {brand_gradient(t, 0.20, 0.13)};
+            border: 1px solid {alpha(t['accent'], 0.52)};
             color: {t['text']};
         }}
     """
@@ -552,10 +570,21 @@ def icon_plaque_qss(t: dict, accent: str, featured: bool = False) -> str:
     louder icon well, which previously made its glyph look bigger/brighter
     than its siblings and broke cross-category consistency. `featured` is
     still accepted for call-site compatibility but no longer alters the
-    plaque."""
-    fill = alpha(accent, 0.10)
-    line = alpha(accent, 0.26)
-    glyph_color = t["text_soft"]
+    plaque.
+
+    v9 "Spectrum": the plaque now carries REAL color at rest. Where v8.1
+    deliberately went fully monochrome (a soft text_soft glyph in a whisper
+    tint), v9 fills the well with a soft vertical accent gradient, firms its
+    hairline, and — the key move — paints the glyph in the module's own
+    accent. Every card and every sidebar entry therefore reads in its
+    module's color the instant the page loads, not only on hover, which is
+    what turns the old flat-gray grid into a vibrant, legible spectrum. The
+    tint stays low enough (≤0.24α) that the glyph, not the well, is the
+    focus, so the effect is jewel-like, never neon."""
+    fill = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+            f"stop:0 {alpha(accent, 0.24)}, stop:1 {alpha(accent, 0.13)})")
+    line = alpha(accent, 0.42)
+    glyph_color = accent
     return f"""
         QLabel {{
             background: {fill};

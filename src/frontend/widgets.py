@@ -516,7 +516,10 @@ class NavButton(QPushButton):
         self._plaque_fill.setAlphaF(0.12)
         self._plaque_line = QColor(self._accent)
         self._plaque_line.setAlphaF(0.30)
-        self._glyph_color_idle = QColor(t["text_soft"])
+        # v9 "Spectrum": the idle glyph carries its own module accent (was a
+        # monochrome text_soft), so all six modules read as a colored rail at
+        # rest — matching the newly-colored GlassCard plaques (icon_plaque_qss).
+        self._glyph_color_idle = QColor(self._accent)
 
     def set_selected(self, on: bool):
         self.setProperty("selected", on)
@@ -814,7 +817,7 @@ class GlassCard(QFrame):
             p.setBrush(wash)
             p.drawPath(path)
         paint_aurora_edge(p, path, self._aur1, self._aur2, self._aur3,
-                          width=1.4, intensity=0.85)
+                          width=1.6, intensity=0.95)
 
     def paintEvent(self, e):
         super().paintEvent(e)  # QSS glass background/border first (transparent if featured)
@@ -857,11 +860,15 @@ class AmbientGlow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._c1 = QColor("#58a6ff")
         self._c2 = QColor("#a78bfa")
+        self._c3 = QColor("#e784ff")
+        self._light = False
         self._radius = 24   # must track shell_qss's floating corner radius
 
     def apply_theme(self, t: dict):
         self._c1 = QColor(t["accent"])
         self._c2 = QColor(t["accent2"])
+        self._c3 = QColor(t["accent3"])
+        self._light = t["name"] == "light"
         self.update()
 
     def set_radius(self, radius: int):
@@ -883,23 +890,26 @@ class AmbientGlow(QWidget):
         w, h = self.width(), self.height()
         span = max(w, h)
 
-        top = QRadialGradient(w * 0.20, h * -0.08, span * 0.55)
-        c1 = QColor(self._c1)
-        c1.setAlphaF(0.10)
-        top.setColorAt(0.0, c1)
-        c1_out = QColor(self._c1)
-        c1_out.setAlphaF(0.0)
-        top.setColorAt(1.0, c1_out)
-        p.fillRect(self.rect(), top)
+        # v9 "Spectrum": a richer TRI-TONE aurora wash — indigo top-left,
+        # magenta mid-right, violet bottom — so the deep-space canvas reads
+        # as genuinely lit, not a flat cutout. Dark mode leans into it
+        # (stronger alpha now that the content veil is lighter and lets it
+        # through); light mode keeps a whisper so paper stays paper.
+        a1, a2, a3 = (0.055, 0.05, 0.045) if self._light else (0.16, 0.11, 0.10)
 
-        bottom = QRadialGradient(w * 0.92, h * 0.88, span * 0.50)
-        c2 = QColor(self._c2)
-        c2.setAlphaF(0.08)
-        bottom.setColorAt(0.0, c2)
-        c2_out = QColor(self._c2)
-        c2_out.setAlphaF(0.0)
-        bottom.setColorAt(1.0, c2_out)
-        p.fillRect(self.rect(), bottom)
+        def blob(cx, cy, reach, color, a):
+            grad = QRadialGradient(cx, cy, reach)
+            c = QColor(color)
+            c.setAlphaF(a)
+            grad.setColorAt(0.0, c)
+            c_out = QColor(color)
+            c_out.setAlphaF(0.0)
+            grad.setColorAt(1.0, c_out)
+            p.fillRect(self.rect(), grad)
+
+        blob(w * 0.16, h * -0.10, span * 0.58, self._c1, a1)   # indigo, top-left
+        blob(w * 1.02, h * 0.30, span * 0.52, self._c3, a3)    # magenta, upper-right
+        blob(w * 0.70, h * 1.08, span * 0.55, self._c2, a2)    # violet, bottom
         p.end()
 
 
