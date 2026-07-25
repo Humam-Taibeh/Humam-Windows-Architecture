@@ -53,8 +53,8 @@ from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
-    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, category_operations, hub_items,
-    iter_leaf_items, total_operations,
+    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, find_action, hub_items,
+    iter_leaf_items,
 )
 from frontend.widgets import (  # noqa: E402
     ActivityDrawer, AmbientGlow, AppSelectorDialog, BreathingIcon,
@@ -174,15 +174,42 @@ class WelcomePage(QWidget):
         │ └────────┘ └────────┘ └────────┘                          │
         └──────────────────────────────────────────────────────────┘
 
-    The launchpad is the centerpiece: every module is a live, accent-lit
-    GlassCard that opens its category on click (module_requested), so the
-    home screen is an intuitive entry point in its own right rather than a
-    decorative page you must leave via the sidebar."""
+    The QUICK ACTIONS band is the centerpiece and — critically — is NOT a
+    repeat of the sidebar. The left rail already navigates the six modules;
+    duplicating them here as a grid was redundant. Instead the dashboard
+    surfaces the highest-value single OPERATIONS (one per module, full
+    accent spectrum) as live cards that RUN on click (action_requested),
+    giving the home screen a distinct control-center purpose the nav can't:
+    do the most common things instantly, without drilling into a module."""
 
-    MODULE_MIN_W = 260   # responsive column threshold for the launchpad grid
-    MODULE_MAX_COLS = 3
+    ACTION_MIN_W = 250   # responsive column threshold for the quick-action grid
+    ACTION_MAX_COLS = 3
 
-    module_requested = Signal(int)   # category index -> PulseApp.open_category
+    # (category index, task) for each Quick Action — one per module, so the
+    # band reads as a full-spectrum control surface. Resolved via
+    # menu_structure.find_action (skips any the backend no longer defines).
+    QUICK_ACTIONS = [
+        (0, "UpdateSelectedApps"),    # Software      — Check for Updates
+        (1, "UltimatePowerPlan"),     # Optimization  — Ultimate Power Plan
+        (2, "CleanCache"),            # Maintenance   — Aggressive Cache Clean
+        (3, "DisableTelemetry"),      # Privacy       — Disable Telemetry
+        (4, "SystemInfo"),            # Information   — System Info Snapshot
+        (5, "CreateRestorePoint"),    # Safety        — Create Restore Point
+    ]
+
+    # Concise, dashboard-tailored one-liners so a Quick Action reads as a
+    # crisp control-surface button, not a dense paragraph (the category page
+    # keeps each operation's fuller description). Keyed by task name.
+    ACTION_BLURBS = {
+        "UpdateSelectedApps": "Scan installed apps and update your picks.",
+        "UltimatePowerPlan":  "Unlock the hidden high-performance scheme.",
+        "CleanCache":         "Wipe temp, Update and system caches.",
+        "DisableTelemetry":   "Stop diagnostic data collection.",
+        "SystemInfo":         "Hardware, uptime and disk snapshot.",
+        "CreateRestorePoint": "A safety checkpoint before big changes.",
+    }
+
+    action_requested = Signal(dict)   # item dict -> PulseApp.request_task
 
     def __init__(self, t: dict, engine_ok: bool, is_admin: bool):
         super().__init__()
@@ -191,7 +218,7 @@ class WelcomePage(QWidget):
         self._tel_values: list[QLabel] = []
         self._tel_captions: list[QLabel] = []
         self._tel_divs: list[QFrame] = []
-        self._module_cards: list[GlassCard] = []
+        self._action_cards: list[GlassCard] = []
         self._cols = 0
 
         root = QVBoxLayout(self)
@@ -284,10 +311,10 @@ class WelcomePage(QWidget):
 
         root.addSpacing(2)
 
-        # ============ 3. MODULE LAUNCHPAD =================================
+        # ============ 3. QUICK ACTIONS ====================================
         head = QHBoxLayout()
         head.setSpacing(14)
-        self._section = QLabel("EXPLORE MODULES")
+        self._section = QLabel("QUICK ACTIONS")
         head.addWidget(self._section)
         self._rule = QFrame()
         self._rule.setFixedHeight(1)
@@ -299,51 +326,55 @@ class WelcomePage(QWidget):
         self._grid = QGridLayout(grid_host)
         self._grid.setContentsMargins(0, 2, 0, 0)
         self._grid.setSpacing(14)
-        for i, cat in enumerate(CATEGORIES):
-            n = category_operations(cat)
-            item = {
-                "title": cat["title"],
-                "desc": cat["tagline"],
-                "glyph": cat["glyph"],
-                "meta_label": f"{n} operations" if n != 1 else "1 operation",
-            }
-            card = GlassCard(item, cat["accent"], t)
+        for cat_index, task in self.QUICK_ACTIONS:
+            item, accent = find_action(cat_index, task)
+            if item is None:
+                continue   # backend no longer defines it — skip gracefully
+            # DISPLAY copy: a concise blurb and no meta-producing keys, so all
+            # six cards read as uniform, crisp action buttons (no stray pill /
+            # chevron on the one update_center action). The CLICK still emits
+            # the ORIGINAL item, so request_task keeps full behaviour — e.g.
+            # 'Check for Updates' still opens the UpdateCenter dialog.
+            card_item = {**item, "desc": self.ACTION_BLURBS.get(task, item["desc"])}
+            for meta_key in ("update_center", "note", "apps", "devhub"):
+                card_item.pop(meta_key, None)
+            card = GlassCard(card_item, accent, t)
             card.setMinimumHeight(108)
             card.clicked.connect(
-                lambda idx=i: self.module_requested.emit(idx))
-            self._module_cards.append(card)
-        self._relayout_modules(3)
+                lambda it=item: self.action_requested.emit(it))
+            self._action_cards.append(card)
+        self._relayout_actions(3)
         root.addWidget(grid_host, 1)
 
         self.apply_theme(t)
 
-    # -- responsive launchpad grid ------------------------------------
+    # -- responsive quick-action grid ---------------------------------
     def _columns_for(self, width: int) -> int:
         gap = self._grid.spacing()
-        return max(1, min(self.MODULE_MAX_COLS,
-                          (width + gap) // (self.MODULE_MIN_W + gap)))
+        return max(1, min(self.ACTION_MAX_COLS,
+                          (width + gap) // (self.ACTION_MIN_W + gap)))
 
-    def _relayout_modules(self, cols: int):
+    def _relayout_actions(self, cols: int):
         if cols == self._cols:
             return
         self._cols = cols
-        for card in self._module_cards:
+        for card in self._action_cards:
             self._grid.removeWidget(card)
-        for col in range(self.MODULE_MAX_COLS):
+        for col in range(self.ACTION_MAX_COLS):
             self._grid.setColumnStretch(col, 1 if col < cols else 0)
-        n_rows = (len(self._module_cards) + cols - 1) // cols
+        n_rows = (len(self._action_cards) + cols - 1) // cols
         for row in range(max(self._grid.rowCount(), n_rows) + 1):
             self._grid.setRowStretch(row, 1 if row < n_rows else 0)
-        for i, card in enumerate(self._module_cards):
+        for i, card in enumerate(self._action_cards):
             self._grid.addWidget(card, i // cols, i % cols)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._relayout_modules(self._columns_for(self.width() - 60))
+        self._relayout_actions(self._columns_for(self.width() - 60))
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._relayout_modules(self._columns_for(self.width() - 60))
+        self._relayout_actions(self._columns_for(self.width() - 60))
 
     def apply_theme(self, t: dict):
         self._logo.apply_theme(t)
@@ -372,7 +403,7 @@ class WelcomePage(QWidget):
 
         self._section.setStyleSheet(TH.label_qss(t, "section"))
         self._rule.setStyleSheet(TH.hub_group_rule_qss(t, t["accent"]))
-        for card in self._module_cards:
+        for card in self._action_cards:
             card.apply_theme(t)
 
 
@@ -703,7 +734,7 @@ class PulseApp(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
         self.welcome = WelcomePage(t, bool(self.ps1_path), self.is_admin)
-        self.welcome.module_requested.connect(self.open_category)
+        self.welcome.action_requested.connect(self.request_task)
         self.stack.addWidget(self.welcome)
         self.pages: list[CategoryPage] = []
         for cat in CATEGORIES:
@@ -869,7 +900,7 @@ class PulseApp(QMainWindow):
     # ============================================================
     #  TASK PIPELINE
     # ============================================================
-    def request_task(self, item: dict, card: GlassCard):
+    def request_task(self, item: dict, card: GlassCard | None = None):
         if item.get("hub"):
             self._open_hub(item)
             return

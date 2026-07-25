@@ -548,6 +548,30 @@ def category_operations(category: dict) -> int:
     return _count_leaves(category["items"])
 
 
+def find_action(cat_index: int, task: str) -> tuple[dict | None, str]:
+    """(item, category_accent) for a runnable action located by its `task`
+    name within CATEGORIES[cat_index], expanding hub containers recursively.
+    Powers the Welcome dashboard's Quick Actions band — direct shortcuts to
+    the highest-value single operations, deliberately DISTINCT from the
+    sidebar's module navigation (which the dashboard no longer duplicates).
+    Returns (None, accent) when the task can't be found, so a renamed or
+    removed task degrades gracefully instead of crashing the landing
+    screen."""
+    cat = CATEGORIES[cat_index]
+
+    def walk(items: list[dict]) -> dict | None:
+        for it in items:
+            if it.get("hub"):
+                found = walk(hub_items(it))
+                if found is not None:
+                    return found
+            elif it.get("task") == task:
+                return it
+        return None
+
+    return walk(cat["items"]), cat["accent"]
+
+
 def iter_leaf_items():
     """Yields (item, breadcrumb) for every runnable action, expanding hub
     containers — used by the Ctrl+K command palette so a hub's sub-actions
