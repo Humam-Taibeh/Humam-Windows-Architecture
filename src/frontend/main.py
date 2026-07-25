@@ -559,18 +559,25 @@ class PulseApp(QMainWindow):
             side.addWidget(btn)
         side.addStretch()
 
-        # -- sidebar footer: elevation · identity · exit (v8) --
+        # -- sidebar footer: elevation · identity (v8.1) --------
         # The sidebar footer is the app's "system controls" zone. Elevation
-        # lives here now (relocated from the title bar): a prominent, always-
+        # lives here (relocated from the title bar): a prominent, always-
         # visible amber CTA when unelevated, or a quiet green confirmation
         # chip when already Administrator — far more discoverable than the
         # old title-bar badge, and it drops the fragile native hit-test
         # carve-out that badge required.
+        #
+        # v8.1: the redundant red "Exit" button was removed. Quitting is the
+        # title bar's native close 'X' — every Windows user's muscle memory —
+        # so a second, louder (red) exit affordance in the sidebar was pure
+        # duplication. Dropping it leaves the elevation chip as the clean,
+        # single focus of this zone, with the quiet identity line closing the
+        # rail beneath it.
         self._elevate_btn: QPushButton | None = None
         self._admin_chip: QLabel | None = None
         if self.is_admin:
             self._admin_chip = QLabel("🛡  Administrator")
-            self._admin_chip.setFixedHeight(38)
+            self._admin_chip.setFixedHeight(42)
             self._admin_chip.setAlignment(Qt.AlignmentFlag.AlignVCenter)
             side.addWidget(self._admin_chip)
         else:
@@ -582,20 +589,13 @@ class PulseApp(QMainWindow):
                 "Relaunch Pulse elevated (you'll get a UAC prompt).")
             self._elevate_btn.clicked.connect(self._relaunch_as_admin)
             side.addWidget(self._elevate_btn)
-        side.addSpacing(10)
+        side.addSpacing(14)
 
         # Anchors the nav column so it no longer floats above a void — a
         # quiet identity line the way VS Code / Linear close their rails.
         self._side_footer = QLabel(f"PULSE  v{APP_VERSION}  ·  {APP_CHANNEL.upper()}")
         self._side_footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         side.addWidget(self._side_footer)
-        side.addSpacing(10)
-
-        self._exit_btn = QPushButton("✕  Exit")
-        self._exit_btn.setFixedHeight(40)
-        self._exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._exit_btn.clicked.connect(self.close)
-        side.addWidget(self._exit_btn)
         body.addWidget(self._sidebar)
 
         # -- content ------------------------------------------
@@ -650,7 +650,6 @@ class PulseApp(QMainWindow):
             self._elevate_btn.setStyleSheet(TH.elevate_button_qss(t))
         if self._admin_chip is not None:
             self._admin_chip.setStyleSheet(TH.admin_status_qss(t))
-        self._exit_btn.setStyleSheet(TH.exit_button_qss(t))
         self.titlebar.apply_theme(t)
         self.welcome.apply_theme(t)
         for btn in self._nav_buttons:

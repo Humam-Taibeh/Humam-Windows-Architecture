@@ -313,7 +313,7 @@ class TitleBar(QWidget):
             lay.addWidget(self._channel)
         # v8: elevation state/action moved OUT of the title bar into the
         # sidebar footer (main.PulseApp._build_ui), where "app-level system
-        # controls" already live (identity line + Exit). The title bar keeps
+        # controls" already live (the identity line). The title bar keeps
         # a clean brand-only left cluster; `_admin_badge` stays defined as
         # None so the native-hit-test carve-out (main._over_admin_badge)
         # remains a harmless no-op.
@@ -615,8 +615,16 @@ class GlassCard(QFrame):
         # settles at a natural height and the leftover space becomes balanced
         # inter-row breathing room, so a 4- or 5-card page reads evenly
         # distributed instead of either top-anchored-with-a-void or stretched.
-        self.setMinimumHeight(150 if featured else 140)
-        self.setMaximumHeight(198 if featured else 178)
+        #
+        # v8.1: featured and standard cards now share the SAME height bounds.
+        # Giving the hero card a taller envelope made its grid row outgrow the
+        # rows below it (and the rows of a hub-less category like System
+        # Optimization), so transitioning between modules felt subtly off. The
+        # featured card keeps its distinction through its squircle body +
+        # Aurora edge, not extra size — every card in every section now shares
+        # one height envelope, so rows lock to a single rhythm everywhere.
+        self.setMinimumHeight(140)
+        self.setMaximumHeight(178)
         self.setProperty("running", False)
 
         glow_color = t["err"] if self._danger else accent

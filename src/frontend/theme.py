@@ -543,12 +543,19 @@ def icon_plaque_qss(t: dict, accent: str, featured: bool = False) -> str:
     """The v7 card icon container — a rounded, accent-tinted plaque holding
     one monochrome Fluent glyph (or its emoji fallback). This is the single
     biggest 'premium app' cue: instead of a bare emoji floating in the card,
-    every icon sits in a consistent, color-coordinated well. The featured
-    (hero) card gets a slightly stronger tint + the accent as the glyph
-    color so it reads a step brighter than its siblings."""
-    fill = alpha(accent, 0.16 if featured else 0.10)
-    line = alpha(accent, 0.42 if featured else 0.26)
-    glyph_color = accent if featured else t["text_soft"]
+    every icon sits in a consistent, color-coordinated well.
+
+    v8.1 unification: EVERY card in EVERY section now shares the exact same
+    plaque finish — identical tint, 1px accent line and monochrome glyph
+    color — so the icon grid reads as one system page to page. The featured
+    hero card earns its lift from its squircle body + Aurora lit edge, NOT a
+    louder icon well, which previously made its glyph look bigger/brighter
+    than its siblings and broke cross-category consistency. `featured` is
+    still accepted for call-site compatibility but no longer alters the
+    plaque."""
+    fill = alpha(accent, 0.10)
+    line = alpha(accent, 0.26)
+    glyph_color = t["text_soft"]
     return f"""
         QLabel {{
             background: {fill};
@@ -603,20 +610,6 @@ def nav_pill_qss(t: dict) -> str:
             background: {alpha(t['accent'], 0.16)};
             border: 1px solid {alpha(t['accent'], 0.55)};
         }}
-    """
-
-
-def exit_button_qss(t: dict) -> str:
-    return f"""
-        QPushButton {{
-            background-color: {alpha(t['err'], 0.07)};
-            border: 1px solid {alpha(t['err'], 0.18)};
-            border-radius: 12px;
-            color: {t['err']};
-            font-size: 13px; font-weight: 500;
-        }}
-        QPushButton:hover {{ background-color: {alpha(t['err'], 0.22)}; color: {t['text']}; }}
-        QPushButton:pressed {{ background-color: {alpha(t['err'], 0.32)}; }}
     """
 
 
