@@ -468,7 +468,7 @@ function Show-InformationUtilitiesMenu {
                                 Start-Process "ms-settings:windowsupdate-action"
                             }
                         } else { Write-Success "No missing drivers." }
-                    } catch { Write-ErrorX "Driver scan failed." }
+                    } catch { Write-ErrorX "Driver scan failed: $($_.Exception.Message)" }
                 }
                 Read-Host "   Press Enter to continue"
             }

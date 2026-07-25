@@ -86,15 +86,33 @@ function Clear-SystemCaches {
         if (-not (Test-Path $Target)) { continue }
         if ($Script:DryRun) { Write-Info "[WHATIF] Measuring (not deleting) $Target ..." }
         else                { Write-Info "Cleaning $Target ..." }
-        Get-ChildItem -Path $Target -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
-            $Size = if ($_.PSIsContainer) { 0 } else { $_.Length }
+        # Top-level entries only: a -Recurse enumeration followed by a
+        # per-item -Recurse delete visits every descendant twice - once as
+        # its own list entry, once again as part of its parent's recursive
+        # delete. The second visit hits a path that's already gone, throws,
+        # and both falsely inflates $LockedCount and undercounts freed
+        # bytes (a whole subtree's size, minus whatever leaf happened to
+        # be enumerated last). Deleting only the top-level item per target
+        # removes its entire subtree in one filesystem operation, so no
+        # child is ever independently visited after its parent is gone.
+        Get-ChildItem -Path $Target -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            $Item = $_
+            $Size = 0
+            if ($Item.PSIsContainer) {
+                $Sum = (Get-ChildItem -Path $Item.FullName -Recurse -Force -ErrorAction SilentlyContinue |
+                        Where-Object { -not $_.PSIsContainer } |
+                        Measure-Object -Property Length -Sum).Sum
+                if ($Sum) { $Size = $Sum }
+            } else {
+                $Size = $Item.Length
+            }
             if ($Script:DryRun) {
                 # Dry-run: tally what a real pass would reclaim, delete nothing.
                 $TotalFreedBytes += $Size
                 return
             }
             try {
-                Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
+                Remove-Item -Path $Item.FullName -Recurse -Force -ErrorAction Stop
                 $TotalFreedBytes += $Size
             } catch {
                 $LockedCount++

@@ -28,6 +28,38 @@ function Is-StoreApp {
 # ============================================================
 #  INSTALLED / LATEST VERSION DETECTION
 # ============================================================
+# Bulk-batch cache (Id/Name -> {Installed, Available}) populated once per
+# batch by Initialize-WingetBatchCache (see Process-AppCategory below) from
+# a single `winget list` call. $null outside an active batch, so single
+# (non-bulk) probes keep querying winget live as before - only Process-
+# AppCategory's bulk loops set/clear it, so staleness can never leak into
+# an unrelated individual install later in the same session.
+$Script:WingetBatchCache = $null
+
+function Initialize-WingetBatchCache {
+    <#
+    .SYNOPSIS
+        Builds the one-shot Id/Name -> {Installed, Available} lookup used
+        by Get-InstalledVersion/Get-LatestVersion during a bulk deployment,
+        from a single `winget list` call instead of one winget process per
+        app. `winget list`'s column layout (Name/Id/Version/Available/
+        Source) is identical to `winget upgrade`'s, so the existing
+        ConvertFrom-WingetUpgradeTable parser is reused as-is.
+    #>
+    $Script:WingetBatchCache = @{ ById = @{}; ByName = @{} }
+    if (-not $global:WingetAvailable) { return }
+    try {
+        $Raw = & winget list --accept-source-agreements --disable-interactivity 2>$null
+        foreach ($Item in (ConvertFrom-WingetUpgradeTable -Raw $Raw)) {
+            $Entry = @{ Installed = $Item.CurrentVersion; Available = $Item.AvailableVersion }
+            $Script:WingetBatchCache.ById[$Item.Id]     = $Entry
+            $Script:WingetBatchCache.ByName[$Item.Name] = $Entry
+        }
+    } catch {
+        Write-Log "Winget batch cache build failed: $($_.Exception.Message)"
+    }
+}
+
 function Get-InstalledVersion {
     param([string]$AppId, [string]$AppName)
 
@@ -40,6 +72,15 @@ function Get-InstalledVersion {
     }
 
     if (-not $global:WingetAvailable) { return $null }  # no winget -> no probe
+
+    if ($Script:WingetBatchCache) {
+        # Active bulk batch: the one-shot `winget list` cache is
+        # authoritative - querying it instead of spawning a fresh winget
+        # process per app is the entire point of the batch cache.
+        if ($Script:WingetBatchCache.ById.ContainsKey($AppId)) { return $Script:WingetBatchCache.ById[$AppId].Installed }
+        if ($Script:WingetBatchCache.ByName.ContainsKey($AppName)) { return $Script:WingetBatchCache.ByName[$AppName].Installed }
+        return $null
+    }
 
     $Lines = & winget list --id $AppId --exact --accept-source-agreements --disable-interactivity 2>$null
     if (-not $Lines) {
@@ -94,6 +135,16 @@ function Get-LatestVersion {
         return "Store"
     }
     if (-not $global:WingetAvailable) { return "Unknown" }  # no winget -> no probe
+
+    if ($Script:WingetBatchCache) {
+        if ($Script:WingetBatchCache.ById.ContainsKey($AppId)) {
+            $Entry = $Script:WingetBatchCache.ById[$AppId]
+            if (-not [string]::IsNullOrWhiteSpace($Entry.Available)) { return $Entry.Available }
+            return $Entry.Installed   # blank Available in `winget list` -> no pending upgrade, already latest
+        }
+        return "Unknown"   # not installed - the batch cache has no manifest data to probe for uninstalled apps
+    }
+
     $Lines = & winget show --id $AppId --exact --accept-source-agreements --disable-interactivity 2>$null
     if (-not $Lines) { return "Unknown" }
     foreach ($Line in $Lines) {
@@ -219,18 +270,27 @@ function Get-WingetUpgradeList {
 # ============================================================
 function Stop-LockingProcesses {
     param($AppId)
-    if ($Script:LockProcessMap.ContainsKey($AppId)) {
-        foreach ($ProcName in $Script:LockProcessMap[$AppId]) {
-            $Proc = Get-Process -Name $ProcName -ErrorAction SilentlyContinue
-            if ($Proc) {
-                Invoke-Mutation -Description "Terminate background process '$ProcName' (locks the $AppId installer)" -Action {
-                    Write-Warn "Terminating background process '$ProcName'..."
-                    Stop-Process -Name $ProcName -Force -ErrorAction SilentlyContinue
-                    Start-Sleep -Milliseconds 800
-                } | Out-Null
-            }
+    if (-not $Script:LockProcessMap.ContainsKey($AppId)) { return }
+
+    # Kill every matching lock process first, then sleep once at the end -
+    # sleeping 800ms after EACH kill serialized the wait time across every
+    # matched process name (N processes = N x 800ms) for no benefit, since
+    # nothing reads process state between one Stop-Process call and the next.
+    $Killed = $false
+    foreach ($ProcName in $Script:LockProcessMap[$AppId]) {
+        $Proc = Get-Process -Name $ProcName -ErrorAction SilentlyContinue
+        if ($Proc) {
+            Invoke-Mutation -Description "Terminate background process '$ProcName' (locks the $AppId installer)" -Action {
+                Write-Warn "Terminating background process '$ProcName'..."
+                Stop-Process -Name $ProcName -Force -ErrorAction SilentlyContinue
+            } | Out-Null
+            # Dry-run: Invoke-Mutation logs [WHATIF] and never actually kills
+            # anything, so the trailing sleep (which exists to give a REAL
+            # kill time to release its file lock) must not fire either.
+            if (-not $Script:DryRun) { $Killed = $true }
         }
     }
+    if ($Killed) { Start-Sleep -Milliseconds 800 }
 }
 
 function Invoke-Winget {
@@ -697,9 +757,14 @@ function Process-AppCategory {
     if ($Script:LastBulkChoice) {
         Write-Host "   Last bulk choice: $($Script:LastBulkChoice.Method). Reuse it for this category?" -ForegroundColor Yellow
         if (Ask-User "Reuse Last Bulk Mode" "Applies the '$($Script:LastBulkChoice.Method)' method to every app in '$CategoryName' without asking again.") {
-            foreach ($App in $AppList) {
-                $res = Smart-Deploy -AppId $App[0] -AppName $App[1] -Bulk -BulkMethod $Script:LastBulkChoice.Method
-                if ($res.Status -eq 'Quit') { break }
+            Initialize-WingetBatchCache
+            try {
+                foreach ($App in $AppList) {
+                    $res = Smart-Deploy -AppId $App[0] -AppName $App[1] -Bulk -BulkMethod $Script:LastBulkChoice.Method
+                    if ($res.Status -eq 'Quit') { break }
+                }
+            } finally {
+                $Script:WingetBatchCache = $null
             }
             return "OK"
         }
@@ -719,10 +784,15 @@ function Process-AppCategory {
         $Script:LastBulkChoice = @{Method=$method}
 
         $results = @{}
-        foreach ($App in $AppList) {
-            $res = Smart-Deploy -AppId $App[0] -AppName $App[1] -Bulk -BulkMethod $method
-            if ($res.Status -eq 'Quit') { break }
-            $results[$App[1]] = $res
+        Initialize-WingetBatchCache
+        try {
+            foreach ($App in $AppList) {
+                $res = Smart-Deploy -AppId $App[0] -AppName $App[1] -Bulk -BulkMethod $method
+                if ($res.Status -eq 'Quit') { break }
+                $results[$App[1]] = $res
+            }
+        } finally {
+            $Script:WingetBatchCache = $null
         }
 
         Write-Divider

@@ -97,7 +97,15 @@ if (-not $Task) {
 # The GUI's spawned subprocess already sets this (helpers.PowerShellTask
 # prepends the same line); this covers the interactive console, which
 # never got it and was the real "chaotic UI" culprit, not color choices.
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {
+    # Rare, but [Console]::OutputEncoding throws when stdout isn't a real
+    # console handle (e.g. certain redirected/piped launch contexts) -
+    # box-drawing glyphs render as '?' in that case, but that's cosmetic;
+    # crashing the whole script over an encoding preference is not
+    # acceptable this early, before any module has even loaded.
+}
 
 # Console styling only makes sense when a human is looking at the console.
 # In GUI task mode stdout is a pipe and the console is hidden - skip it.

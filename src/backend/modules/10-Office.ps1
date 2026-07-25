@@ -157,21 +157,60 @@ function Pick-FileDialog {
     return $null
 }
 
+function Invoke-ProbeWithTimeout {
+    <#
+    .SYNOPSIS
+        Runs a self-contained `<exe> /?` probe with a hard timeout, so a
+        misbehaving or interactive executable (some third-party
+        self-extractors pop a dialog on /? instead of printing help) can
+        never hang Pulse indefinitely - especially fatal in GUI/NonInteractive
+        mode, where there's no console for a human to notice and close it.
+    .DESCRIPTION
+        Uses Start-Process -PassThru (not the `&` call operator, which
+        blocks synchronously with no timeout option) plus Wait-Process
+        -Timeout. If the process hasn't exited when the timeout elapses,
+        it is force-killed and $null is returned - callers treat that the
+        same as "no match found", exactly like the try/catch they used to
+        rely on for a normal launch failure.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [int]$TimeoutSec = 8
+    )
+    $OutFile = [System.IO.Path]::GetTempFileName()
+    $ErrFile = [System.IO.Path]::GetTempFileName()
+    $Proc = $null
+    try {
+        $Proc = Start-Process -FilePath $FilePath -ArgumentList "/?" -NoNewWindow -PassThru `
+            -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile -ErrorAction Stop
+        try {
+            Wait-Process -Id $Proc.Id -Timeout $TimeoutSec -ErrorAction Stop
+        } catch {
+            Write-Log "Office probe '$FilePath /?' timed out after ${TimeoutSec}s - terminating."
+            Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
+            return $null
+        }
+        $Out = Get-Content -Path $OutFile -Raw -ErrorAction SilentlyContinue
+        $Err = Get-Content -Path $ErrFile -Raw -ErrorAction SilentlyContinue
+        return "$Out`n$Err"
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -Path $OutFile, $ErrFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Test-IsSelfExtractor {
     param([string]$FilePath)
-    try {
-        $result = & $FilePath /? 2>&1 | Out-String
-        if ($result -match "/extract") { return $true }
-    } catch {}
+    $result = Invoke-ProbeWithTimeout -FilePath $FilePath
+    if ($result -match "/extract") { return $true }
     return $false
 }
 
 function Test-ValidOfficeSetup {
     param([string]$FilePath)
-    try {
-        $result = & $FilePath /? 2>&1 | Out-String
-        if ($result -match "/configure") { return $true }
-    } catch {}
+    $result = Invoke-ProbeWithTimeout -FilePath $FilePath
+    if ($result -match "/configure") { return $true }
     return $false
 }
 

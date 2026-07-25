@@ -26,8 +26,7 @@
 #  PRE-FLIGHT WINGET BOOTSTRAP (silent, robust)
 # ============================================================
 function Invoke-WingetBootstrap {
-    Write-Host ""
-    Write-Host "   [*] Winget not found - launching silent bootstrap from Microsoft CDN..." -ForegroundColor DarkGray
+    Write-Info "Winget not found - launching silent bootstrap from Microsoft CDN..."
     $tempDir = Join-Path $env:TEMP "WingetBootstrap_Pulse"
     New-Item -ItemType Directory -Path $tempDir -Force -ErrorAction SilentlyContinue | Out-Null
 
@@ -39,10 +38,10 @@ function Invoke-WingetBootstrap {
     foreach ($dep in $deps) {
         $dest = Join-Path $tempDir $dep.Name
         try {
-            Write-Host "   [ ] Downloading $($dep.Name)..." -ForegroundColor DarkGray
+            Write-Info "Downloading $($dep.Name)..."
             Invoke-WebRequest -Uri $dep.Url -OutFile $dest -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
         } catch {
-            Write-Host "   [!] Failed to download $($dep.Name) - bootstrap may fail." -ForegroundColor Yellow
+            Write-Warn "Failed to download $($dep.Name) - bootstrap may fail."
         }
     }
 
@@ -50,13 +49,13 @@ function Invoke-WingetBootstrap {
     try {
         $latestJson = Invoke-RestMethod -Uri "https://api.github.com/repos/microsoft/winget-cli/releases/latest" -TimeoutSec 15 -ErrorAction Stop
     } catch {
-        Write-Host "   [X] Cannot reach winget-cli GitHub API. Bootstrap aborted." -ForegroundColor Red
+        Write-ErrorX "Cannot reach winget-cli GitHub API. Bootstrap aborted."
         return $false
     }
 
     $asset = $latestJson.assets | Where-Object { $_.name -like "Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe.msixbundle" } | Select-Object -First 1
     if (-not $asset) {
-        Write-Host "   [X] MSIX bundle asset not found in latest release." -ForegroundColor Red
+        Write-ErrorX "MSIX bundle asset not found in latest release."
         return $false
     }
 
@@ -64,11 +63,11 @@ function Invoke-WingetBootstrap {
     $bundleUrl  = $asset.browser_download_url
     $bundleDest = Join-Path $tempDir $bundleName
 
-    Write-Host "   [ ] Downloading $bundleName ..." -ForegroundColor DarkGray
+    Write-Info "Downloading $bundleName ..."
     try {
         Invoke-WebRequest -Uri $bundleUrl -OutFile $bundleDest -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop
     } catch {
-        Write-Host "   [X] Download of App Installer bundle failed." -ForegroundColor Red
+        Write-ErrorX "Download of App Installer bundle failed."
         return $false
     }
 
@@ -77,9 +76,9 @@ function Invoke-WingetBootstrap {
     foreach ($pkg in $allPkgs) {
         try {
             Add-AppxPackage -Path $pkg.FullName -ErrorAction Stop
-            Write-Host "   [OK] Installed $($pkg.Name)" -ForegroundColor Green
+            Write-Success "Installed $($pkg.Name)"
         } catch {
-            Write-Host "   [!] Could not install $($pkg.Name) - may already be present." -ForegroundColor Yellow
+            Write-Warn "Could not install $($pkg.Name) - may already be present."
         }
     }
 
@@ -87,10 +86,10 @@ function Invoke-WingetBootstrap {
     Start-Sleep -Seconds 2
 
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host "   [OK] Winget bootstrapped successfully." -ForegroundColor Green
+        Write-Success "Winget bootstrapped successfully."
         return $true
     } else {
-        Write-Host "   [X] Winget still unavailable after bootstrap. Manual install required." -ForegroundColor Red
+        Write-ErrorX "Winget still unavailable after bootstrap. Manual install required."
         return $false
     }
 }
