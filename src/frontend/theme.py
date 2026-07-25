@@ -177,22 +177,55 @@ def has_icon_font() -> bool:
 # present in Segoe Fluent Icons) — the same well-known PUA glyphs Microsoft
 # documents for custom app chrome.
 GLYPHS: dict[str, tuple[str, str]] = {
-    # --- navigation / chrome ---
-    "home":         ("", "⌂"),   # Home
-    "chevron":      ("", "›"),   # ChevronRight
-    "back":         ("", "‹"),   # ChevronLeft
-    # --- top-level modules (sidebar) ---
-    "package":      ("", "📦"),  # Software Management  (Package)
-    "bolt":         ("", "⚡"),  # System Optimization  (LightningBolt)
-    "repair":       ("", "🔧"),  # Maintenance & Repair (Repair)
-    "shield":       ("", "🛡️"),  # Privacy & Security   (Lock)
-    "info":         ("", "📊"),  # Information & Utils   (Info)
-    "restore":      ("", "🛟"),  # Safety & Recovery    (Undo)
-    # --- software-management hub cards ---
-    "globe":        ("", "🧰"),  # Browsers & Daily Apps (Globe)
-    "code":         ("", "🎓"),  # Developer & Uni Hub   (Code)
-    "game":         ("", "🎮"),  # Gaming & Launchers    (Game)
-    "tools":        ("", "🛠️"),  # System Tools & Utils  (Setting)
+    # --- nav / chrome ---
+    'home':          ("", "⌂"),                    # Home
+    'chevron':       ("", "›"),                    # ChevronRight
+    'back':          ("", "‹"),                    # ChevronLeft
+    # --- modules (sidebar) ---
+    'package':       ("", "📦"),                    # Software Management
+    'bolt':          ("", "⚡"),                    # System Optimization / power
+    'repair':        ("", "🔧"),                    # Maintenance / repair / services
+    'shield':        ("", "🛡️"),                   # Privacy & Security (padlock)
+    'info':          ("", "📊"),                    # Information & Utilities
+    'restore':       ("", "🛟"),                    # Safety & Recovery / undo / reset
+    # --- software hub cards ---
+    'globe':         ("", "🧰"),                    # Browsers & daily apps
+    'code':          ("", "🎓"),                    # Developer & University Hub
+    'game':          ("", "🎮"),                    # Gaming / Game Mode
+    'tools':         ("", "🛠️"),                   # System Tools & Utilities
+    # --- optimization ---
+    'moon':          ("", "🌙"),                    # Global Dark Mode
+    'mouse':         ("", "🖱️"),                   # Mouse acceleration
+    'pin':           ("", "📌"),                    # Minimalist Taskbar
+    'list':          ("", "📋"),                    # Classic Context Menu
+    'network':       ("", "📡"),                    # Network & Ping Optimizer
+    # --- maintenance ---
+    'broom':         ("", "🧹"),                    # Aggressive Cache Clean
+    'disk':          ("", "💾"),                    # Optimize All Drives
+    'sleep':         ("", "😴"),                    # Disable Hibernation
+    'battery':       ("", "🔋"),                    # Enable Hibernation
+    'chart':         ("", "📈"),                    # Drive Space Report (pie)
+    # --- privacy / info / safety ---
+    'delete':        ("", "🗑️"),                   # Remove Edge / bloatware / Windows.old
+    'shieldplain':   ("", "🛡️"),                   # Disable Telemetry (shield)
+    'target':        ("", "🎯"),                    # Disable Advertising ID
+    'history':       ("", "🕓"),                    # Disable Activity History
+    'defender':      ("", "🔒"),                    # Apply ALL Privacy (full shield)
+    'chartline':     ("", "📊"),                    # System Info Snapshot
+    'save':          ("", "💿"),                    # Driver Backup
+    'search':        ("", "🔍"),                    # Missing Driver Scan
+    'restorepoint':  ("", "🛟"),                    # Create Restore Point
+    'log':           ("", "📜"),                    # View Operation Log
+    'folder':        ("", "📁"),                    # OneDrive Backup Folder
+    # --- system tools subs ---
+    'document':      ("", "📄"),                    # Microsoft Office Suite
+    'puzzle':        ("", "🧩"),                    # Core API Runtimes
+    'diagnostics':   ("", "🔬"),                    # Hardware Diagnostics
+    'terminal':      ("", "🧭"),                    # PATH Doctor
+    'boot':          ("", "🚀"),                    # Startup Manager
+    'refresh':       ("", "🔄"),                    # Check for Updates
+    'sync':          ("", "🔁"),                    # Install / Restore pairs
+    'cloud':         ("", "☁️"),                   # OneDrive purge
 }
 
 
