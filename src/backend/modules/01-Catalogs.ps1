@@ -23,6 +23,11 @@ $Script:TweakCatalog = @(
         Key         = "DarkMode"
         Category    = "Personalization"
         Description = "Switches Windows to dark theme (apps + system)."
+        # Theme registry writes don't repaint the running shell on their own,
+        # so the taskbar/other surfaces glitch until the next sign-in. This
+        # flag makes Invoke-Tweak fire Invoke-ShellThemeRefresh after applying,
+        # so Dark/Light takes effect cleanly and immediately.
+        RefreshShell = $true
         Entries = @(
             @{ Path = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"; Name = "AppsUseLightTheme";   OnValue = 0; OffValue = 1; Type = "DWord" }
             @{ Path = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"; Name = "SystemUsesLightTheme"; OnValue = 0; OffValue = 1; Type = "DWord" }
@@ -347,7 +352,14 @@ $Script:BloatApps = @(
     "Microsoft.MicrosoftSolitaireCollection", "Microsoft.MixedReality.Portal", "Microsoft.People",
     "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.WindowsMaps", "Microsoft.Xbox.TCUI",
     "Microsoft.XboxApp", "Microsoft.XboxGameOverlay", "Microsoft.XboxGamingOverlay", "Microsoft.XboxIdentityProvider",
-    "Microsoft.XboxSpeechToTextOverlay", "Microsoft.YourPhone", "Microsoft.ZuneMusic", "Microsoft.ZuneVideo"
+    "Microsoft.XboxSpeechToTextOverlay", "Microsoft.YourPhone", "Microsoft.ZuneMusic", "Microsoft.ZuneVideo",
+    # --- v9.4 expansion: modern Win11 preinstalls users asked to purge ---
+    "7EE7776C.LinkedInforWindows",              # LinkedIn
+    "Clipchamp.Clipchamp",                      # Clipchamp video editor
+    "Microsoft.OutlookForWindows",              # "new" Outlook
+    "Microsoft.MicrosoftStickyNotes",           # Sticky Notes
+    "MSTeams",                                  # new Microsoft Teams (personal)
+    "MicrosoftWindows.Client.WebExperience"     # Widgets / Web Experience pack
 )
 
 # ============================================================

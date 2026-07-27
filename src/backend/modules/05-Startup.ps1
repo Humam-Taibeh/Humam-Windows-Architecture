@@ -26,7 +26,12 @@ function Get-StartupRunKeyItems {
         $Props = Get-ItemProperty -Path $Key.Path -ErrorAction SilentlyContinue
         if (-not $Props) { continue }
         foreach ($Prop in $Props.PSObject.Properties) {
-            if ($Prop.Name -match '^PS(Path|ParentPath|ChildName|Provider)$') { continue }
+            # Skip ALL of Get-ItemProperty's synthetic PS* members. Missing
+            # 'Drive' here was a real bug: the PSDrive member is a rich
+            # PSDriveInfo object (with circular refs), so it both leaked a
+            # bogus "PSDrive" startup item AND made ConvertTo-Json -Depth 8 in
+            # Write-GuiData recurse forever — hanging the Startup Manager.
+            if ($Prop.Name -match '^PS(Path|ParentPath|ChildName|Provider|Drive)$') { continue }
             $Items += [PSCustomObject]@{
                 Type    = "Registry"
                 Hive    = $Key.Hive
@@ -68,7 +73,12 @@ function Get-DisabledStartupItems {
         $Props = Get-ItemProperty -Path $Script:StartupDisabledRegPath -ErrorAction SilentlyContinue
         if ($Props) {
             foreach ($Prop in $Props.PSObject.Properties) {
-                if ($Prop.Name -match '^PS(Path|ParentPath|ChildName|Provider)$') { continue }
+                # Skip ALL of Get-ItemProperty's synthetic PS* members. Missing
+            # 'Drive' here was a real bug: the PSDrive member is a rich
+            # PSDriveInfo object (with circular refs), so it both leaked a
+            # bogus "PSDrive" startup item AND made ConvertTo-Json -Depth 8 in
+            # Write-GuiData recurse forever — hanging the Startup Manager.
+            if ($Prop.Name -match '^PS(Path|ParentPath|ChildName|Provider|Drive)$') { continue }
                 $Items += [PSCustomObject]@{
                     Type    = "Registry"
                     Hive    = "HKCU"

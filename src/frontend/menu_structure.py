@@ -572,6 +572,39 @@ def find_action(cat_index: int, task: str) -> tuple[dict | None, str]:
     return walk(cat["items"]), cat["accent"]
 
 
+# ============================================================
+#  ADMIN-GATED TASKS — GUI mirror of the backend gate
+# ============================================================
+# MUST stay in sync with $Script:AdminRequiredTasks in
+# src/backend/modules/01-Catalogs.ps1 — the backend is the authority (it
+# still rejects an admin task with a clean ERROR verdict even if this drifts),
+# but the GUI mirrors the list so it can PRE-CHECK before spawning PowerShell:
+# a non-elevated admin action shows an inline "relaunch elevated" prompt
+# instead of a spawn-then-fail round trip, and admin-gated Quick Action cards
+# can show a lock affordance up front. An automated equality check
+# (tests/scratchpad) guards the two lists against drift.
+#
+# Software install/update tasks are deliberately absent for the same reason
+# the backend omits them: winget + each installer handle their own elevation,
+# and blanket-requiring admin breaks user-scope / elevation-prohibited
+# packages (e.g. Spotify). See the 01-Catalogs.ps1 comment for the full why.
+ADMIN_REQUIRED_TASKS = frozenset({
+    "RunSFC", "CleanCache", "RemoveBloatware", "OptimizeDrives", "RemoveWindowsOld",
+    "DisableHibernation", "EnableHibernation", "DisableTelemetry", "DisableActivityHistory",
+    "NetworkOptimization", "UltimatePowerPlan", "RemoveOneDrive", "RemoveEdge",
+    "CreateRestorePoint", "DriverBackup", "RestoreServices", "RestoreEdge", "RestoreOneDrive",
+    "ApplyAllPrivacy", "ResetTweaks", "InstallOfficeODT", "InstallOfficeODTAuto",
+    "StartupDisableItem", "StartupEnableItem",
+})
+
+
+def requires_admin(task: str | None) -> bool:
+    """True if `task` writes HKLM / services / machine state and therefore
+    needs an elevated Pulse. Used by the GUI to pre-check before running an
+    admin-gated action (see main.PulseApp.request_task)."""
+    return bool(task) and task in ADMIN_REQUIRED_TASKS
+
+
 def iter_leaf_items():
     """Yields (item, breadcrumb) for every runnable action, expanding hub
     containers — used by the Ctrl+K command palette so a hub's sub-actions

@@ -63,11 +63,11 @@ def to_qcolor(value: str) -> QColor:
 
 def glass_fill(t: dict, base: str, sheen_stop: float = 0.13) -> str:
     """The one frosted-glass gradient every translucent surface in the app
-    shares: a top sheen highlight falling into a flat base tone. Cards,
-    Welcome insight tiles and dialog panels all call this with their own
-    base color so the whole app reads as one material, not three slightly
-    different ad-hoc gradients (which is what card_qss/insight_card_qss
-    had before this — 0.12 vs 0.15 sheen stops, purely accidental drift)."""
+    shares: a top sheen highlight falling into a flat base tone. Cards, the
+    Welcome hero banner and dialog panels all call this with their own base
+    color so the whole app reads as one material, not several slightly
+    different ad-hoc gradients (which is what card_qss and the old insight
+    tiles had before this — 0.12 vs 0.15 sheen stops, purely accidental)."""
     return (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, "
             f"stop:0 {t['card_sheen']}, stop:{sheen_stop} {base}, stop:1 {base})")
 
@@ -185,6 +185,7 @@ GLYPHS: dict[str, tuple[str, str]] = {
     'home':          ("", "⌂"),                    # Home
     'chevron':       ("", "›"),                    # ChevronRight
     'back':          ("", "‹"),                    # ChevronLeft
+    'lock':          ("", "🔒"),             # Lock — admin-gated affordance
     # --- modules (sidebar) ---
     'package':       ("", "📦"),                    # Software Management
     'bolt':          ("", "⚡"),                    # System Optimization / power
@@ -739,33 +740,6 @@ def beta_badge_qss(t: dict) -> str:
     """
 
 
-def admin_badge_qss(t: dict) -> str:
-    """Persistent 'Not Elevated' pill in the title bar — the always-visible
-    counterpart to the once-only startup toast, so a user browsing the app
-    knows up front (not after a system-level task fails) that admin-only
-    actions won't run until Pulse is restarted elevated. Amber `warn`
-    token, not `err`: this is a standing condition to be aware of, not a
-    failure that just happened. A QPushButton, not a QLabel: clicking it
-    triggers the one-click 'restart elevated' UAC relaunch, so it needs
-    hover/pressed feedback like every other title-bar button."""
-    return f"""
-        QPushButton {{
-            color: {t['warn']}; font-size: 9px; font-weight: 700;
-            background: {alpha(t['warn'], 0.12)};
-            border: 1px solid {alpha(t['warn'], 0.35)};
-            border-radius: 8px; padding: 2px 8px; letter-spacing: 1px;
-        }}
-        QPushButton:hover {{
-            background: {alpha(t['warn'], 0.26)}; color: {t['text']};
-            border: 1px solid {alpha(t['warn'], 0.60)};
-        }}
-        QPushButton:pressed {{
-            background: {alpha(t['warn'], 0.42)}; color: {t['text']};
-            border: 1px solid {t['warn']};
-        }}
-    """
-
-
 def toast_qss(t: dict, accent: str) -> str:
     """One toast notification card: app-material surface (same frosted
     treatment as dialogs), a slim colored status spine on the left, and
@@ -1302,33 +1276,6 @@ _LABEL_ROLES = {
     "meta":     ("11px", "600", "text_faint", "letter-spacing: 0.5px;"),
     "caption":  ("10px", "500", "text_faint", "letter-spacing: 1px;"),
 }
-
-
-def insight_card_qss(t: dict) -> str:
-    """Mini system-metadata preview card on the Welcome page — same
-    sheen-gradient glass treatment as GlassCard, for one consistent
-    material across the app."""
-    return f"""
-        QFrame#insight {{
-            background: {glass_fill(t, t['card'])};
-            border: 1px solid {t['card_line']};
-            border-radius: 14px;
-        }}
-        QFrame#insight:hover {{
-            border: 1px solid {alpha(t['accent'], 0.35)};
-        }}
-    """
-
-
-def dock_qss(t: dict) -> str:
-    """Unified glass dock enclosing the Welcome status chips."""
-    return f"""
-        QFrame#dock {{
-            background: {t['panel']};
-            border: 1px solid {t['panel_line']};
-            border-radius: 22px;
-        }}
-    """
 
 
 def hero_banner_qss(t: dict) -> str:

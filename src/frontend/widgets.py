@@ -273,7 +273,6 @@ class TitleBar(QWidget):
     """
 
     theme_toggle_requested = Signal()
-    elevate_requested = Signal()
 
     # (caption-font glyph, text fallback)
     _ICONS = {
@@ -313,13 +312,10 @@ class TitleBar(QWidget):
         if channel:
             self._channel = QLabel(channel.upper())
             lay.addWidget(self._channel)
-        # v8: elevation state/action moved OUT of the title bar into the
-        # sidebar footer (main.PulseApp._build_ui), where "app-level system
-        # controls" already live (the identity line). The title bar keeps
-        # a clean brand-only left cluster; `_admin_badge` stays defined as
-        # None so the native-hit-test carve-out (main._over_admin_badge)
-        # remains a harmless no-op.
-        self._admin_badge: QPushButton | None = None
+        # v8: elevation state/action lives in the sidebar footer
+        # (main.PulseApp._build_ui), not the title bar — the left cluster stays
+        # a clean brand-only block. (v9.4 removed the dead admin-badge no-op
+        # scaffolding that used to sit here.)
         lay.addStretch()
 
         btns = QHBoxLayout()
@@ -359,8 +355,6 @@ class TitleBar(QWidget):
         self._version.setStyleSheet(TH.label_qss(t, "version"))
         if self._channel is not None:
             self._channel.setStyleSheet(TH.beta_badge_qss(t))
-        if self._admin_badge is not None:
-            self._admin_badge.setStyleSheet(TH.admin_badge_qss(t))
         for btn in (self._btn_theme, self._btn_min, self.btn_max):
             btn.setStyleSheet(TH.titlebar_button_qss(t, t["titlebar_hover"]))
         self._btn_close.setStyleSheet(TH.titlebar_close_qss(t))
@@ -384,23 +378,6 @@ class TitleBar(QWidget):
         """The theme toggle — the one title-bar button that stays a plain
         Qt button (HTCLIENT), so the HTCAPTION strip must carve it out."""
         return self._btn_theme
-
-    def admin_badge(self) -> QPushButton | None:
-        """The 'NOT ELEVATED' badge, when present — like theme_button(),
-        this is a plain Qt button sitting inside the otherwise-HTCAPTION
-        title-bar strip, so main.nativeEvent must carve out its rect too
-        or Windows swallows the click as a title-bar drag before Qt ever
-        sees it. None when running elevated (the badge doesn't exist)."""
-        return self._admin_badge
-
-    def _on_admin_badge_clicked(self):
-        # Cheap confirmation that the click actually reached Qt (vs. being
-        # eaten by the native HTCAPTION hit-test) — guarded because a
-        # windowed PyInstaller build (console=False) runs with sys.stdout
-        # as None, and print() on a None stream raises.
-        if sys.stdout is not None:
-            print("[Pulse] NOT ELEVATED badge clicked — requesting elevated relaunch.")
-        self.elevate_requested.emit()
 
     def set_nc_hover(self, key: str | None):
         """Highlight exactly the caption button under the non-client
@@ -612,12 +589,16 @@ class GlassCard(QFrame):
     _PLAQUE = 42        # icon plaque footprint (v9.1: tighter, denser card)
 
     def __init__(self, item: dict, accent: str, t: dict,
-                 featured: bool = False):
+                 featured: bool = False, locked: bool = False):
         super().__init__()
         self.item = item
         self._accent = accent
         self._danger = bool(item.get("danger"))
         self._featured = featured
+        # v9.4: `locked` marks an admin-gated action shown on a non-elevated
+        # Pulse — a small lock glyph in the head signals "needs Administrator"
+        # up front (the click then opens the inline elevate prompt).
+        self._locked = locked
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         # v8 proportion fix: a min AND a max so cards never balloon. The
         # equal-row-stretch grid (main.CategoryPage._relayout) still fills the
@@ -705,6 +686,20 @@ class GlassCard(QFrame):
                 cf.setPixelSize(15)
                 self._chevron.setFont(cf)
             head.addWidget(self._chevron, 0, Qt.AlignmentFlag.AlignVCenter)
+        # admin-gated lock indicator (v9.4): a quiet warn-tinted lock glyph
+        # pinned to the head's right edge when this card needs elevation the
+        # current session doesn't have.
+        self._lock: QLabel | None = None
+        if self._locked:
+            lock_char, lock_fluent = TH.glyph("lock")
+            self._lock = QLabel(lock_char)
+            lf = TH.icon_font(13) if lock_fluent else QFont()
+            if lf is not None:
+                lf.setPixelSize(13)
+                self._lock.setFont(lf)
+            self._lock.setToolTip(
+                "Needs Administrator — clicking will offer to relaunch Pulse elevated.")
+            head.addWidget(self._lock, 0, Qt.AlignmentFlag.AlignTop)
         col.addLayout(head)
 
         self._desc = QLabel(item["desc"])
@@ -742,6 +737,9 @@ class GlassCard(QFrame):
             self._badge.setStyleSheet(TH.badge_qss(t))
         if self._chevron is not None:
             self._chevron.setStyleSheet(TH.card_chevron_qss(t, self._accent))
+        if self._lock is not None:
+            self._lock.setStyleSheet(
+                f"color: {t['warn']}; background: transparent; border: none;")
         for i, pill in enumerate(self._meta_pills):
             # the lead pill on the featured card carries the accent tint
             tint = plaque_accent if (self._featured and i == 0) else ""
@@ -1216,6 +1214,63 @@ class ConfirmDialog(PulseDialog):
 
         go = QPushButton("Proceed")
         go.setFixedSize(96, 36)
+        go.setCursor(Qt.CursorShape.PointingHandCursor)
+        go.setStyleSheet(TH.dialog_go_qss(t, accent))
+        go.clicked.connect(self.accept)
+        row.addWidget(go)
+        lay.addLayout(row)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+
+# ============================================================
+#  ELEVATE PROMPT — inline "this needs Administrator" gate
+# ============================================================
+class ElevatePromptDialog(PulseDialog):
+    """Shown when a NON-elevated Pulse is asked to run an admin-gated action
+    (see menu_structure.requires_admin). Instead of spawning PowerShell only
+    to bounce back an access-denied verdict, this offers a one-click UAC
+    relaunch up front. Accepted => the caller runs PulseApp._relaunch_as_admin;
+    rejected => nothing happens and no task is started. Amber `warn` accent to
+    match the sidebar's 'Run as Administrator' CTA — a standing requirement,
+    not a red failure."""
+
+    def __init__(self, parent: QWidget, item: dict, t: dict):
+        super().__init__(parent)
+        accent = t["warn"]
+        panel = _dialog_chrome(self, t, accent, width=470)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(10)
+
+        head = QLabel("🛡  Administrator required")
+        head.setStyleSheet(TH.label_qss(t, "card"))
+        lay.addWidget(head)
+
+        body = QLabel(
+            f"“{item.get('title', 'This action')}” makes system-level changes "
+            "that need Administrator rights. Relaunch Pulse elevated to "
+            "continue — Windows will show a UAC consent prompt.")
+        body.setWordWrap(True)
+        body.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(body)
+
+        lay.addSpacing(8)
+        row = QHBoxLayout()
+        row.addStretch()
+
+        cancel = QPushButton("Not now")
+        cancel.setFixedSize(96, 36)
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.setStyleSheet(TH.dialog_cancel_qss(t))
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+
+        go = QPushButton("Relaunch as Administrator")
+        go.setFixedSize(214, 36)
         go.setCursor(Qt.CursorShape.PointingHandCursor)
         go.setStyleSheet(TH.dialog_go_qss(t, accent))
         go.clicked.connect(self.accept)

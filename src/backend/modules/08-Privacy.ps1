@@ -18,23 +18,54 @@ function Remove-Bloatware {
     Write-SectionHeader "Bloatware Removal"
     New-SystemRestorePoint
     $RemovedAny = $false
+
+    # Provisioned packages are the copies STAGED for future users / feature
+    # updates. Removing only the installed package leaves the provisioned one
+    # behind, so a "removed" app silently returns on the next major update or
+    # new profile. Deprovisioning as well makes the purge actually stick.
+    # Fetched once (needs admin, which RemoveBloatware already requires).
+    $Provisioned = @()
+    try {
+        $Provisioned = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop)
+    } catch {
+        Write-Log "Remove-Bloatware: could not enumerate provisioned packages - $($_.Exception.Message)"
+    }
+
     foreach ($Pkg in $Script:BloatApps) {
         $Installed = Get-AppxPackage -Name $Pkg -AllUsers -ErrorAction SilentlyContinue
         if ($Installed) {
             if (Test-DryRun "Remove Store app package '$Pkg' (all users)") {
                 $RemovedAny = $true
+            } else {
+                try {
+                    $Installed | Remove-AppxPackage -AllUsers -ErrorAction Stop
+                    Write-Success "Removed $Pkg"
+                    $RemovedAny = $true
+                } catch {
+                    # A real failure (often policy-protected packages like Xbox/
+                    # Widgets on some editions) - Write-ErrorX, not Write-Warn, so
+                    # "RemoveBloatware" doesn't report full success when packages
+                    # actually remain installed.
+                    Write-ErrorX "Could not remove $Pkg (may be protected by policy): $($_.Exception.Message)"
+                }
+            }
+        }
+
+        # Deprovision the staged copy so it does not reinstall. A deprovision
+        # failure is a Write-Warn (not Write-ErrorX): the installed-package
+        # removal above is the authoritative success signal, and many staged
+        # packages simply aren't present to deprovision.
+        foreach ($P in @($Provisioned | Where-Object { $_.DisplayName -eq $Pkg })) {
+            if (Test-DryRun "Deprovision staged package '$Pkg' so it won't reinstall for new users") {
+                $RemovedAny = $true
                 continue
             }
             try {
-                $Installed | Remove-AppxPackage -AllUsers -ErrorAction Stop
-                Write-Success "Removed $Pkg"
+                Remove-AppxProvisionedPackage -Online -PackageName $P.PackageName -ErrorAction Stop | Out-Null
+                Write-Success "Deprovisioned $Pkg (won't reinstall for new users)"
                 $RemovedAny = $true
             } catch {
-                # A real failure (often policy-protected packages like Xbox/
-                # Widgets on some editions) - Write-ErrorX, not Write-Warn, so
-                # "RemoveBloatware" doesn't report full success when packages
-                # actually remain installed.
-                Write-ErrorX "Could not remove $Pkg (may be protected by policy): $($_.Exception.Message)"
+                Write-Warn "Could not deprovision $Pkg (may be protected): $($_.Exception.Message)"
             }
         }
     }

@@ -49,6 +49,50 @@ function Invoke-Tweak {
         }
         Write-Success "$($Tweak.Key) applied successfully."
     } | Out-Null
+
+    # Theme-affecting tweaks (Dark/Light) need the shell nudged or the change
+    # doesn't repaint until sign-out - see Invoke-ShellThemeRefresh.
+    if ($Tweak.RefreshShell) { Invoke-ShellThemeRefresh }
+}
+
+function Invoke-ShellThemeRefresh {
+    <# Applies a just-written theme change (Dark/Light) to the RUNNING shell so
+       the taskbar and open surfaces repaint immediately instead of glitching
+       until the next sign-in. Two non-disruptive steps (deliberately NOT an
+       explorer.exe restart, which would close the user's open File Explorer
+       windows for a mere theme toggle):
+         1. Broadcast WM_SETTINGCHANGE('ImmersiveColorSet') so every top-level
+            window re-reads the theme.
+         2. ie4uinit.exe -show to refresh the shell's icon/theme caches.
+       Best-effort: any step failing is logged, never fatal - worst case the
+       theme still applies on next sign-in. #>
+    if (Test-DryRun "Refresh the Windows shell so the theme change applies immediately (WM_SETTINGCHANGE broadcast + ie4uinit -show)") { return }
+
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'Pulse.ShellNative').Type) {
+            Add-Type -Namespace Pulse -Name ShellNative -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+'@ -ErrorAction Stop
+        }
+        $HWND_BROADCAST   = [System.IntPtr]0xffff
+        $WM_SETTINGCHANGE = 0x001A
+        $SMTO_ABORTIFHUNG = 0x0002
+        $out = [System.UIntPtr]::Zero
+        foreach ($section in @('ImmersiveColorSet', 'WindowsThemeElement', 'Policy')) {
+            [void][Pulse.ShellNative]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [System.UIntPtr]::Zero, $section, $SMTO_ABORTIFHUNG, 200, [ref]$out)
+        }
+    } catch {
+        Write-Log "ShellThemeRefresh: WM_SETTINGCHANGE broadcast failed - $($_.Exception.Message)"
+    }
+
+    try {
+        Start-Process -FilePath "ie4uinit.exe" -ArgumentList "-show" -WindowStyle Hidden -ErrorAction Stop
+    } catch {
+        Write-Log "ShellThemeRefresh: ie4uinit -show failed - $($_.Exception.Message)"
+    }
+
+    Write-Success "Windows shell refreshed - the theme change is visible immediately."
 }
 
 # ============================================================

@@ -375,7 +375,7 @@ function Resolve-WingetExitCode {
         -1978335107  { return @{ Success = $false; AlreadyCurrent = $false; ElevationConflict = $true; Message = "This app's repair/modify path is blocked while Pulse is elevated (Administrator). Use Pulse's GUI without elevating instead." } }
         # 0x8A150019 COMMAND_REQUIRES_ADMIN - the reverse case: this
         # operation genuinely needs elevation and Pulse doesn't have it.
-        -1978335207  { return @{ Success = $false; AlreadyCurrent = $false; ElevationConflict = $true; Message = "This app requires Administrator rights to install. Click the NOT ELEVATED badge in the title bar to relaunch elevated, then retry." } }
+        -1978335207  { return @{ Success = $false; AlreadyCurrent = $false; ElevationConflict = $true; Message = "This app requires Administrator rights to install. Click 'Run as Administrator' in the Pulse sidebar to relaunch elevated, then retry." } }
         1602         { return @{ Success = $false; AlreadyCurrent = $false; Message = "Installer was cancelled." } }
         1            { return @{ Success = $false; AlreadyCurrent = $false; Message = "Generic failure (Exit Code 1)." } }
         default      { return @{ Success = $false; AlreadyCurrent = $false; Message = "Unhandled exit code ($Code)." } }

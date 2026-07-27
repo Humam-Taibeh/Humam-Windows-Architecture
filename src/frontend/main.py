@@ -54,13 +54,14 @@ from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
     CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, find_action, hub_items,
-    iter_leaf_items,
+    iter_leaf_items, requires_admin,
 )
 from frontend.widgets import (  # noqa: E402
     ActivityDrawer, AmbientGlow, AppSelectorDialog, BreathingIcon,
-    CommandPalette, ConfirmDialog, DepthCard, DevHubSelectorDialog, GlassCard,
-    HubDialog, NavButton, NavPill, OfficeWizardDialog, PulseDialog,
-    StartupManagerDialog, TitleBar, UpdateCenterDialog, refit_dialog,
+    CommandPalette, ConfirmDialog, DepthCard, DevHubSelectorDialog,
+    ElevatePromptDialog, GlassCard, HubDialog, NavButton, NavPill,
+    OfficeWizardDialog, PulseDialog, StartupManagerDialog, TitleBar,
+    UpdateCenterDialog, refit_dialog,
 )
 
 # ============================================================
@@ -209,7 +210,10 @@ class WelcomePage(QWidget):
         "CreateRestorePoint": "A safety checkpoint before big changes.",
     }
 
-    action_requested = Signal(dict)   # item dict -> PulseApp.request_task
+    # (item, card) -> PulseApp.request_task — the card rides along so a
+    # dashboard action gets the same running-glow + ok/err flash a category
+    # card gets (v9.4); object (not GlassCard) keeps this module import-light.
+    action_requested = Signal(dict, object)
 
     def __init__(self, t: dict, engine_ok: bool, is_admin: bool):
         super().__init__()
@@ -338,10 +342,15 @@ class WelcomePage(QWidget):
             card_item = {**item, "desc": self.ACTION_BLURBS.get(task, item["desc"])}
             for meta_key in ("update_center", "note", "apps", "devhub"):
                 card_item.pop(meta_key, None)
-            card = GlassCard(card_item, accent, t)
-            card.setMinimumHeight(108)
+            locked = requires_admin(task) and not is_admin
+            card = GlassCard(card_item, accent, t, locked=locked)
+            # tighter envelope than a category card (default 112/146): a Quick
+            # Action is a compact button with a one-line blurb, so cap it lower
+            # so it reads crisp and airy rather than a tall stretched slab.
+            card.setMinimumHeight(104)
+            card.setMaximumHeight(132)
             card.clicked.connect(
-                lambda it=item: self.action_requested.emit(it))
+                lambda it=item, c=card: self.action_requested.emit(it, c))
             self._action_cards.append(card)
         self._relayout_actions(3)
         root.addWidget(grid_host, 1)
@@ -909,6 +918,16 @@ class PulseApp(QMainWindow):
         if task.startswith("@"):
             self._run_local_action(task)
             return
+        # Elevation pre-check (v9.4): an admin-gated task on a non-elevated
+        # Pulse gets an inline one-click "relaunch elevated" prompt BEFORE we
+        # spawn PowerShell — cleaner than a spawn-then-access-denied round trip,
+        # and it covers category cards, dashboard Quick Actions and Ctrl+K in
+        # one place. The backend still enforces the same gate as a backstop.
+        if requires_admin(task) and not self.is_admin:
+            dialog = ElevatePromptDialog(self, item, self.theme.t)
+            if self._exec_dialog(dialog) == QDialog.DialogCode.Accepted:
+                self._relaunch_as_admin()
+            return
         if self._thread is not None and self._thread.isRunning():
             self.toasts.show("info", "A task is already running — please wait.", 3000)
             return
@@ -1043,9 +1062,11 @@ class PulseApp(QMainWindow):
                 message = ("This module needs the updated core.ps1 backend. "
                            "Update src/backend/core.ps1 to enable it.")
             if "needs administrator rights" in message.lower():
-                # A clean amber warning, not a flat red error — the title
-                # bar's "NOT ELEVATED" badge already told the user this was
-                # coming; this is confirmation, not a surprise failure.
+                # A clean amber warning, not a flat red error. This is a
+                # backstop: the frontend's own pre-check (request_task +
+                # requires_admin) normally shows the inline elevate prompt
+                # before a task ever spawns, so reaching here means the backend
+                # gate fired — confirmation, not a surprise failure.
                 self.toasts.show("warn", message, 7000)
                 self._set_status("err", "Administrator rights required")
             else:
@@ -1169,8 +1190,9 @@ class PulseApp(QMainWindow):
         if not self.is_admin:
             self.toasts.show(
                 "info",
-                "Not running as Administrator — system tasks may fail. "
-                "Click the ⚠ NOT ELEVATED badge above to relaunch elevated.", 8000)
+                "Not running as Administrator — system tasks will prompt to "
+                "relaunch elevated. Or click 'Run as Administrator' in the sidebar.",
+                8000)
 
     def _relaunch_as_admin(self):
         """One-click UAC relaunch, triggered by the sidebar footer's 'Run as
@@ -1347,23 +1369,6 @@ class PulseApp(QMainWindow):
         return (left <= gx < left + round(btn.width() * dpr)
                 and top <= gy < top + round(btn.height() * dpr))
 
-    def _over_admin_badge(self, rect, gx: int, gy: int) -> bool:
-        """Same HTCLIENT carve-out as _over_theme_button, for the 'NOT
-        ELEVATED' badge — without this, the badge sits inside the
-        HTCAPTION strip and every click on it is consumed by Windows as a
-        title-bar drag before Qt's click ever fires (the bug: 'badge is
-        clicked, but nothing happens'). Returns False when running
-        elevated, where the badge doesn't exist."""
-        btn = self.titlebar.admin_badge()
-        if btn is None or not btn.isVisible():
-            return False
-        dpr = self.devicePixelRatioF()
-        top_left = btn.mapTo(self, QPoint(0, 0))
-        left = rect.left + round(top_left.x() * dpr)
-        top = rect.top + round(top_left.y() * dpr)
-        return (left <= gx < left + round(btn.width() * dpr)
-                and top <= gy < top + round(btn.height() * dpr))
-
     def nativeEvent(self, eventType, message):
         """Native window integration, in two parts:
 
@@ -1441,8 +1446,7 @@ class PulseApp(QMainWindow):
                 # badge keep an HTCLIENT hole.
                 dpr = self.devicePixelRatioF()
                 tb_bottom = rect.top + round(titlebar.height() * dpr)
-                if (y < tb_bottom and not self._over_theme_button(rect, x, y)
-                        and not self._over_admin_badge(rect, x, y)):
+                if y < tb_bottom and not self._over_theme_button(rect, x, y):
                     return True, 2   # HTCAPTION
 
             elif (msg.message == self._WM_NCLBUTTONDOWN

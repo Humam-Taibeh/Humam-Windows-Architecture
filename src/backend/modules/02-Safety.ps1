@@ -26,9 +26,49 @@
 #  SYSTEM RESTORE
 # ============================================================
 function New-SystemRestorePoint {
+    <# Creates a System Restore checkpoint with a smart, unique, action-based
+       name: PULSE_AutoRestore_<Action>_<yyyyMMdd_HHmmss>. `-Action` is an
+       optional short tag describing what triggered it ("Manual" for the
+       explicit GUI action, "System" for the auto-checkpoint fired before a
+       tweak/service change). Two dedup layers:
+         1. $Script:RestorePointCreated - once per PowerShell process.
+         2. A cross-process 15-minute guard - because each GUI task runs in a
+            FRESH process, layer 1 can't stop back-to-back points across rapid
+            actions; this reuses a recent PULSE point instead of spamming the
+            restore list (Windows' own 24h throttle is intentionally disabled
+            below so our own checkpoints aren't silently dropped). #>
+    param([string]$Action = "System")
+
     if ($Script:RestorePointCreated) { return }
-    if (Test-DryRun "Create System Restore point 'Pulse Restore Point' (once per session)") { return }
-    Write-Info "Preparing System Restore checkpoint..."
+
+    $Tag = ($Action -replace '[^A-Za-z0-9]', '')
+    if ([string]::IsNullOrWhiteSpace($Tag)) { $Tag = "System" }
+    $Description = "PULSE_AutoRestore_{0}_{1}" -f $Tag, (Get-Date -Format 'yyyyMMdd_HHmmss')
+
+    if (Test-DryRun "Create System Restore point '$Description'") { return }
+
+    # --- cross-process 15-minute dedup guard ---
+    try {
+        $Existing = Get-ComputerRestorePoint -ErrorAction Stop |
+            Where-Object { $_.Description -like 'PULSE_AutoRestore_*' -or $_.Description -eq 'Pulse Restore Point' }
+        if ($Existing) {
+            $Newest = $Existing |
+                Sort-Object { [System.Management.ManagementDateTimeConverter]::ToDateTime($_.CreationTime) } -Descending |
+                Select-Object -First 1
+            $AgeMin = ((Get-Date) - [System.Management.ManagementDateTimeConverter]::ToDateTime($Newest.CreationTime)).TotalMinutes
+            if ($AgeMin -lt 15) {
+                $Script:RestorePointCreated = $true
+                $Script:ScriptRestorePointSeq = $Newest.SequenceNumber
+                Write-Info ("Reusing recent restore point '{0}' ({1}m old) - skipping a duplicate." -f $Newest.Description, [int]$AgeMin)
+                return
+            }
+        }
+    } catch {
+        # Get-ComputerRestorePoint can throw on editions where System Restore
+        # is disabled - fall through and let Checkpoint-Computer report cleanly.
+    }
+
+    Write-Info "Preparing System Restore checkpoint '$Description'..."
     try {
         $SystemDrive = $env:SystemDrive
         Enable-ComputerRestore -Drive $SystemDrive -ErrorAction SilentlyContinue
@@ -37,17 +77,17 @@ function New-SystemRestorePoint {
         if (-not (Test-Path $ThrottlePath)) { New-Item -Path $ThrottlePath -Force | Out-Null }
         Set-ItemProperty -Path $ThrottlePath -Name "SystemRestorePointCreationFrequency" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 
-        Checkpoint-Computer -Description "Pulse Restore Point" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
+        Checkpoint-Computer -Description $Description -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
         $Script:RestorePointCreated = $true
 
         try {
             $RP = Get-ComputerRestorePoint -ErrorAction Stop |
-                  Where-Object { $_.Description -eq "Pulse Restore Point" } |
+                  Where-Object { $_.Description -eq $Description } |
                   Sort-Object SequenceNumber -Descending | Select-Object -First 1
             if ($RP) { $Script:ScriptRestorePointSeq = $RP.SequenceNumber }
         } catch {}
 
-        Write-Success "System Restore Point 'Pulse Restore Point' created successfully."
+        Write-Success "System Restore Point '$Description' created successfully."
     } catch {
         Write-Warn "Restore Point creation skipped (System Restore may be disabled, throttled, or unsupported on this edition). Tweaks will still proceed, but consider enabling System Restore first: Control Panel > System > System Protection."
     }

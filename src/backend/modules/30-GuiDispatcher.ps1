@@ -129,7 +129,7 @@ function Invoke-GuiTask {
     param([string]$TaskName)
     try {
         if (($Script:AdminRequiredTasks -contains $TaskName) -and -not $Script:IsAdminSession) {
-            Write-Output "##PULSE##ERROR|'$TaskName' needs Administrator rights. Click the NOT ELEVATED badge in the title bar to relaunch elevated."
+            Write-Output "##PULSE##ERROR|'$TaskName' needs Administrator rights. Click 'Run as Administrator' in the Pulse sidebar to relaunch elevated, then retry."
             return
         }
 
@@ -523,13 +523,13 @@ function Invoke-GuiTask {
             }
             "CreateRestorePoint" {
                 if ($Script:DryRun) {
-                    New-SystemRestorePoint
-                    Write-Output "##PULSE##SUCCESS|[DRY-RUN] Restore point creation simulated."
+                    New-SystemRestorePoint -Action "Manual"
+                    Write-Output "##PULSE##SUCCESS|[DRY-RUN] Restore point creation simulated (name: PULSE_AutoRestore_Manual_<timestamp>)."
                     break
                 }
-                New-SystemRestorePoint
+                New-SystemRestorePoint -Action "Manual"
                 if ($Script:RestorePointCreated) {
-                    Write-Output "##PULSE##SUCCESS|Restore point 'Pulse Restore Point' created."
+                    Write-Output "##PULSE##SUCCESS|System restore checkpoint is in place (created 'PULSE_AutoRestore_Manual_…', or reused one from the last 15 minutes)."
                 } else {
                     Write-Output "##PULSE##ERROR|Restore point could not be created — System Restore may be disabled or throttled on this machine."
                 }
