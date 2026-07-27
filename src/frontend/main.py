@@ -38,7 +38,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
-    QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea, QSizeGrip,
+    QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -51,7 +51,7 @@ if _SRC_DIR not in sys.path:
 
 from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
 from frontend import theme as TH  # noqa: E402
-from frontend.animations import CascadeAnimator, PageFader, ShimmerBar  # noqa: E402
+from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
     CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, find_action, hub_items,
     iter_leaf_items, requires_admin,
@@ -1268,6 +1268,13 @@ class PulseApp(QMainWindow):
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
+            # Pause the living-background loop while minimized (hideEvent does
+            # NOT fire on minimize, so the ~28fps timer would otherwise keep
+            # running behind an invisible window). Resumes on restore.
+            if self.isMinimized():
+                self._glow.suspend()
+            else:
+                self._glow.resume()
             # Maximized = edge-to-edge: the shell drops its floating radius
             # and border (see shell_qss) so corners sit flush with the
             # monitor, exactly like a native maximized Win11 window.

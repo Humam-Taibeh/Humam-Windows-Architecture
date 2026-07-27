@@ -54,10 +54,13 @@ function Complete-GuiTask {
     $failsBefore = $Script:SessionFailCount
     & $Action | Out-Null
     if ($Script:SessionFailCount -gt $failsBefore) {
+        Write-Log "GUI-TASK RESULT [ERROR]: $FailureMessage"
         Write-Output "##PULSE##ERROR|$FailureMessage See the Pulse log (Information > View Operation Log)."
     } elseif ($Script:DryRun) {
+        Write-Log "GUI-TASK RESULT [DRY-RUN SUCCESS]: $SuccessMessage"
         Write-Output "##PULSE##SUCCESS|[DRY-RUN] $SuccessMessage (simulated - no changes were made)"
     } else {
+        Write-Log "GUI-TASK RESULT [SUCCESS]: $SuccessMessage"
         Write-Output "##PULSE##SUCCESS|$SuccessMessage"
     }
 }
@@ -109,8 +112,10 @@ function Invoke-GuiBulkDeploy {
     if ($Parts.Count -eq 0) { $Parts += "nothing to do" }
     $Summary = $Parts -join ', '
     if ($failed -eq 0) {
+        Write-Log "GUI-TASK RESULT [SUCCESS]: $CategoryName — $Summary."
         Write-Output "##PULSE##SUCCESS|$Prefix$CategoryName — $Summary."
     } else {
+        Write-Log "GUI-TASK RESULT [ERROR]: $CategoryName — $failed failed, $Summary."
         Write-Output "##PULSE##ERROR|$CategoryName — $failed failed, $Summary. See the Pulse log (Information > View Operation Log)."
     }
 }
@@ -129,6 +134,7 @@ function Invoke-GuiTask {
     param([string]$TaskName)
     try {
         if (($Script:AdminRequiredTasks -contains $TaskName) -and -not $Script:IsAdminSession) {
+            Write-Log "GUI-TASK BLOCKED: '$TaskName' requires Administrator, but this session is not elevated."
             Write-Output "##PULSE##ERROR|'$TaskName' needs Administrator rights. Click 'Run as Administrator' in the Pulse sidebar to relaunch elevated, then retry."
             return
         }
@@ -571,6 +577,7 @@ function Invoke-GuiTask {
             }
 
             default {
+                Write-Log "GUI-TASK UNKNOWN: no dispatcher case for '$TaskName'."
                 Write-Output "##PULSE##ERROR|Unknown task: $TaskName"
             }
         }

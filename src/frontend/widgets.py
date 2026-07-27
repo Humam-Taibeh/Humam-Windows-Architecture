@@ -895,6 +895,11 @@ class AmbientGlow(QWidget):
         self._light = False
         self._radius = 24   # must track shell_qss's floating corner radius
         self._t = 0.0
+        # v9.5: paused while the window is minimized — hideEvent doesn't fire on
+        # minimize (Qt keeps children "visible"), so the loop would otherwise
+        # keep ticking at ~28fps behind a minimized window. Driven by
+        # suspend()/resume() from PulseApp.changeEvent.
+        self._suspended = False
         self._orb_cache: dict = {}
         self._particles: list[dict] = []
         self._build_particles()
@@ -943,14 +948,29 @@ class AmbientGlow(QWidget):
             self._radius = radius
             self.update()
 
-    # -- lifecycle: animate only while visible ----------------
+    # -- lifecycle: animate only while visible AND not minimized --------
     def showEvent(self, e):
         super().showEvent(e)
-        self._timer.start()
+        if not self._suspended:
+            self._timer.start()
 
     def hideEvent(self, e):
         super().hideEvent(e)
         self._timer.stop()
+
+    def suspend(self):
+        """Pause the animation while the window is minimized — hideEvent
+        doesn't fire on minimize, so PulseApp.changeEvent calls this to stop
+        the loop burning cycles behind an invisible window."""
+        self._suspended = True
+        self._timer.stop()
+
+    def resume(self):
+        """Resume after restore. No-ops while the widget is hidden (the next
+        showEvent will start it) so we never animate an off-screen surface."""
+        self._suspended = False
+        if self.isVisible() and not self._timer.isActive():
+            self._timer.start()
 
     def _tick(self):
         dt = self._INTERVAL_MS / 1000.0

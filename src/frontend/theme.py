@@ -85,26 +85,6 @@ def brand_gradient(t: dict, a1: float, a2: float | None = None) -> str:
             f"stop:0 {alpha(t['accent'], a1)}, stop:1 {alpha(t['accent2'], a2)})")
 
 
-def aurora_gradient(t: dict, a1: float, a2: float | None = None,
-                    a3: float | None = None) -> str:
-    """The v7 signature: the full Aurora tri-tone sweep, indigo → violet →
-    magenta (accent → accent2 → accent3). This is the *bolder* successor to
-    brand_gradient's two-stop pair — reserved for the app's most important
-    moments (the featured hero card's fill/edge, the primary deploy CTA),
-    where the extra magenta stop makes the surface read as a lit aurora
-    band rather than a flat tint. Everyday interactive surfaces keep the
-    calmer two-tone brand_gradient so the tri-tone stays a signal, not
-    wallpaper."""
-    if a2 is None:
-        a2 = a1
-    if a3 is None:
-        a3 = a2
-    return (f"qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-            f"stop:0 {alpha(t['accent'], a1)}, "
-            f"stop:0.5 {alpha(t['accent2'], a2)}, "
-            f"stop:1 {alpha(t['accent3'], a3)})")
-
-
 def bevel_alphas(t: dict) -> tuple[float, float]:
     """(light_alpha, dark_alpha) for animations.paint_bevel_frame, tuned per
     mode. Qt QSS has no box-shadow, so cards can't cast a real drop shadow;
