@@ -7,3 +7,8 @@
 
 # One-file .exe packaging (pyinstaller main.spec)
 pyinstaller>=6.0
+
+# Regression suite:  python -m pytest tests
+# The window tests need a REAL top-level window (they send live Win32
+# messages), so they are skipped under QT_QPA_PLATFORM=offscreen.
+pytest>=8.0
