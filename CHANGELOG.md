@@ -14,6 +14,98 @@ GUI version, with core changes called out explicitly.
 
 ## [Unreleased]
 
+### Added
+- **Applied-state badges** — cards for readable tweaks now show a green
+  `APPLIED` chip when the setting is currently active on the system, so
+  Pulse finally answers "did I already do this?" without re-running an
+  operation and reading the log. Backed by a new read-only backend probe
+  (`src/backend/modules/11-StateProbe.ps1`, task `GetTweakState`) covering
+  Dark Mode, mouse acceleration, Minimalist Taskbar, Classic Context Menu,
+  Game Mode, Advertising ID, Activity History, Telemetry, Hibernation and
+  the Ultimate Power Plan. The probe runs on its own thread outside the
+  single-task pipeline, needs no elevation, writes nothing (verified: its
+  output is byte-identical with and without `-WhatIf`), and is never
+  cached — settings changed outside Pulse are reflected immediately. An
+  unreadable check reports *unknown* and shows no chip rather than
+  guessing.
+- **Recent Operations panel** in the sidebar — the last three completed
+  operations with their module colour and a pass/fail dot, one click to
+  re-run. Fills what was ~360px of dead rail. Re-runs resolve back to the
+  live catalog entry, so they always use the current definition.
+- **Preference persistence** (`src/utils/prefs.py`, QSettings) — theme,
+  window geometry, Activity-drawer pin state and the recent-operations
+  trail now survive a restart. Previously every session opened dark, at
+  the default size, with the drawer unpinned.
+
+### Fixed
+- **Card descriptions were being silently truncated.** Measured across the
+  real catalog at the 3-column grid width, 14 cards had their description
+  cut off mid-sentence (worst: PATH Doctor, losing 88px — over half its
+  text) and 5 also lost part of their title; nothing warned, the text was
+  simply painted outside the card's clip. Cards are rebuilt with a header
+  row (icon + title) above a **full-width** description — the description
+  column was ~256px and is now ~312px — plus a hard per-block line budget
+  (`ClampedLabel`) that elides with the full text in a tooltip. Catalog
+  copy was tightened to match. Result: **0 truncated cards** across 540
+  instantiations (2 themes × 6 widths × the whole catalog).
+- **Window resizing leaked ~12 GB and stuttered.** `AmbientGlow` cached its
+  aurora orbs keyed on the window size, so every pixel of a drag-resize
+  minted three fresh ~1800×1800 pixmaps and kept them forever: a single
+  1000→1440px drag produced **1,323 cached pixmaps totalling 11.9 GB** at
+  34.9 ms/frame. Orbs are now rendered once at a fixed texture size and
+  scaled on blit — **3 pixmaps, 3.0 MB, 15.3 ms/frame**.
+- **Grid reflow could place cards outside their container.** Column counts
+  were derived from the page width while cards were laid out inside a
+  scroll host whose width settles a layout pass later; when the two
+  disagreed the grid overflowed (measured: a 1719px-wide grid inside a
+  590px host). Reflow is now driven by the host's own resize
+  (`ResponsiveGridHost`), so the width that picks the column count is the
+  width the cards are laid out in.
+- **Card entrance animation fought the layout.** `CascadeAnimator` drives
+  card positions directly; a resize mid-cascade left cards stranded at
+  stale coordinates. It now abandons the entrance when the host resizes
+  and hands placement back to the layout.
+- **Minimum window size is derived, not guessed** — it is computed from the
+  chrome plus one minimum-width card, so the window can no longer be
+  dragged to a size where the grid cannot lay out. The Welcome page's
+  Quick Actions gained a scroll area; without one a short window resolved
+  the impossible constraint by crushing cards to as little as 17px.
+  Verified across 448 (page × size) combinations.
+- **Light mode's colour system failed contrast.** The six module accents
+  were single hex literals shared by both themes and tuned for a near-black
+  canvas; against the light card they measured **1.86–2.64:1**, far under
+  the 3:1 floor for an icon. They are per-theme tokens now
+  (`theme.resolve_accent`), re-resolved on every theme switch, and every
+  one clears 4.5:1 as text and 3:1 as a glyph in both modes.
+- **The text ramp's bottom two steps failed AA.** `text_faint` measured
+  3.00:1 and `text_muted` 3.98:1 on a card while carrying 10–13px copy.
+  The ramp is rebuilt evenly in CIE L\* with its floor pinned at 4.55:1 —
+  four visibly distinct steps, all legible.
+- **Elevation was nearly invisible.** Card-vs-content-well separation was
+  1.20:1 (dark) / 1.21:1 (light). Depth now comes from recessing the
+  content well rather than brightening the card (which would have wrecked
+  the text ramp above it): **1.46:1 dark, 1.27:1 light**.
+- **Toasts covered the live console.** A fixed bottom margin put the toast
+  stack on top of the Activity drawer exactly when a task was running. The
+  stack now tracks the drawer's height live.
+- **Dialog titles were never actually enlarged** — all 8 built their header
+  as `label_qss(t, "card").replace("14px", "16px")`, but the card role has
+  been 16px since v7, so the replace matched nothing. Added a real
+  `dialog` type role (18px/700).
+
+### Changed
+- **Design-system foundations** — a single spacing scale (`TH.SPACE`) and
+  semantic radius scale (`TH.RADIUS`) replace 13 ad-hoc spacing values and
+  17 ad-hoc corner radii; card padding is symmetric.
+- **Light-mode ambient wash pulled back** (multiply peaks 0.30→0.16) — the
+  v10 canvas deepening made the old strength read as a lavender haze.
+
+### Removed
+- Dead code: `total_operations()` / `category_operations()`
+  (`menu_structure.py`), `HoverGlow` / `PulseAnimation` (`helpers.py`, long
+  superseded by `animations.py`), and the unused `hero` / `value` / `meta`
+  label roles — all with zero call sites.
+
 ### Changed
 - **Dual-theme legibility & finish pass** — light mode's two lower text
   steps deepened (`text_muted` #5d6879 → #4e5a6c ≈ 6:1, `text_faint`

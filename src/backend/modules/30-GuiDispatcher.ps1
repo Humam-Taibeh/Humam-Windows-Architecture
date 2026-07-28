@@ -217,6 +217,18 @@ function Invoke-GuiTask {
                 }
                 break
             }
+            "GetTweakState" {
+                # Read-only applied-state probe (11-StateProbe.ps1) powering
+                # the GUI's "Applied" card chips. Deliberately SILENT: it
+                # writes no log line and creates no restore point, because
+                # the GUI calls it on launch and after every task — logging
+                # a passive read on that cadence would bury the operations
+                # the user actually performed. Emitted as a single DATA line
+                # keyed by GUI task name.
+                Write-GuiData -Data (Get-PulseTweakState)
+                Write-Output "##PULSE##SUCCESS|State probe complete."
+                break
+            }
             "StartupReport" {
                 $Items = @(Get-StartupReportData)
                 Write-GuiData -Data $Items

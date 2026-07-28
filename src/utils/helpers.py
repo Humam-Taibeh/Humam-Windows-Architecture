@@ -16,9 +16,11 @@ Shared utilities for the Pulse GUI:
     from the top-right corner and auto-dismiss, matching the "VS Code /
     macOS" style requested.
 
-  - HoverGlow : a tiny event filter that adds an animated glow (via
-    QGraphicsDropShadowEffect) to a widget on hover, since QSS itself cannot
-    animate transitions between pseudo-states.
+  - prefs (sibling module) : the durable QSettings-backed preferences.
+
+(HoverGlow / PulseAnimation were removed in v10 — both were superseded by
+frontend/animations.py's effect-free painted equivalents years of refactors
+ago and had zero call sites left.)
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QHBoxLayout,
+    QFrame, QGraphicsOpacityEffect, QHBoxLayout,
     QLabel, QWidget,
 )
 
@@ -536,7 +538,7 @@ class ToastManager(QObject):
     the caption buttons, or outstack the window."""
 
     MARGIN_X = 18
-    MARGIN_BOTTOM = 52   # clears the status bar + resize grip
+    MARGIN_BOTTOM = 52   # fallback clearance when no obstacle is registered
     SPACING = 10
     MAX_VISIBLE = 4
 
@@ -545,6 +547,32 @@ class ToastManager(QObject):
         self.container = container
         self._t = t or TH.tokens("dark")
         self._toasts: list[Toast] = []
+        # v10: the bottom-right corner is contested. The Activity drawer
+        # lives there and GROWS ~186px when a task starts — so a fixed
+        # bottom margin put every toast directly on top of the live console
+        # exactly when the console mattered most (and over the card grid
+        # while idle). The manager now measures whatever widget is
+        # registered here and always stacks above it.
+        self._obstacle: QWidget | None = None
+
+    def set_bottom_obstacle(self, widget: QWidget | None):
+        """Register the widget the toast stack must never cover (the
+        Activity drawer). Its CURRENT height is read on every layout pass,
+        so the stack rides up and down as the drawer opens and closes."""
+        self._obstacle = widget
+        self.reposition()
+
+    def _bottom_clearance(self) -> int:
+        obstacle = self._obstacle
+        if obstacle is None or not obstacle.isVisible():
+            return self.MARGIN_BOTTOM
+        try:
+            # map the obstacle's top edge into container coordinates —
+            # everything below it is off-limits
+            top = obstacle.mapTo(self.container, QPoint(0, 0)).y()
+        except RuntimeError:          # obstacle destroyed during shutdown
+            return self.MARGIN_BOTTOM
+        return max(self.MARGIN_BOTTOM, self.container.height() - top + self.SPACING)
 
     def apply_theme(self, t: dict):
         self._t = t
@@ -580,7 +608,7 @@ class ToastManager(QObject):
         one sits SPACING above the card below it."""
         x = self.container.width() - Toast.WIDTH - self.MARGIN_X
         positions: list[QPoint] = []
-        y = self.container.height() - self.MARGIN_BOTTOM
+        y = self.container.height() - self._bottom_clearance()
         for toast in reversed(self._toasts):
             y -= toast.height()
             positions.append(QPoint(x, y))
@@ -596,72 +624,3 @@ class ToastManager(QObject):
     def reposition(self):
         for toast, pos in zip(self._toasts, self._target_positions()):
             toast.slide_to(pos)
-
-
-# ============================================================
-#  HOVER GLOW (animated drop-shadow on hover, since QSS can't animate)
-# ============================================================
-class HoverGlow(QObject):
-    """
-    Install on a QWidget to give it a soft animated glow on hover:
-        btn.installEventFilter(HoverGlow(btn, color="#00d4ff"))
-    Keep a reference to the filter alive (e.g. store it on the widget/list)
-    for the lifetime of the widget.
-    """
-
-    def __init__(self, widget: QWidget, color: str = "#4cc2ff", max_blur: float = 25.0):
-        super().__init__(widget)
-        self.widget = widget
-        self.effect = QGraphicsDropShadowEffect(widget)
-        self.effect.setColor(QColor(color))
-        self.effect.setOffset(0, 0)
-        self.effect.setBlurRadius(0)
-        widget.setGraphicsEffect(self.effect)
-
-        self.anim = QPropertyAnimation(self.effect, b"blurRadius", self)
-        self.anim.setDuration(200)
-        self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.max_blur = max_blur
-
-    def eventFilter(self, obj, event):
-        if obj is self.widget:
-            if event.type() == event.Type.Enter:
-                self._animate_to(self.max_blur)
-            elif event.type() == event.Type.Leave:
-                self._animate_to(0.0)
-        return False
-
-    def _animate_to(self, value: float):
-        self.anim.stop()
-        self.anim.setStartValue(self.effect.blurRadius())
-        self.anim.setEndValue(value)
-        self.anim.start()
-
-
-# ============================================================
-#  PULSE ANIMATION (for the big status icon while a task runs)
-# ============================================================
-class PulseAnimation(QObject):
-    """Loops a QLabel's opacity between 1.0 and 0.35 to signal 'working'."""
-
-    def __init__(self, label: QLabel):
-        super().__init__(label)
-        self.label = label
-        self.effect = QGraphicsOpacityEffect(label)
-        self.effect.setOpacity(1.0)
-        label.setGraphicsEffect(self.effect)
-
-        self.anim = QPropertyAnimation(self.effect, b"opacity", self)
-        self.anim.setDuration(900)
-        self.anim.setStartValue(1.0)
-        self.anim.setKeyValueAt(0.5, 0.35)
-        self.anim.setEndValue(1.0)
-        self.anim.setEasingCurve(QEasingCurve.Type.InOutSine)
-        self.anim.setLoopCount(-1)  # infinite
-
-    def start(self):
-        self.anim.start()
-
-    def stop(self):
-        self.anim.stop()
-        self.effect.setOpacity(1.0)
