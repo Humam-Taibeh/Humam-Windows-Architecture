@@ -35,7 +35,9 @@ from PySide6.QtCore import (
     QEasingCurve, QEvent, QPoint, QPropertyAnimation, Qt, QThread,
     QTimer, Signal,
 )
-from PySide6.QtGui import QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import (
+    QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPalette, QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea,
@@ -748,7 +750,17 @@ class PulseApp(QMainWindow):
             | Qt.WindowType.WindowSystemMenuHint
             | Qt.WindowType.WindowMinimizeButtonHint
             | Qt.WindowType.WindowMaximizeButtonHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # NO WA_TranslucentBackground. It made the top-level window
+        # WS_EX_LAYERED (per-pixel alpha, software-composited), which is
+        # what produced the launch-time "dark semi-transparent blurred
+        # box", the invisible sections, and the tearing/ghosting during
+        # drag and resize — a layered window has to re-upload its whole
+        # alpha surface on every move and repaint. The shell paints an
+        # opaque gradient over every pixel anyway (theme.shell_qss), so
+        # the alpha channel bought nothing but glitches. Rounded corners
+        # and the frame border now come from DWM itself
+        # (theme.apply_native_rounding), which is what Windows 11 apps do.
+        # The opaque base colour is set per-theme in _apply_theme.
         icon_path = _locate_icon()
         if icon_path:
             self.setWindowIcon(QIcon(icon_path))
@@ -997,6 +1009,15 @@ class PulseApp(QMainWindow):
     #  LIVE THEME PIPELINE
     # ============================================================
     def _apply_theme(self, t: dict):
+        # Paint the window's own background in the theme's canvas colour.
+        # During a live resize Windows exposes the newly-revealed strip
+        # before Qt has repainted the shell into it; without an opaque
+        # themed base that strip flashes the default palette grey, which
+        # reads as tearing along the edge being dragged.
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor(t["bg_grad_bottom"]))
+        self.setPalette(pal)
+        self.setAutoFillBackground(True)
         self._shell.setStyleSheet(TH.shell_qss(t))
         self._glow.apply_theme(t)
         self._sidebar.setStyleSheet(TH.sidebar_qss(t))
@@ -1615,7 +1636,12 @@ class PulseApp(QMainWindow):
         if not self._glass_applied:
             self._glass_applied = True
             hwnd = int(self.winId())
-            TH.apply_blur_behind(hwnd)      # real DWM blur behind the shell
+            # apply_blur_behind() is deliberately NOT called any more: DWM
+            # blur-behind only shows through a per-pixel-alpha window, so
+            # it required the WA_TranslucentBackground that was causing the
+            # rendering glitches. An opaque shell has nothing to see
+            # through, and the call would only re-introduce the layered
+            # composition path.
             # A real sizing frame, so the edge/corner hit-tests answered in
             # nativeEvent are actually acted on by Windows (see
             # theme.enable_native_sizing_frame). WM_NCCALCSIZE below keeps
@@ -1659,10 +1685,15 @@ class PulseApp(QMainWindow):
         # (`flush`, not `maximized`: QWidget's built-in read-only
         # `maximized` property would swallow the write.)
         flush = self.isMaximized()
+        # Kept as a state record for widgets that ask (and for the body
+        # margins below); the shell itself no longer restyles on it, since
+        # it is square and border-less in both states now.
         self._shell.setProperty("flush", flush)
-        self._shell.style().unpolish(self._shell)
-        self._shell.style().polish(self._shell)
-        self._glow.set_radius(0 if flush else 24)
+        # Always 0: the ambient wash fills a square, opaque shell. Its
+        # rounded clip only ever existed to stop it painting into the
+        # translucent window's rounded corner cut-out, and a rounded clip
+        # on an opaque window just carves visible notches at the corners.
+        self._glow.set_radius(0)
         # Removing the border/radius alone just relocates the dead
         # space to the body margins instead of the shell edge — they
         # must collapse too, or "flush" still looks like a floating

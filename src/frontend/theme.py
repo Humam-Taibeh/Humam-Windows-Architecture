@@ -534,15 +534,22 @@ def shell_qss(t: dict) -> str:
     setProperty() on that name silently fails."""
     grad = (f"qlineargradient(x1:0, y1:0, x2:0.3, y2:1, "
             f"stop:0 {t['bg_grad_top']}, stop:1 {t['bg_grad_bottom']})")
+    # The shell is now a FULLY OPAQUE, square canvas that covers every pixel
+    # of the window, in both states.
+    #
+    # It used to carry a 24px radius and a 1px border, which only worked
+    # because the window itself was WA_TranslucentBackground: the four
+    # corner wedges outside the radius were alpha-0 and simply vanished.
+    # On an opaque window those same wedges expose the bare QMainWindow
+    # palette instead — the dark square "ears" behind the rounded shell.
+    # Windows 11 rounds and borders the window for us at the compositor
+    # (DWMWCP_ROUND, see apply_native_rounding), so the shell must NOT
+    # round itself; DWM clips the real thing, pixel-perfect and glitch-free.
     return f"""
         #shell {{
             background: {grad};
-            border: 1px solid {t['panel_line']};
-            border-radius: {RADIUS['shell']}px;
-        }}
-        #shell[flush="true"] {{
-            border-radius: 0px;
             border: none;
+            border-radius: 0px;
         }}
     """
 

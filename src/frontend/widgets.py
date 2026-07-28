@@ -208,9 +208,8 @@ def _dialog_chrome(dialog: PulseDialog, t: dict, accent: str,
 def refit_dialog(dialog: PulseDialog):
     """Resize `dialog` to exactly cover its host window's BODY — always
     fully below the title bar, so minimize/maximize/close stay visible
-    and reachable no matter what is open — and match its scrim radius to
-    the host's maximized state (square when flush, rounded otherwise,
-    matching the shell). Called from showEvent and again whenever the
+    and reachable no matter what is open — with a square scrim, matching
+    the now square-and-opaque shell. Called from showEvent and again whenever the
     host resizes while a dialog is open — which is also what keeps a
     responsive selector panel (see _dialog_chrome) sized to the window
     live, instead of freezing at its opening-time dimensions."""
@@ -221,7 +220,10 @@ def refit_dialog(dialog: PulseDialog):
         dialog.setGeometry(QRect(host.mapToGlobal(body.topLeft()), body.size()))
         theme_mgr = getattr(host, "theme", None)
         if theme_mgr is not None:
-            dialog._set_scrim(theme_mgr.t, 0 if host.isMaximized() else 22)
+            # Square in both states: the shell it covers is now square in
+            # both states too (DWM owns the window's rounding), so a
+            # rounded scrim would leave four lit wedges of shell showing.
+            dialog._set_scrim(theme_mgr.t, 0)
         if getattr(dialog, "_responsive_panel", False) and dialog.panel is not None:
             dialog.panel.setFixedSize(*_selector_panel_size(dialog))
 
@@ -1243,10 +1245,11 @@ class AmbientGlow(QWidget):
         self.update()
 
     def set_radius(self, radius: int):
-        """Match the shell's current corner radius (24px floating, 0
-        maximized/flush) — the window behind this widget is translucent,
-        so an unclipped rectangle would paint square corners bleeding
-        past the shell's rounded edge."""
+        """Match the shell's corner radius. Now always 0: the shell is an
+        opaque square canvas and DWM rounds the window itself, so there is
+        no rounded edge for this wash to bleed past. (Kept as a setter
+        rather than deleted — it still guards against painting into a
+        rounded corner if the shell ever regains one.)"""
         if radius != self._radius:
             self._radius = radius
             self.update()
