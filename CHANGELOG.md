@@ -12,9 +12,39 @@ GUI version, with core changes called out explicitly.
 
 ---
 
-## [Unreleased]
+## [10.0.0] — 2026-07-28
+
+The v10 UX overhaul. The app version was pinned at 6.1 while the
+design system moved through v7-v10; this release reconciles them,
+so `APP_VERSION`, `$Script:ScriptVersion`, the README badge and
+this changelog all read 10.0.
 
 ### Added
+- **Keyboard access to the operation grid.** `GlassCard` was a `QFrame`
+  with mouse handlers only — no focus policy, no key handling — so the
+  app's primary surface was unreachable by keyboard and Tab stopped at the
+  sidebar. Cards now take `StrongFocus`, activate on Enter/Space with the
+  same press + ripple feedback a click gives, traverse with the arrow keys
+  across the live (filter-aware) grid, carry accessible names/descriptions,
+  and paint a solid 2px accent focus ring — Qt's dotted default is
+  invisible against this material.
+- **A real shortcut layer**, up from two bindings (Escape, Ctrl+K):
+  `Ctrl+1…6` jump to a module, `Ctrl+H` the dashboard, `Ctrl+L` / `Ctrl+F`
+  the page filter, `Ctrl+\` the live output, `F1` / `?` a keyboard sheet.
+  Bindings and the help sheet are generated from one table
+  (`PulseApp.SHORTCUTS`), so a shortcut cannot exist undocumented — which
+  is how Ctrl+K stayed undiscoverable for four releases.
+- **Category filter rail** — an inline filter field and an operations count
+  chip fill the previously empty right two-thirds of every module header.
+  The filter matches titles, descriptions *and* a hub's sub-item titles, so
+  searching "office" surfaces the hub that contains it instead of hiding a
+  real match; the chip switches to "3 OF 12" and takes the module accent
+  while a filter is active, and an explicit empty state replaces the blank
+  grid when nothing matches.
+- **Live output is no longer a dead end** — copy, save-to-file, clear and a
+  timestamp toggle in the Activity rail. Copy and export report line counts
+  through the app's toast stack, and a failed write is reported as a
+  failure rather than silently implying the log was saved.
 - **Applied-state badges** — cards for readable tweaks now show a green
   `APPLIED` chip when the setting is currently active on the system, so
   Pulse finally answers "did I already do this?" without re-running an
@@ -36,276 +66,6 @@ GUI version, with core changes called out explicitly.
   window geometry, Activity-drawer pin state and the recent-operations
   trail now survive a restart. Previously every session opened dark, at
   the default size, with the drawer unpinned.
-
-### Fixed
-- **Card descriptions were being silently truncated.** Measured across the
-  real catalog at the 3-column grid width, 14 cards had their description
-  cut off mid-sentence (worst: PATH Doctor, losing 88px — over half its
-  text) and 5 also lost part of their title; nothing warned, the text was
-  simply painted outside the card's clip. Cards are rebuilt with a header
-  row (icon + title) above a **full-width** description — the description
-  column was ~256px and is now ~312px — plus a hard per-block line budget
-  (`ClampedLabel`) that elides with the full text in a tooltip. Catalog
-  copy was tightened to match. Result: **0 truncated cards** across 540
-  instantiations (2 themes × 6 widths × the whole catalog).
-- **Window resizing leaked ~12 GB and stuttered.** `AmbientGlow` cached its
-  aurora orbs keyed on the window size, so every pixel of a drag-resize
-  minted three fresh ~1800×1800 pixmaps and kept them forever: a single
-  1000→1440px drag produced **1,323 cached pixmaps totalling 11.9 GB** at
-  34.9 ms/frame. Orbs are now rendered once at a fixed texture size and
-  scaled on blit — **3 pixmaps, 3.0 MB, 15.3 ms/frame**.
-- **Grid reflow could place cards outside their container.** Column counts
-  were derived from the page width while cards were laid out inside a
-  scroll host whose width settles a layout pass later; when the two
-  disagreed the grid overflowed (measured: a 1719px-wide grid inside a
-  590px host). Reflow is now driven by the host's own resize
-  (`ResponsiveGridHost`), so the width that picks the column count is the
-  width the cards are laid out in.
-- **Card entrance animation fought the layout.** `CascadeAnimator` drives
-  card positions directly; a resize mid-cascade left cards stranded at
-  stale coordinates. It now abandons the entrance when the host resizes
-  and hands placement back to the layout.
-- **Minimum window size is derived, not guessed** — it is computed from the
-  chrome plus one minimum-width card, so the window can no longer be
-  dragged to a size where the grid cannot lay out. The Welcome page's
-  Quick Actions gained a scroll area; without one a short window resolved
-  the impossible constraint by crushing cards to as little as 17px.
-  Verified across 448 (page × size) combinations.
-- **Light mode's colour system failed contrast.** The six module accents
-  were single hex literals shared by both themes and tuned for a near-black
-  canvas; against the light card they measured **1.86–2.64:1**, far under
-  the 3:1 floor for an icon. They are per-theme tokens now
-  (`theme.resolve_accent`), re-resolved on every theme switch, and every
-  one clears 4.5:1 as text and 3:1 as a glyph in both modes.
-- **The text ramp's bottom two steps failed AA.** `text_faint` measured
-  3.00:1 and `text_muted` 3.98:1 on a card while carrying 10–13px copy.
-  The ramp is rebuilt evenly in CIE L\* with its floor pinned at 4.55:1 —
-  four visibly distinct steps, all legible.
-- **Elevation was nearly invisible.** Card-vs-content-well separation was
-  1.20:1 (dark) / 1.21:1 (light). Depth now comes from recessing the
-  content well rather than brightening the card (which would have wrecked
-  the text ramp above it): **1.46:1 dark, 1.27:1 light**.
-- **Toasts covered the live console.** A fixed bottom margin put the toast
-  stack on top of the Activity drawer exactly when a task was running. The
-  stack now tracks the drawer's height live.
-- **Dialog titles were never actually enlarged** — all 8 built their header
-  as `label_qss(t, "card").replace("14px", "16px")`, but the card role has
-  been 16px since v7, so the replace matched nothing. Added a real
-  `dialog` type role (18px/700).
-
-### Changed
-- **Design-system foundations** — a single spacing scale (`TH.SPACE`) and
-  semantic radius scale (`TH.RADIUS`) replace 13 ad-hoc spacing values and
-  17 ad-hoc corner radii; card padding is symmetric.
-- **Light-mode ambient wash pulled back** (multiply peaks 0.30→0.16) — the
-  v10 canvas deepening made the old strength read as a lavender haze.
-
-### Removed
-- Dead code: `total_operations()` / `category_operations()`
-  (`menu_structure.py`), `HoverGlow` / `PulseAnimation` (`helpers.py`, long
-  superseded by `animations.py`), and the unused `hero` / `value` / `meta`
-  label roles — all with zero call sites.
-
-### Changed
-- **Dual-theme legibility & finish pass** — light mode's two lower text
-  steps deepened (`text_muted` #5d6879 → #4e5a6c ≈ 6:1, `text_faint`
-  #8d97a8 → #75808f ≈ 4:1) killing the washed-out body/caption reading,
-  and card hairlines strengthened (0.11 → 0.14 alpha) so white-on-porcelain
-  cards keep distinct edges; dark mode's `text_faint` lifted one step
-  (#5a6272 → #646e80) for 10px captions on dim laptop panels. Grouped hub
-  landing screens gained commercial-grade section headers: accent-tinted
-  letter-spaced titles finished with a 1px accent rule fading toward the
-  panel edge (`hub_group_header_qss` / `hub_group_rule_qss`), with
-  proximity-correct rhythm (headers sit tight over their own cards, a
-  full step clear of the previous group). Interaction polish: selector
-  rows now lift fill *and* border on hover (matching GlassCard),
-  checkbox wells pre-tint with the accent on hover and acknowledge the
-  cursor when checked, and dialog Cancel/Close buttons match the primary
-  button's 600 weight with a firmer hover border.
-- **System Tools & Utilities hub is now grouped, not a flat list** — its
-  eight sub-actions are split into three scannable sub-groups the
-  HubDialog renders under small section headers: **Diagnostics &
-  Optimization** (Hardware Diagnostics, PATH Doctor, Startup Manager,
-  Check for Updates), **Microsoft Edge** (Remove / Install-Restore), and
-  **Microsoft OneDrive** (Purge / Install-Restore) — each app's teardown
-  now sits directly beside its restore. Hubs may now carry `groups`
-  (titled sections) in place of a flat `items` list; `menu_structure.hub_items()`
-  flattens either shape so the command palette, counters and hub
-  navigation are unaffected.
-- **Browsers & Daily Apps trimmed to three core selections** — Browsers,
-  Chat & Media / Microsoft Office Suite / Core API Runtimes. The combined
-  "Teams & OneDrive" card was removed; OneDrive's install/restore now
-  lives beside Purge OneDrive under System Tools & Utilities
-  (`RestoreOneDrive`).
-
-### Removed
-- **Microsoft Teams dropped from the catalog entirely** — purged from
-  `$Apps_OfficeCompanions`, the download-URL and lock-process maps
-  (`01-Catalogs.ps1`), the retired `InstallOfficeApps` GUI task
-  (`30-GuiDispatcher.ps1`) and the console App Deployment Hub
-  (`20-Menus.ps1`, now a OneDrive-only category).
-
-### Fixed
-- **Edge force-removal now resolves `setup.exe` dynamically** — Edge's
-  uninstaller lives under a per-version folder
-  (`…\Edge\Application\<VERSION>\Installer\setup.exe`) that changes on
-  every update; `Remove-MicrosoftEdge` (`06-Tweaks.ps1`) now hunts it
-  recursively under both Program Files roots (newest version wins)
-  instead of relying on a path that went stale (the cause of setup.exe
-  exiting with code 93 / never running). The Appx cleanup pass now
-  **excludes `Microsoft.MicrosoftEdgeDevToolsClient`**, a hard-protected
-  Windows 11 OS component that always fails `Remove-AppxPackage` with
-  `0x80070032` and previously aborted the whole removal into a false
-  failure.
-
-### Changed
-- **Modal presentation system** — every dialog now shares one
-  construction path (`widgets._dialog_chrome`): frameless panel at its
-  exact content width inside a transparent shadow gutter, a soft
-  elevation drop shadow, and body-anchored positioning
-  (`_present_dialog`) that always places the panel fully below the
-  title bar (command palette top-anchored, everything else centered in
-  the body; nested wizards climb to the app window). Opening any dialog
-  raises a dense theme-aware **scrim** over the app body, so the card
-  grid and console are completely masked while a modal is up — and the
-  scrim deliberately stops at the title bar, which stays uncovered.
-  Dialog action buttons unified at 36px height.
-- **Title bar strip is now native HTCAPTION** — dragging, Aero Snap,
-  double-click-to-maximize and the right-click system menu are handled
-  by Windows itself (only the theme toggle keeps a client hole), which
-  also means the strip keeps working while a modal dialog is open.
-- **Software Management unified with the Developer Hub pattern** — every
-  `apps` catalog card (Essential Apps, Gaming Launchers, Hardware
-  Diagnostics, Core API Runtimes, Teams & OneDrive) now opens the same
-  elite selector the Dev Hub uses: identical rows (checkbox + per-tool
-  "⋯" install-options wizard offering **winget / official website /
-  local installer file**), a Select All / Deselect All toolbar with a
-  live "n selected" counter, and a "Deploy Selected (n)" primary
-  action. Catalog entries gained GUI-only description + official-URL
-  metadata (4-tuples, legacy 2-tuples still accepted); the backend
-  contract is untouched — core.ps1 still receives only the ticked
-  winget IDs, and a wizard's local-file pick routes through the
-  existing InstallLocalFile task exactly like the Dev Hub.
-- **Responsive card grid** — category pages no longer force 3 columns:
-  column count follows the viewport (1 col under ~680px of content
-  width, 2 at the default window size, 3 maximized on widescreen), so
-  cards keep a ≥340px footprint, descriptions never clip, and the
-  default view reads as a spacious 2-column layout instead of three
-  cramped slivers. Verified live on the Windows platform at
-  1020/1180/1860px → 1/2/3 columns.
-- **Breathing-room pass** — body/sidebar/content margins, card padding
-  (20×16, min height 132), grid gutters (18px), dialog padding (28×24)
-  and the type scale (title 20px, body 13px, desc/tagline 12px) all
-  moved one comfortable step up; long card titles now wrap instead of
-  clipping.
-- **Full dual-theme re-grade (frontend only — zero backend changes).**
-  Dark mode moved from saturated navy + neon cyan to a deep
-  charcoal/slate register (Linear / GitHub-dark territory): `#0f1115`
-  base, elevation via lightness steps, calm azure `#58a6ff` + soft
-  violet `#a78bfa` brand pair reserved for interactive states. Light
-  mode is no longer blinding: a cool porcelain-gray canvas (`#eceff4`)
-  with translucent soft-white cards — pure white never appears as a
-  full-page surface. All four text tones re-tuned for WCAG AA on the
-  new surfaces.
-- **Toast notifications redesigned from scratch** (`utils/helpers.py`):
-  now theme-aware (the old toast was a hardcoded dark rectangle that
-  looked broken in light mode), anchored bottom-right in the VS Code
-  register so they never cover the title bar or caption buttons,
-  click-anywhere-to-dismiss, hover pauses the auto-hide countdown,
-  duplicate messages extend the live toast instead of stacking, and the
-  stack is capped at four with oldest-yields eviction. Status reads as
-  a quiet ✓/✕/i chip + colored spine instead of emoji.
-- **Title bar rebuilt to native-caption grade**: Segoe Fluent Icons /
-  MDL2 caption glyphs (the OS's own minimize/maximize/restore/close
-  characters), a solid caption-red close hover exactly like native
-  Win11 windows, and the brand block now renders name · version · an
-  elegant violet **BETA** channel pill (`APP_CHANNEL` in `main.py`).
-
-### Fixed
-- **Window controls blocked while a modal was open (critical)** — the
-  old dialogs centered over the whole window, physically covering the
-  caption buttons, and Qt's application modality blocked title-bar
-  clicks besides. Dialogs are now always positioned below the title
-  bar, and because minimize/maximize/close run through the raw
-  non-client path (`WM_NCLBUTTONUP` in `nativeEvent`), they bypass
-  Qt's modal input blocking entirely — verified live with real window
-  messages while a selector was open: hit-testing answered
-  HTCLOSEBUTTON and a posted NC click minimized the window with the
-  modal still up. Closing during a modal settles open dialogs first
-  (reject) so no exec() loop is orphaned.
-- **Modal bleed-through, eliminated at the source** — beyond the opaque
-  panels, the new body scrim masks *everything* around an open dialog;
-  nothing underneath is legible anymore in either theme.
-- **Caption-button hitbox (critical)** — closing the window demanded a
-  pixel-perfect hit on the 40×30 glyph. WM_NCHITTEST now maps
-  generously expanded non-client zones over minimize/maximize/close
-  (HTMINBUTTON/HTMAXBUTTON/HTCLOSEBUTTON): the strip from the window's
-  top edge to below the buttons, from the minimize button's left edge
-  to the window's right edge, split at gap midpoints — so clicking
-  anywhere in the top-right corner region registers, exactly like a
-  native app, and the literal screen corner closes a maximized window
-  (Fitts corner-slam). Clicks are re-injected from WM_NCLBUTTONUP with
-  hover mirrored per-button; a swept probe confirmed zero dead pixels
-  across the entire strip. Resize borders keep priority while floating,
-  matching native ordering.
-- **Text bleed-through in overlays** — dialog surfaces were 98–99%
-  opaque, so the card grid/console underneath ghosted through as
-  overlapping text when selectors and wizards opened. Dialog
-  backgrounds are now fully opaque (toasts 99%), and card titles wrap
-  rather than overflow.
-- **Maximized click-through corners (critical)** — on a frameless
-  per-pixel-alpha window, the corner pixels DWM rounds away are alpha-0
-  and clicks fell straight through to whatever app sat behind Pulse.
-  DWM corner rounding is now explicitly disabled while maximized
-  (`DWMWCP_DONOTROUND`) and restored on unmaximize, so a maximized
-  Pulse is square, opaque and click-owning edge-to-edge like every
-  native Win11 app.
-- **Fixed-size first launch overflowed small screens** — the hardcoded
-  `1180×740 @ (140, 80)` geometry was taller than a 1366×768 laptop's
-  work area (and worse at 125%+ DPI scale). The window now sizes to the
-  monitor's available geometry, centers itself, and clamps its minimum
-  size so it can never be forced larger than the screen it lives on.
-  Fractional DPI scale factors are passed through exactly
-  (`HighDpiScaleFactorRoundingPolicy.PassThrough`) for pixel-crisp
-  rendering at 125/150/175%.
-- **Console UTF-8 output encoding** — `core.ps1`'s interactive console mode
-  never set `[Console]::OutputEncoding`, so on the default OEM code page
-  (437 on US-English Windows, confirmed live) every box-drawing character
-  and status glyph (✓/✗/═/║) rendered as mangled question marks and
-  garbage. The GUI's spawned subprocess already had this fix
-  (`helpers.PowerShellTask` sets it before invoking `core.ps1`); the
-  interactive console never did. This was very likely the actual cause of
-  "the UI looks chaotic" — verified before/after with the exact same
-  glyphs: garbage without the fix, clean boxes with it.
-- **Three winget exit codes were mislabeled** in `Resolve-WingetExitCode`,
-  cross-checked against winget-cli's own `AppInstallerErrors.h` (not
-  memory or a forum post): `-1978335215` was labeled "no applicable
-  upgrade" and treated as a **silent success** — it's actually
-  `INSTALLER_HASH_MISMATCH`, a corrupted-or-tampered-download failure that
-  was being reported as "completed successfully." `-1978335189` and
-  `-1978335153` were labeled "package not found" / "file in use" — both
-  are actually "nothing to update" signals and are now correctly treated
-  as an already-up-to-date skip instead of a failure. Added the exit code
-  from this request, `-1978335226` (`SHELLEXEC_INSTALL_FAILED` — the
-  wrapped installer itself failed, the common MSYS2 case), with a
-  specific, actionable message instead of a generic "unhandled exit code."
-- **`Get-InstalledVersion`'s column parsing was silently broken** for
-  every call site: it split `winget list` output on 2+ spaces, but winget
-  only pads columns for a real interactive console — the instant Pulse
-  captures the output (which is always), padding can collapse to a single
-  space and the split always failed, meaning the "already up to date"
-  fast-path check *always* fell through to a live `winget upgrade`
-  invocation it didn't need to make. Fixed to find the exact-match AppId
-  token and read the next token as the version — verified against a real
-  installed package (Git) confirming the instant-skip path now actually
-  fires, plus a constructed edge case where the display name collides
-  with winget's own Name column.
-- Retry-with-`--force` no longer fires on an "already current" exit code
-  it didn't recognize — the gate checked one hardcoded code, so the two
-  newly-recognized "nothing to update" codes would have forced an
-  unnecessary reinstall instead of honoring the skip.
-
-### Added
 - **Windows 11 Snap Layouts on the maximize button** — hovering the
   custom maximize button now summons the native Snap Layouts flyout,
   via the `WM_NCHITTEST → HTMAXBUTTON` contract from Microsoft's
@@ -492,25 +252,282 @@ GUI version, with core changes called out explicitly.
   text, replaced live the instant real output streams in.
 
 ### Changed
+- **Design-system foundations** — a single spacing scale (`TH.SPACE`) and
+  semantic radius scale (`TH.RADIUS`) replace 13 ad-hoc spacing values and
+  17 ad-hoc corner radii; card padding is symmetric.
+- **Light-mode ambient wash pulled back** (multiply peaks 0.30→0.16) — the
+  v10 canvas deepening made the old strength read as a lavender haze.
+- **Modal presentation system** — every dialog now shares one
+  construction path (`widgets._dialog_chrome`): frameless panel at its
+  exact content width inside a transparent shadow gutter, a soft
+  elevation drop shadow, and body-anchored positioning
+  (`_present_dialog`) that always places the panel fully below the
+  title bar (command palette top-anchored, everything else centered in
+  the body; nested wizards climb to the app window). Opening any dialog
+  raises a dense theme-aware **scrim** over the app body, so the card
+  grid and console are completely masked while a modal is up — and the
+  scrim deliberately stops at the title bar, which stays uncovered.
+  Dialog action buttons unified at 36px height.
+- **Title bar strip is now native HTCAPTION** — dragging, Aero Snap,
+  double-click-to-maximize and the right-click system menu are handled
+  by Windows itself (only the theme toggle keeps a client hole), which
+  also means the strip keeps working while a modal dialog is open.
+- **Software Management unified with the Developer Hub pattern** — every
+  `apps` catalog card (Essential Apps, Gaming Launchers, Hardware
+  Diagnostics, Core API Runtimes, Teams & OneDrive) now opens the same
+  elite selector the Dev Hub uses: identical rows (checkbox + per-tool
+  "⋯" install-options wizard offering **winget / official website /
+  local installer file**), a Select All / Deselect All toolbar with a
+  live "n selected" counter, and a "Deploy Selected (n)" primary
+  action. Catalog entries gained GUI-only description + official-URL
+  metadata (4-tuples, legacy 2-tuples still accepted); the backend
+  contract is untouched — core.ps1 still receives only the ticked
+  winget IDs, and a wizard's local-file pick routes through the
+  existing InstallLocalFile task exactly like the Dev Hub.
+- **Responsive card grid** — category pages no longer force 3 columns:
+  column count follows the viewport (1 col under ~680px of content
+  width, 2 at the default window size, 3 maximized on widescreen), so
+  cards keep a ≥340px footprint, descriptions never clip, and the
+  default view reads as a spacious 2-column layout instead of three
+  cramped slivers. Verified live on the Windows platform at
+  1020/1180/1860px → 1/2/3 columns.
+- **Breathing-room pass** — body/sidebar/content margins, card padding
+  (20×16, min height 132), grid gutters (18px), dialog padding (28×24)
+  and the type scale (title 20px, body 13px, desc/tagline 12px) all
+  moved one comfortable step up; long card titles now wrap instead of
+  clipping.
+- **Full dual-theme re-grade (frontend only — zero backend changes).**
+  Dark mode moved from saturated navy + neon cyan to a deep
+  charcoal/slate register (Linear / GitHub-dark territory): `#0f1115`
+  base, elevation via lightness steps, calm azure `#58a6ff` + soft
+  violet `#a78bfa` brand pair reserved for interactive states. Light
+  mode is no longer blinding: a cool porcelain-gray canvas (`#eceff4`)
+  with translucent soft-white cards — pure white never appears as a
+  full-page surface. All four text tones re-tuned for WCAG AA on the
+  new surfaces.
+- **Toast notifications redesigned from scratch** (`utils/helpers.py`):
+  now theme-aware (the old toast was a hardcoded dark rectangle that
+  looked broken in light mode), anchored bottom-right in the VS Code
+  register so they never cover the title bar or caption buttons,
+  click-anywhere-to-dismiss, hover pauses the auto-hide countdown,
+  duplicate messages extend the live toast instead of stacking, and the
+  stack is capped at four with oldest-yields eviction. Status reads as
+  a quiet ✓/✕/i chip + colored spine instead of emoji.
+- **Title bar rebuilt to native-caption grade**: Segoe Fluent Icons /
+  MDL2 caption glyphs (the OS's own minimize/maximize/restore/close
+  characters), a solid caption-red close hover exactly like native
+  Win11 windows, and the brand block now renders name · version · an
+  elegant violet **BETA** channel pill (`APP_CHANNEL` in `main.py`).
 - Card/nav spacing tightened for a cleaner rhythm: card description
   spacing 4→6px, category grid gutter 14→16px.
 - `ConfirmDialog`'s outer panel margin (26, 24, 26, 22) now matches
   `AppSelectorDialog`'s (24, 22, 24, 20) — the two are the same "panel +
   body + actions" pattern and had drifted to slightly different insets.
+- **Faster, snappier motion**: hover glow, page fade, card cascade, dialog
+  entrance, theme cross-fade, and toast animations were all retuned into
+  the 90–190ms band (from up to 300ms) for a lighter, more immediate feel.
+  The shimmer progress sweep (an indeterminate loop, not a transition) is
+  unchanged.
+
+---
 
 ### Fixed
+- **Card descriptions were being silently truncated.** Measured across the
+  real catalog at the 3-column grid width, 14 cards had their description
+  cut off mid-sentence (worst: PATH Doctor, losing 88px — over half its
+  text) and 5 also lost part of their title; nothing warned, the text was
+  simply painted outside the card's clip. Cards are rebuilt with a header
+  row (icon + title) above a **full-width** description — the description
+  column was ~256px and is now ~312px — plus a hard per-block line budget
+  (`ClampedLabel`) that elides with the full text in a tooltip. Catalog
+  copy was tightened to match. Result: **0 truncated cards** across 540
+  instantiations (2 themes × 6 widths × the whole catalog).
+- **Window resizing leaked ~12 GB and stuttered.** `AmbientGlow` cached its
+  aurora orbs keyed on the window size, so every pixel of a drag-resize
+  minted three fresh ~1800×1800 pixmaps and kept them forever: a single
+  1000→1440px drag produced **1,323 cached pixmaps totalling 11.9 GB** at
+  34.9 ms/frame. Orbs are now rendered once at a fixed texture size and
+  scaled on blit — **3 pixmaps, 3.0 MB, 15.3 ms/frame**.
+- **Grid reflow could place cards outside their container.** Column counts
+  were derived from the page width while cards were laid out inside a
+  scroll host whose width settles a layout pass later; when the two
+  disagreed the grid overflowed (measured: a 1719px-wide grid inside a
+  590px host). Reflow is now driven by the host's own resize
+  (`ResponsiveGridHost`), so the width that picks the column count is the
+  width the cards are laid out in.
+- **Card entrance animation fought the layout.** `CascadeAnimator` drives
+  card positions directly; a resize mid-cascade left cards stranded at
+  stale coordinates. It now abandons the entrance when the host resizes
+  and hands placement back to the layout.
+- **Minimum window size is derived, not guessed** — it is computed from the
+  chrome plus one minimum-width card, so the window can no longer be
+  dragged to a size where the grid cannot lay out. The Welcome page's
+  Quick Actions gained a scroll area; without one a short window resolved
+  the impossible constraint by crushing cards to as little as 17px.
+  Verified across 448 (page × size) combinations.
+- **Light mode's colour system failed contrast.** The six module accents
+  were single hex literals shared by both themes and tuned for a near-black
+  canvas; against the light card they measured **1.86–2.64:1**, far under
+  the 3:1 floor for an icon. They are per-theme tokens now
+  (`theme.resolve_accent`), re-resolved on every theme switch, and every
+  one clears 4.5:1 as text and 3:1 as a glyph in both modes.
+- **The text ramp's bottom two steps failed AA.** `text_faint` measured
+  3.00:1 and `text_muted` 3.98:1 on a card while carrying 10–13px copy.
+  The ramp is rebuilt evenly in CIE L\* with its floor pinned at 4.55:1 —
+  four visibly distinct steps, all legible.
+- **Elevation was nearly invisible.** Card-vs-content-well separation was
+  1.20:1 (dark) / 1.21:1 (light). Depth now comes from recessing the
+  content well rather than brightening the card (which would have wrecked
+  the text ramp above it): **1.46:1 dark, 1.27:1 light**.
+- **Toasts covered the live console.** A fixed bottom margin put the toast
+  stack on top of the Activity drawer exactly when a task was running. The
+  stack now tracks the drawer's height live.
+- **Dialog titles were never actually enlarged** — all 8 built their header
+  as `label_qss(t, "card").replace("14px", "16px")`, but the card role has
+  been 16px since v7, so the replace matched nothing. Added a real
+  `dialog` type role (18px/700).
+- **Edge force-removal now resolves `setup.exe` dynamically** — Edge's
+  uninstaller lives under a per-version folder
+  (`…\Edge\Application\<VERSION>\Installer\setup.exe`) that changes on
+  every update; `Remove-MicrosoftEdge` (`06-Tweaks.ps1`) now hunts it
+  recursively under both Program Files roots (newest version wins)
+  instead of relying on a path that went stale (the cause of setup.exe
+  exiting with code 93 / never running). The Appx cleanup pass now
+  **excludes `Microsoft.MicrosoftEdgeDevToolsClient`**, a hard-protected
+  Windows 11 OS component that always fails `Remove-AppxPackage` with
+  `0x80070032` and previously aborted the whole removal into a false
+  failure.
+- **Window controls blocked while a modal was open (critical)** — the
+  old dialogs centered over the whole window, physically covering the
+  caption buttons, and Qt's application modality blocked title-bar
+  clicks besides. Dialogs are now always positioned below the title
+  bar, and because minimize/maximize/close run through the raw
+  non-client path (`WM_NCLBUTTONUP` in `nativeEvent`), they bypass
+  Qt's modal input blocking entirely — verified live with real window
+  messages while a selector was open: hit-testing answered
+  HTCLOSEBUTTON and a posted NC click minimized the window with the
+  modal still up. Closing during a modal settles open dialogs first
+  (reject) so no exec() loop is orphaned.
+- **Modal bleed-through, eliminated at the source** — beyond the opaque
+  panels, the new body scrim masks *everything* around an open dialog;
+  nothing underneath is legible anymore in either theme.
+- **Caption-button hitbox (critical)** — closing the window demanded a
+  pixel-perfect hit on the 40×30 glyph. WM_NCHITTEST now maps
+  generously expanded non-client zones over minimize/maximize/close
+  (HTMINBUTTON/HTMAXBUTTON/HTCLOSEBUTTON): the strip from the window's
+  top edge to below the buttons, from the minimize button's left edge
+  to the window's right edge, split at gap midpoints — so clicking
+  anywhere in the top-right corner region registers, exactly like a
+  native app, and the literal screen corner closes a maximized window
+  (Fitts corner-slam). Clicks are re-injected from WM_NCLBUTTONUP with
+  hover mirrored per-button; a swept probe confirmed zero dead pixels
+  across the entire strip. Resize borders keep priority while floating,
+  matching native ordering.
+- **Text bleed-through in overlays** — dialog surfaces were 98–99%
+  opaque, so the card grid/console underneath ghosted through as
+  overlapping text when selectors and wizards opened. Dialog
+  backgrounds are now fully opaque (toasts 99%), and card titles wrap
+  rather than overflow.
+- **Maximized click-through corners (critical)** — on a frameless
+  per-pixel-alpha window, the corner pixels DWM rounds away are alpha-0
+  and clicks fell straight through to whatever app sat behind Pulse.
+  DWM corner rounding is now explicitly disabled while maximized
+  (`DWMWCP_DONOTROUND`) and restored on unmaximize, so a maximized
+  Pulse is square, opaque and click-owning edge-to-edge like every
+  native Win11 app.
+- **Fixed-size first launch overflowed small screens** — the hardcoded
+  `1180×740 @ (140, 80)` geometry was taller than a 1366×768 laptop's
+  work area (and worse at 125%+ DPI scale). The window now sizes to the
+  monitor's available geometry, centers itself, and clamps its minimum
+  size so it can never be forced larger than the screen it lives on.
+  Fractional DPI scale factors are passed through exactly
+  (`HighDpiScaleFactorRoundingPolicy.PassThrough`) for pixel-crisp
+  rendering at 125/150/175%.
+- **Console UTF-8 output encoding** — `core.ps1`'s interactive console mode
+  never set `[Console]::OutputEncoding`, so on the default OEM code page
+  (437 on US-English Windows, confirmed live) every box-drawing character
+  and status glyph (✓/✗/═/║) rendered as mangled question marks and
+  garbage. The GUI's spawned subprocess already had this fix
+  (`helpers.PowerShellTask` sets it before invoking `core.ps1`); the
+  interactive console never did. This was very likely the actual cause of
+  "the UI looks chaotic" — verified before/after with the exact same
+  glyphs: garbage without the fix, clean boxes with it.
+- **Three winget exit codes were mislabeled** in `Resolve-WingetExitCode`,
+  cross-checked against winget-cli's own `AppInstallerErrors.h` (not
+  memory or a forum post): `-1978335215` was labeled "no applicable
+  upgrade" and treated as a **silent success** — it's actually
+  `INSTALLER_HASH_MISMATCH`, a corrupted-or-tampered-download failure that
+  was being reported as "completed successfully." `-1978335189` and
+  `-1978335153` were labeled "package not found" / "file in use" — both
+  are actually "nothing to update" signals and are now correctly treated
+  as an already-up-to-date skip instead of a failure. Added the exit code
+  from this request, `-1978335226` (`SHELLEXEC_INSTALL_FAILED` — the
+  wrapped installer itself failed, the common MSYS2 case), with a
+  specific, actionable message instead of a generic "unhandled exit code."
+- **`Get-InstalledVersion`'s column parsing was silently broken** for
+  every call site: it split `winget list` output on 2+ spaces, but winget
+  only pads columns for a real interactive console — the instant Pulse
+  captures the output (which is always), padding can collapse to a single
+  space and the split always failed, meaning the "already up to date"
+  fast-path check *always* fell through to a live `winget upgrade`
+  invocation it didn't need to make. Fixed to find the exact-match AppId
+  token and read the next token as the version — verified against a real
+  installed package (Git) confirming the instant-skip path now actually
+  fires, plus a constructed edge case where the display name collides
+  with winget's own Name column.
+- Retry-with-`--force` no longer fires on an "already current" exit code
+  it didn't recognize — the gate checked one hardcoded code, so the two
+  newly-recognized "nothing to update" codes would have forced an
+  unnecessary reinstall instead of honoring the skip.
 - **Maximized/fullscreen layout** — the shell's floating margins no longer
   survive maximize: `body`'s content margins now collapse to a slim
   comfort gap in lock-step with the existing corner/border flush, so a
   maximized window sits truly edge-to-edge instead of floating inside a
   dead-space frame.
 
-### Changed
-- **Faster, snappier motion**: hover glow, page fade, card cascade, dialog
-  entrance, theme cross-fade, and toast animations were all retuned into
-  the 90–190ms band (from up to 300ms) for a lighter, more immediate feel.
-  The shimmer progress sweep (an indeterminate loop, not a transition) is
-  unchanged.
+### Removed
+- Dead code: `total_operations()` (`menu_structure.py`), `HoverGlow` /
+  `PulseAnimation` (`helpers.py`, long superseded by `animations.py`), and
+  the unused `hero` / `value` / `meta` label roles — all with zero call
+  sites. (`category_operations()` was removed as dead and then reinstated
+  later in this same release, when the new category count chip gave it a
+  real call site.)
+
+- **Dual-theme legibility & finish pass** — light mode's two lower text
+  steps deepened (`text_muted` #5d6879 → #4e5a6c ≈ 6:1, `text_faint`
+  #8d97a8 → #75808f ≈ 4:1) killing the washed-out body/caption reading,
+  and card hairlines strengthened (0.11 → 0.14 alpha) so white-on-porcelain
+  cards keep distinct edges; dark mode's `text_faint` lifted one step
+  (#5a6272 → #646e80) for 10px captions on dim laptop panels. Grouped hub
+  landing screens gained commercial-grade section headers: accent-tinted
+  letter-spaced titles finished with a 1px accent rule fading toward the
+  panel edge (`hub_group_header_qss` / `hub_group_rule_qss`), with
+  proximity-correct rhythm (headers sit tight over their own cards, a
+  full step clear of the previous group). Interaction polish: selector
+  rows now lift fill *and* border on hover (matching GlassCard),
+  checkbox wells pre-tint with the accent on hover and acknowledge the
+  cursor when checked, and dialog Cancel/Close buttons match the primary
+  button's 600 weight with a firmer hover border.
+- **System Tools & Utilities hub is now grouped, not a flat list** — its
+  eight sub-actions are split into three scannable sub-groups the
+  HubDialog renders under small section headers: **Diagnostics &
+  Optimization** (Hardware Diagnostics, PATH Doctor, Startup Manager,
+  Check for Updates), **Microsoft Edge** (Remove / Install-Restore), and
+  **Microsoft OneDrive** (Purge / Install-Restore) — each app's teardown
+  now sits directly beside its restore. Hubs may now carry `groups`
+  (titled sections) in place of a flat `items` list; `menu_structure.hub_items()`
+  flattens either shape so the command palette, counters and hub
+  navigation are unaffected.
+- **Browsers & Daily Apps trimmed to three core selections** — Browsers,
+  Chat & Media / Microsoft Office Suite / Core API Runtimes. The combined
+  "Teams & OneDrive" card was removed; OneDrive's install/restore now
+  lives beside Purge OneDrive under System Tools & Utilities
+  (`RestoreOneDrive`).
+- **Microsoft Teams dropped from the catalog entirely** — purged from
+  `$Apps_OfficeCompanions`, the download-URL and lock-process maps
+  (`01-Catalogs.ps1`), the retired `InstallOfficeApps` GUI task
+  (`30-GuiDispatcher.ps1`) and the console App Deployment Hub
+  (`20-Menus.ps1`, now a OneDrive-only category).
 
 ---
 

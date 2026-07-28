@@ -20,8 +20,8 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QRectF,
-    Qt, QThread, QTimer, QUrl, QVariantAnimation, Signal,
+    QDateTime, QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation,
+    QRect, QRectF, Qt, QThread, QTime, QTimer, QUrl, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QFontMetrics, QLinearGradient, QPainter,
@@ -29,7 +29,8 @@ from PySide6.QtGui import (
     QTextOption,
 )
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
+    QApplication, QCheckBox, QDialog, QFileDialog, QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QPlainTextEdit, QPushButton, QScrollArea, QSizeGrip, QStackedWidget,
     QVBoxLayout, QWidget,
@@ -750,6 +751,10 @@ class ClampedLabel(QLabel):
 
 class GlassCard(QFrame):
     clicked = Signal()
+    # Arrow-key traversal request: "left" | "right" | "up" | "down". The
+    # card knows a key was pressed but not where its neighbours are — the
+    # page that owns the grid resolves that (see main._focus_neighbour).
+    navigate = Signal(str)
 
     _ICON_BASE_PX = 21
     _ICON_GROW_PX = 2   # subtle hover "pop" — see _sync_icon_scale()
@@ -786,6 +791,15 @@ class GlassCard(QFrame):
         self._locked = locked
         self._applied: bool | None = None
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # v10 ACCESSIBILITY: cards were QFrames with mouse handlers only —
+        # no focus policy, no key handling — so the entire operation grid,
+        # the app's primary surface, was unreachable by keyboard. Tab
+        # stopped at the sidebar. StrongFocus puts every card in the tab
+        # order; keyPressEvent below adds Enter/Space activation and arrow
+        # traversal, and paintEvent draws a real focus ring.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(item.get("title", ""))
+        self.setAccessibleDescription(item.get("desc", ""))
         # v8 proportion fix: a min AND a max so cards never balloon. The
         # equal-row-stretch grid (main.CategoryPage._relayout) still fills the
         # canvas, but a capped card can't grow into a tall, empty slab — it
@@ -1027,8 +1041,43 @@ class GlassCard(QFrame):
         self._press_anim.setEndValue(target)
         self._press_anim.start()
 
+    _NAV_KEYS = {
+        Qt.Key.Key_Left: "left", Qt.Key.Key_Right: "right",
+        Qt.Key.Key_Up: "up", Qt.Key.Key_Down: "down",
+    }
+
+    def keyPressEvent(self, e):
+        key = e.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            # Same feedback a click gets, so activating from the keyboard
+            # feels like the same action rather than a silent shortcut.
+            self._ramp_press(1.0)
+            self._ripple.trigger(QPointF(self.rect().center()))
+            QTimer.singleShot(90, lambda: self._ramp_press(0.0))
+            self.clicked.emit()
+            return
+        direction = self._NAV_KEYS.get(key)
+        if direction is not None:
+            self.navigate.emit(direction)
+            return
+        super().keyPressEvent(e)
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        # Keyboard focus lights the same glow the pointer does, so the two
+        # input methods produce one consistent "this is active" state.
+        self._glow._ramp_to(1.0)
+        self.update()
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        if not self.underMouse():
+            self._glow._ramp_to(0.0)
+        self.update()
+
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
             self._ramp_press(1.0)
             self._ripple.trigger(e.position())
         super().mousePressEvent(e)
@@ -1097,6 +1146,18 @@ class GlassCard(QFrame):
                            self._ripple.progress, self._ripple.origin)
         paint_glow_frame(p, self.rect(), 16, self._glow.color,
                          self._glow.intensity, self._glow.cursor)
+        # Keyboard focus ring — painted LAST so it sits above the hover
+        # glow and stays unambiguous even on a card the pointer is also
+        # over. A solid 2px accent ring rather than Qt's dotted default,
+        # which is invisible against this material.
+        if self.hasFocus():
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            ring = QColor(self._glow.color)
+            ring.setAlphaF(0.95)
+            p.setPen(QPen(ring, 2.0))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5),
+                              15, 15)
         p.end()
 
 
@@ -1569,6 +1630,60 @@ class ElevatePromptDialog(PulseDialog):
 
 
 # ============================================================
+#  SHORTCUT SHEET — F1 / ? keyboard reference
+# ============================================================
+class ShortcutSheetDialog(PulseDialog):
+    """The keyboard reference (F1 or ?).
+
+    v10 added a real keyboard layer; a shortcut nobody can discover is a
+    shortcut that doesn't exist, and Ctrl+K had been undiscoverable for
+    exactly that reason. Rows are rendered from PulseApp.SHORTCUTS, so the
+    sheet cannot drift out of sync with the bindings actually installed."""
+
+    def __init__(self, parent: QWidget, t: dict, shortcuts: list[tuple[str, str]]):
+        super().__init__(parent)
+        accent = t["accent"]
+        panel = _dialog_chrome(self, t, accent, width=440)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(TH.SPACE["xl"], TH.SPACE["xl"],
+                               TH.SPACE["xl"], TH.SPACE["lg"])
+        lay.setSpacing(TH.SPACE["md"])
+
+        head = QLabel("Keyboard shortcuts")
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
+        lay.addWidget(head)
+
+        for keys, description in shortcuts:
+            row = QHBoxLayout()
+            row.setSpacing(TH.SPACE["md"])
+            key_label = QLabel(keys)
+            key_label.setStyleSheet(TH.keycap_qss(t))
+            key_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            key_label.setFixedWidth(120)
+            row.addWidget(key_label, 0, Qt.AlignmentFlag.AlignVCenter)
+            desc = QLabel(description)
+            desc.setStyleSheet(TH.label_qss(t, "body"))
+            row.addWidget(desc, 1)
+            lay.addLayout(row)
+
+        lay.addSpacing(TH.SPACE["sm"])
+        foot = QHBoxLayout()
+        foot.addStretch()
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_cancel_qss(t))
+        close.clicked.connect(self.reject)
+        foot.addWidget(close)
+        lay.addLayout(foot)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+
+# ============================================================
 #  HUB DIALOG — a hub card's landing screen (drill-down navigation)
 # ============================================================
 class HubDialog(PulseDialog):
@@ -1699,12 +1814,14 @@ class LiveConsole(QPlainTextEdit):
     MAX_LINES = 2000  # bound memory on very long-running tasks (SFC/DISM)
     _EMPTY_MESSAGE = "Idle — output streams here in real time while a task runs."
 
-    def __init__(self, t: dict, parent: QWidget | None = None):
+    def __init__(self, t: dict, parent: QWidget | None = None,
+                 timestamps: bool = True):
         super().__init__(parent)
         self.setReadOnly(True)
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setFont(QFont("Cascadia Mono", 9))
+        self._timestamps = timestamps
         # No native placeholder text: the empty state is a custom-painted
         # "pulse" waveform motif + message (see paintEvent), not plain text.
         self.apply_theme(t)
@@ -1714,6 +1831,21 @@ class LiveConsole(QPlainTextEdit):
         self._empty_accent = QColor(t["accent"])
         self._empty_text = QColor(t["text_faint"])
 
+    def set_timestamps(self, on: bool):
+        """Toggle the HH:MM:SS gutter. Only affects lines written AFTER the
+        change — retro-stamping existing output would invent times we never
+        observed, and un-stamping would have to parse them back out of text
+        that may legitimately contain a similar prefix."""
+        self._timestamps = bool(on)
+
+    def timestamps_enabled(self) -> bool:
+        return self._timestamps
+
+    def _stamp(self, text: str) -> str:
+        if not self._timestamps:
+            return text
+        return f"{QTime.currentTime().toString('HH:mm:ss')}  {text}"
+
     def put_line(self, text: str, replace_last: bool = False):
         """Slot for PowerShellTask.output(text, replace_last)."""
         if replace_last and not self.document().isEmpty():
@@ -1722,7 +1854,7 @@ class LiveConsole(QPlainTextEdit):
             self.append_line(text)
 
     def append_line(self, text: str):
-        self.appendPlainText(text)
+        self.appendPlainText(self._stamp(text))
         if self.blockCount() > self.MAX_LINES:
             cursor = self.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.Start)
@@ -1743,9 +1875,34 @@ class LiveConsole(QPlainTextEdit):
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock,
                             QTextCursor.MoveMode.KeepAnchor)
-        cursor.insertText(text)
+        # re-stamped, not stamp-preserved: a carriage-return progress line is
+        # rewritten continuously, so the useful timestamp is the moment of
+        # the LATEST update, not of the first one
+        cursor.insertText(self._stamp(text))
         bar = self.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    # -- v10 output actions ------------------------------------
+    def copy_all(self) -> int:
+        """Whole buffer to the clipboard. Returns the line count so the
+        caller can confirm what was taken — a silent copy leaves the user
+        unsure it worked."""
+        text = self.toPlainText()
+        QApplication.clipboard().setText(text)
+        return len(text.splitlines()) if text else 0
+
+    def export_to(self, path: str) -> int:
+        """Write the buffer to `path`, returning the line count. Raises
+        OSError on failure — the caller reports it; this must not swallow
+        a failed write and imply the log was saved."""
+        text = self.toPlainText()
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return len(text.splitlines()) if text else 0
+
+    def line_count(self) -> int:
+        text = self.toPlainText()
+        return len(text.splitlines()) if text else 0
 
     def clear_console(self):
         self.clear()
@@ -1950,6 +2107,38 @@ class ActivityDrawer(QWidget):
         self.stop_btn.hide()
         rail.addWidget(self.stop_btn)
 
+        # -- v10 output actions -------------------------------
+        # Live output was previously a dead end: you could watch it scroll
+        # past and nothing else. These four turn it into something you can
+        # actually take away — copy it into a bug report, save it beside a
+        # failed run, clear it before a fresh attempt, or drop the
+        # timestamp gutter when pasting somewhere narrow. Icon-only ghost
+        # buttons so the rail stays quiet.
+        self._tools: list[QPushButton] = []
+
+        def tool(glyph_key: str, tip: str, slot, checkable: bool = False):
+            char, fluent = TH.glyph(glyph_key)
+            btn = QPushButton(char)
+            btn.setFixedSize(26, 26)
+            btn.setCheckable(checkable)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setToolTip(tip)
+            font = TH.icon_font(12) if fluent else None
+            if font is not None:
+                btn.setFont(font)
+            btn.clicked.connect(slot)
+            rail.addWidget(btn)
+            self._tools.append(btn)
+            return btn
+
+        self._btn_stamp = tool("clock", "Show timestamps in the output",
+                               self._toggle_timestamps, checkable=True)
+        self._btn_stamp.setChecked(True)
+        tool("copy", "Copy all output to the clipboard", self._copy_output)
+        tool("export", "Save the output to a file…", self._export_output)
+        tool("clear", "Clear the output", self._clear_output)
+
         self._toggle = QPushButton(TH.glyph("chevron")[0])
         self._toggle.setCheckable(True)
         self._toggle.setFixedSize(28, 28)
@@ -1993,10 +2182,62 @@ class ActivityDrawer(QWidget):
 
         self.apply_theme(t)
 
+    # -- output actions ---------------------------------------
+    # `notify` is supplied by main.py so these report through the app's own
+    # ToastManager; the drawer has no business owning notification UI.
+    def set_notifier(self, notify):
+        self._notify = notify
+
+    def _tell(self, kind: str, message: str):
+        notify = getattr(self, "_notify", None)
+        if notify is not None:
+            notify(kind, message)
+
+    def _toggle_timestamps(self, checked: bool):
+        self.console.set_timestamps(checked)
+        self._btn_stamp.setToolTip(
+            "Hide timestamps in the output" if checked
+            else "Show timestamps in the output")
+
+    def _copy_output(self):
+        lines = self.console.copy_all()
+        if lines:
+            self._tell("success", f"Copied {lines} line(s) to the clipboard.")
+        else:
+            self._tell("info", "There is no output to copy yet.")
+
+    def _clear_output(self):
+        if not self.console.line_count():
+            self._tell("info", "The output is already empty.")
+            return
+        self.console.clear_console()
+        self._tell("info", "Output cleared.")
+
+    def _export_output(self):
+        if not self.console.line_count():
+            self._tell("info", "There is no output to save yet.")
+            return
+        default = os.path.join(
+            os.path.join(os.path.expanduser("~"), "Desktop"),
+            f"Pulse_Output_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.txt")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save live output", default, "Text files (*.txt);;All files (*)")
+        if not path:
+            return
+        try:
+            lines = self.console.export_to(path)
+        except OSError as exc:
+            # never claim a save that didn't happen
+            self._tell("error", f"Could not save the output: {exc}")
+            return
+        self._tell("success", f"Saved {lines} line(s) to {os.path.basename(path)}")
+
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
         self._rail.setStyleSheet(TH.activity_rail_qss(t))
         self._console_label.setStyleSheet(TH.console_header_qss(t))
+        for btn in self._tools:
+            btn.setStyleSheet(TH.activity_toggle_qss(t))
         self.status_text.setStyleSheet(TH.label_qss(t, "status"))
         self.state_pill.apply_theme(t)
         self.stop_btn.setStyleSheet(TH.stop_button_qss(t))
@@ -2054,6 +2295,11 @@ class ActivityDrawer(QWidget):
     def is_pinned(self) -> bool:
         """Persisted across sessions — see utils.prefs.drawer_pinned."""
         return self._pinned
+
+    def toggle_pinned(self):
+        """Ctrl+\\ — flip the pin through the toggle button so the chevron's
+        checked state, the tooltip and the drawer stay in one truth."""
+        self._toggle.setChecked(not self._toggle.isChecked())
 
 
 # ============================================================

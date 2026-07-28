@@ -262,6 +262,11 @@ GLYPHS: dict[str, tuple[str, str]] = {
     'refresh':       ("", "🔄"),                    # Check for Updates
     'sync':          ("", "🔁"),                    # Install / Restore pairs
     'cloud':         ("", "☁️"),                   # OneDrive purge
+    # --- console toolbar (v10) ---
+    'copy':          ("", "⎘"),   # Copy output to the clipboard
+    'clear':         ("", "⌫"),   # Clear the console
+    'export':        ("", "⤓"),   # Save output to a file
+    'clock':         ("", "◴"),   # Timestamp toggle
 }
 
 
@@ -731,6 +736,68 @@ def nav_pill_qss(t: dict) -> str:
             border: 1px solid {alpha(t['accent'], 0.55)};
         }}
     """
+
+
+def filter_input_qss(t: dict, accent: str) -> str:
+    """The category header's inline filter field. Quieter than the Ctrl+K
+    palette input (this is a refinement of a page you're already on, not a
+    global launcher), so it sits at panel tone until focused, when it takes
+    the module's own accent."""
+    return f"""
+        QLineEdit {{
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']};
+            border-radius: {RADIUS['control']}px;
+            color: {t['text']};
+            font-size: 12px;
+            padding: 0 10px;
+            selection-background-color: {alpha(accent, 0.35)};
+        }}
+        QLineEdit:hover {{ border: 1px solid {alpha(accent, 0.35)}; }}
+        QLineEdit:focus {{
+            border: 1px solid {alpha(accent, 0.65)};
+            background: {t['card']};
+        }}
+    """
+
+
+def count_chip_qss(t: dict, accent: str, filtered: bool = False) -> str:
+    """'12 operations' / 'showing 3 of 12'. Neutral while the full set is
+    shown; accented once a filter is narrowing it, so the chip doubles as
+    the indicator that a filter is active."""
+    if filtered:
+        return f"""
+            color: {accent}; font-size: 10px; font-weight: 700;
+            background: {alpha(accent, 0.12)};
+            border: 1px solid {alpha(accent, 0.38)};
+            border-radius: {RADIUS['chip']}px; padding: 3px 10px;
+            letter-spacing: 0.5px;
+        """
+    return f"""
+        color: {t['text_faint']}; font-size: 10px; font-weight: 700;
+        background: {t['panel']}; border: 1px solid {t['panel_line']};
+        border-radius: {RADIUS['chip']}px; padding: 3px 10px;
+        letter-spacing: 0.5px;
+    """
+
+
+def keycap_qss(t: dict) -> str:
+    """A key rendered as a physical keycap in the shortcut sheet — raised
+    surface, firm hairline, monospace-ish tracking. Reads as 'press this'
+    rather than as quoted text."""
+    return f"""
+        color: {t['text']}; font-size: 11px; font-weight: 600;
+        background: {t['card']}; border: 1px solid {t['card_line']};
+        border-radius: {RADIUS['chip']}px; padding: 5px 8px;
+        letter-spacing: 0.5px;
+    """
+
+
+def empty_state_qss(t: dict) -> str:
+    """The 'no operations match' message shown when a filter empties the
+    grid — an explicit answer beats a blank page, which reads as a bug."""
+    return (f"color: {t['text_muted']}; font-size: 13px; font-weight: 500;"
+            "background: transparent; border: none;")
 
 
 def recent_row_qss(t: dict) -> str:

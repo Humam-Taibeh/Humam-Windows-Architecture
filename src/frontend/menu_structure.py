@@ -599,6 +599,31 @@ def requires_admin(task: str | None) -> bool:
     return bool(task) and task in ADMIN_REQUIRED_TASKS
 
 
+def _count_leaves(items: list[dict]) -> int:
+    return sum(_count_leaves(hub_items(it)) if it.get("hub") else 1
+               for it in items)
+
+
+def category_operations(category: dict) -> int:
+    """Runnable operations inside one category, counting THROUGH hub
+    containers — a hub card is a container, not an operation, so a naive
+    len(category["items"]) under-reports Software Management by a factor
+    of three. Powers the category header's count chip."""
+    return _count_leaves(category["items"])
+
+
+def search_haystack(item: dict) -> str:
+    """Everything a category-page filter should match an item against,
+    lowercased. Hub containers fold in their sub-items' titles so typing
+    "office" still surfaces the Browsers & Daily Apps hub that holds it —
+    otherwise filtering would hide actions that are genuinely there, just
+    one level down."""
+    parts = [item.get("title", ""), item.get("desc", ""), item.get("note", "")]
+    if item.get("hub"):
+        parts.extend(sub.get("title", "") for sub in hub_items(item))
+    return " ".join(parts).lower()
+
+
 def accent_for_task(task: str | None) -> str:
     """The module accent KEY of whichever category owns `task` (hubs
     expanded), or "" when nothing matches. Lets a consumer that only has a

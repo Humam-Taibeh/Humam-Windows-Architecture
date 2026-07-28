@@ -38,7 +38,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
-    QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea,
+    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -55,14 +55,15 @@ from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
     CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, accent_for_task,
-    find_action, hub_items, iter_leaf_items, requires_admin,
+    category_operations, find_action, hub_items, iter_leaf_items,
+    requires_admin, search_haystack,
 )
 from frontend.widgets import (  # noqa: E402
     ActivityDrawer, AmbientGlow, AppSelectorDialog, BreathingIcon,
     CommandPalette, ConfirmDialog, DepthCard, DevHubSelectorDialog,
     ElevatePromptDialog, GlassCard, HubDialog, NavButton, NavPill,
     OfficeWizardDialog, PulseDialog, RecentOperationsPanel,
-    ResponsiveGridHost, StartupManagerDialog, TitleBar,
+    ResponsiveGridHost, ShortcutSheetDialog, StartupManagerDialog, TitleBar,
     UpdateCenterDialog, refit_dialog,
 )
 
@@ -70,7 +71,12 @@ from frontend.widgets import (  # noqa: E402
 #  APP CONSTANTS
 # ============================================================
 APP_NAME = "PULSE"
-APP_VERSION = "6.1"
+# The app version tracks the UI/design-system generation the
+# codebase actually is (v10). It had been pinned at 6.1 while the
+# design system moved through v7-v10, so the title bar, the sidebar
+# footer and QApplication all reported a version no document,
+# changelog entry or bug report matched.
+APP_VERSION = "10.0"
 APP_CHANNEL = "Beta"   # release channel — rendered as a badge, never in prose
 PS1_FILENAME = "core.ps1"
 DEFAULT_TIMEOUT = 900
@@ -157,6 +163,40 @@ def _system_insights() -> list[tuple[str, str, str]]:
             pass
     insights.append(("💾", ram_value, ram_caption))
     return insights
+
+
+def _focus_neighbour(cards: list, cols: int, current, direction: str) -> bool:
+    """Move keyboard focus to `current`'s neighbour in a `cols`-wide grid.
+
+    Shared by every card grid in the app so arrow traversal behaves
+    identically on the dashboard and on a module page. Operates on the
+    VISIBLE card list, which is what makes traversal stay correct while a
+    filter is narrowing the grid — stepping right from the last match must
+    not land on a hidden card.
+
+    Left/right wrap within a row's bounds by clamping (not wrapping to the
+    next row), matching how Windows list grids behave; up/down move a whole
+    row. Returns False when there is nowhere to go, so the caller can let
+    the key fall through to normal tab handling."""
+    if current not in cards or cols <= 0:
+        return False
+    index = cards.index(current)
+    row, col = divmod(index, cols)
+    if direction == "left":
+        target = index - 1 if col > 0 else index
+    elif direction == "right":
+        target = index + 1 if col < cols - 1 else index
+    elif direction == "up":
+        target = index - cols if row > 0 else index
+    else:  # down
+        target = index + cols
+        if target >= len(cards):
+            # a short final row: land on its last card rather than nothing
+            target = len(cards) - 1 if row < (len(cards) - 1) // cols else index
+    if target == index or not (0 <= target < len(cards)):
+        return False
+    cards[target].setFocus(Qt.FocusReason.OtherFocusReason)
+    return True
 
 
 # ============================================================
@@ -357,6 +397,9 @@ class WelcomePage(QWidget):
             # rather than by a cap that could clip them.
             card.clicked.connect(
                 lambda it=item, c=card: self.action_requested.emit(it, c))
+            card.navigate.connect(
+                lambda direction, c=card: _focus_neighbour(
+                    self._action_cards, self._cols, c, direction))
             self._action_cards.append(card)
         self._relayout_actions(3)
 
@@ -462,6 +505,8 @@ class CategoryPage(QWidget):
         super().__init__()
         self.category = category
         self.cards: list[GlassCard] = []
+        self._visible: list[GlassCard] = []
+        self._t = t
         self._cols = 0
 
         lay = QVBoxLayout(self)
@@ -508,6 +553,24 @@ class CategoryPage(QWidget):
         title_col.addWidget(self._tagline)
         head.addLayout(title_col)
         head.addStretch()
+
+        # -- v10 filter rail: the header's right-hand side ---------------
+        # The whole right two-thirds of this row was empty. It now carries
+        # the two things a module page can usefully say about itself: how
+        # to narrow it, and how much is in it. The filter matches titles,
+        # descriptions AND a hub's sub-item titles (see
+        # menu_structure.search_haystack), so searching "office" surfaces
+        # the hub that contains it rather than hiding a real match.
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("Filter…")
+        self._filter.setFixedSize(200, 32)
+        self._filter.setClearButtonEnabled(True)
+        self._filter.textChanged.connect(self._apply_filter)
+        head.addWidget(self._filter, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._count_chip = QLabel()
+        self._count_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(self._count_chip, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(head)
 
         # -- card grid ----------------------------------------
@@ -532,8 +595,21 @@ class CategoryPage(QWidget):
             card = GlassCard(item, category["accent"], t, featured=featured)
             card.clicked.connect(
                 lambda it=item, c=card: self.task_requested.emit(it, c))
+            card.navigate.connect(
+                lambda direction, c=card: _focus_neighbour(
+                    self._visible, self._cols, c, direction))
             self.cards.append(card)
+        # Everything below re-columns over VISIBLE cards only, so filtering
+        # reflows the grid instead of leaving holes where hidden cards were.
+        self._visible = list(self.cards)
         self._relayout(2)   # safe default; the first resize event corrects it
+
+        # Empty state — a filter that matches nothing must say so; a blank
+        # grid is indistinguishable from a broken page.
+        self._empty = QLabel("No operations match that filter.")
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.hide()
+        self._grid.addWidget(self._empty, self.MAX_COLUMNS + 1, 0, 1, self.MAX_COLUMNS)
 
         self._scroll.setWidget(grid_host)
         self._scroll.viewport().setStyleSheet("background: transparent;")
@@ -558,6 +634,40 @@ class CategoryPage(QWidget):
         fits = (viewport_w + gap) // (unit + gap)
         return max(1, min(self.MAX_COLUMNS, fits))
 
+    # -- filtering -------------------------------------------------
+    def _apply_filter(self, text: str):
+        query = text.strip().lower()
+        self._visible = [
+            card for card in self.cards
+            if not query or query in search_haystack(card.item)
+        ]
+        shown = set(id(c) for c in self._visible)
+        for card in self.cards:
+            card.setVisible(id(card) in shown)
+        self._empty.setVisible(bool(query) and not self._visible)
+        # force a rebuild: the column count may not change, but WHICH cards
+        # occupy which cells certainly has
+        self._cols = 0
+        self._relayout(self._columns_for(self._grid_available_width()))
+        self._sync_count_chip()
+
+    def _grid_available_width(self) -> int:
+        host = self._grid.parentWidget()
+        margins = self._grid.contentsMargins()
+        return host.width() - margins.left() - margins.right() if host else 0
+
+    def _sync_count_chip(self):
+        total = category_operations(self.category)
+        filtering = bool(self._filter.text().strip())
+        if filtering:
+            self._count_chip.setText(f"{len(self._visible)} OF {len(self.cards)}")
+        else:
+            self._count_chip.setText(
+                f"{total} OPERATION{'S' if total != 1 else ''}")
+        self._count_chip.setStyleSheet(TH.count_chip_qss(
+            self._t, TH.resolve_accent(self._t, self.category["accent"]),
+            filtered=filtering))
+
     def _relayout(self, cols: int):
         if cols == self._cols:
             return
@@ -571,10 +681,10 @@ class CategoryPage(QWidget):
         # of the old single trailing spacer row that top-anchored the grid and
         # stranded ~50% of the page as dead middle space (the redesign's #1
         # complaint). Rows past the last occupied one collapse to zero.
-        n_rows = (len(self.cards) + cols - 1) // cols
+        n_rows = (len(self._visible) + cols - 1) // cols
         for row in range(max(self._grid.rowCount(), n_rows) + 1):
             self._grid.setRowStretch(row, 1 if row < n_rows else 0)
-        for i, card in enumerate(self.cards):
+        for i, card in enumerate(self._visible):
             self._grid.addWidget(card, i // cols, i % cols)
 
     # Column counts are driven by ResponsiveGridHost.resized (see the grid
@@ -584,7 +694,18 @@ class CategoryPage(QWidget):
     # and the scroll viewport respectively — two different numbers, one of
     # them lagging a layout pass behind the other.
 
+    def focus_filter(self):
+        """Ctrl+L / Ctrl+F target — select-all so typing replaces whatever
+        query is already there, matching every browser address bar."""
+        self._filter.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._filter.selectAll()
+
     def apply_theme(self, t: dict):
+        self._t = t
+        accent = TH.resolve_accent(t, self.category["accent"])
+        self._filter.setStyleSheet(TH.filter_input_qss(t, accent))
+        self._empty.setStyleSheet(TH.empty_state_qss(t))
+        self._sync_count_chip()
         self._home.apply_theme(t)
         self._crumb_sep.setStyleSheet(
             f"color: {t['text_faint']}; font-size: 17px; font-weight: 400;"
@@ -648,8 +769,7 @@ class PulseApp(QMainWindow):
         self._build_ui()
         self._apply_theme(self.theme.t)
         self._refresh_recent()
-        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self.go_home)
-        QShortcut(QKeySequence("Ctrl+K"), self, activated=self._open_command_palette)
+        self._install_shortcuts()
         QTimer.singleShot(300, self._startup_toasts)
         # first applied-state read, after the window has settled
         QTimer.singleShot(600, self._refresh_tweak_state)
@@ -849,6 +969,10 @@ class PulseApp(QMainWindow):
         # when a task starts; registering it keeps the toast stack riding
         # above the live console instead of landing on top of it (v10).
         self.toasts.set_bottom_obstacle(self.activity)
+        # the drawer's copy/export/clear actions report through the
+        # app's own toast stack rather than owning notification UI
+        self.activity.set_notifier(
+            lambda kind, message: self.toasts.show(kind, message, 3500))
         self.activity.height_changed.connect(self.toasts.reposition)
 
     # ============================================================
@@ -1022,6 +1146,53 @@ class PulseApp(QMainWindow):
             accent=self._running_accent,
             outcome=outcome)
         self._refresh_recent()
+
+    # ============================================================
+    #  KEYBOARD LAYER (v10)
+    # ============================================================
+    # Before v10 the app had exactly two shortcuts (Escape, Ctrl+K) and the
+    # card grid could not be reached from the keyboard at all. The table
+    # below is the single source of truth for both the bindings and the
+    # help sheet, so a shortcut can never exist without being documented.
+    SHORTCUTS = [
+        ("Ctrl+K",        "Command palette"),
+        ("Ctrl+L",        "Filter this module"),
+        ("Ctrl+H",        "Go to the dashboard"),
+        ("Ctrl+1 … 6",    "Jump to a module"),
+        ("Ctrl+\\",       "Show / hide live output"),
+        ("↑ ↓ ← →",       "Move between cards"),
+        ("Enter / Space", "Run the focused card"),
+        ("Esc",           "Back to the dashboard"),
+        ("F1  or  ?",     "This shortcut sheet"),
+    ]
+
+    def _install_shortcuts(self):
+        def bind(sequence, slot):
+            QShortcut(QKeySequence(sequence), self, activated=slot)
+
+        bind(Qt.Key.Key_Escape, self.go_home)
+        bind("Ctrl+K", self._open_command_palette)
+        bind("Ctrl+H", self.go_home)
+        bind("Ctrl+L", self._focus_page_filter)
+        bind("Ctrl+F", self._focus_page_filter)   # the other muscle memory
+        bind("Ctrl+\\", self.activity.toggle_pinned)
+        bind("F1", self._open_shortcut_sheet)
+        bind("?", self._open_shortcut_sheet)
+        for i in range(len(CATEGORIES)):
+            bind(f"Ctrl+{i + 1}", lambda idx=i: self.open_category(idx))
+
+    def _focus_page_filter(self):
+        """Ctrl+L on a module page focuses its filter; on the dashboard,
+        where there is no filter, it falls back to the command palette so
+        the key never does nothing."""
+        page = self.stack.currentWidget()
+        if isinstance(page, CategoryPage):
+            page.focus_filter()
+        else:
+            self._open_command_palette()
+
+    def _open_shortcut_sheet(self):
+        self._exec_dialog(ShortcutSheetDialog(self, self.theme.t, self.SHORTCUTS))
 
     # ============================================================
     #  COMMAND PALETTE (Ctrl+K)
