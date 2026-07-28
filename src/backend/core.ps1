@@ -116,7 +116,7 @@ if (-not $Task) {
 }
 $ErrorActionPreference = "Stop"
 
-$Script:ScriptVersion = "6.1"
+$Script:ScriptVersion = "10.0"   # keep in lockstep with APP_VERSION (src/frontend/main.py)
 
 # When invoked with -Task (i.e. from the GUI), there is no console attached
 # for Read-Host to block on. Ask-User, Invoke-WithRetry, Smart-Deploy and

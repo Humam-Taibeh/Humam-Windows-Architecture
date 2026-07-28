@@ -85,6 +85,57 @@ def brand_gradient(t: dict, a1: float, a2: float | None = None) -> str:
             f"stop:0 {alpha(t['accent'], a1)}, stop:1 {alpha(t['accent2'], a2)})")
 
 
+def resolve_accent(t: dict, accent: str) -> str:
+    """A MODULE KEY ('software') -> that module's accent for the CURRENT
+    theme; a literal '#rrggbb' passes straight through.
+
+    v10: the six module colours used to be single hex literals living in
+    menu_structure.py, so light mode reused values tuned for a near-black
+    canvas — every one of them measured 1.86-2.64:1 against the porcelain
+    card, far under the 3:1 floor for an icon, which is why the "Spectrum"
+    identity washed out in light mode. They are tokens now (one set per
+    mode, solved so each clears 4.5:1 as text on the card and 3:1 as a glyph
+    inside its own tinted plaque well), and menu_structure carries only the
+    semantic key. Widgets MUST store the key and call this from
+    apply_theme() — resolving once at construction would freeze a card on
+    whichever theme happened to be active when it was built."""
+    if not accent:
+        return t["accent"]
+    if accent.startswith("#") or accent.startswith("rgb"):
+        return accent
+    return t["module"].get(accent, t["accent"])
+
+
+# ============================================================
+#  SPACING & RADIUS SCALE (v10)
+# ============================================================
+# Before v10 the codebase used 13 distinct setSpacing() values (2,4,7,8,9,
+# 10,12,13,14,15,16,20) and 17 distinct border-radius values, with margins
+# like (15,13,16,13) and (30,18,30,20) that read as accidents rather than
+# decisions — the root cause of the app's "almost aligned" feel. Everything
+# now comes from these two scales; a new surface picks the nearest step
+# instead of inventing another number.
+SPACE = {
+    "xs":  4,    # icon<->label, tight inline pairs
+    "sm":  8,    # inside a row / between sibling controls
+    "md":  12,   # between related blocks
+    "lg":  16,   # grid gutters, card padding
+    "xl":  24,   # section separation, dialog padding
+    "xxl": 32,   # page-level breathing room
+}
+
+# Semantic radii — named by the surface they belong to, so a card and a
+# dialog can never drift a pixel apart by accident.
+RADIUS = {
+    "chip":    8,    # pills, badges, small tags
+    "control": 10,   # buttons, inputs
+    "plaque":  12,   # icon wells, nav entries, list rows
+    "card":    16,   # GlassCard, action surfaces
+    "panel":   20,   # sidebar, content frame, dialog panels
+    "shell":   24,   # the window itself
+}
+
+
 def bevel_alphas(t: dict) -> tuple[float, float]:
     """(light_alpha, dark_alpha) for animations.paint_bevel_frame, tuned per
     mode. Qt QSS has no box-shadow, so cards can't cast a real drop shadow;
@@ -211,6 +262,11 @@ GLYPHS: dict[str, tuple[str, str]] = {
     'refresh':       ("", "🔄"),                    # Check for Updates
     'sync':          ("", "🔁"),                    # Install / Restore pairs
     'cloud':         ("", "☁️"),                   # OneDrive purge
+    # --- console toolbar (v10) ---
+    'copy':          ("", "⎘"),   # Copy output to the clipboard
+    'clear':         ("", "⌫"),   # Clear the console
+    'export':        ("", "⤓"),   # Save output to a file
+    'clock':         ("", "◴"),   # Timestamp toggle
 }
 
 
@@ -253,19 +309,21 @@ _DARK = {
     "bg_solid":    "#10121b",
     # shell gradient — a lit deep-space fall: a lifted indigo top settling
     # into a rich near-black-blue floor (not cold near-black).
-    "bg_grad_top":    "#1b1f2e",
-    "bg_grad_bottom": "#0b0c13",
-    # content veil — LOWER alpha than v8 (0.52 → 0.34) so the ambient aurora
-    # wash behind the shell reads THROUGH the content area as living
-    # luminescence instead of being smothered flat.
-    "overlay":     "rgba(10, 12, 20, 0.34)",
-    "panel":       "rgba(255, 255, 255, 0.035)",
+    "bg_grad_top":    "#1c2131",
+    "bg_grad_bottom": "#0a0b11",
+    # v10 ELEVATION: the content well is now genuinely RECESSED (0.34 →
+    # 0.55) rather than a near-invisible 1.03:1 tint over the canvas. This
+    # is the move that finally makes cards float: measured card-vs-well
+    # separation goes 1.20:1 → 1.46:1 WITHOUT brightening the card enough
+    # to wreck the text ramp sitting on it (the naive "lighten the card"
+    # fix forced text_muted and text_faint so high they collapsed into one
+    # tone). Depth is bought by digging the hole, not raising the object.
+    "overlay":     "rgba(4, 5, 10, 0.55)",
+    "panel":       "rgba(255, 255, 255, 0.045)",
     "panel_line":  "rgba(255, 255, 255, 0.078)",
-    # cards jump a clear, deliberate step above the canvas — lighter AND
-    # bluer — so the elevation is unmistakable even before the bevel/glow.
-    "card":        "rgba(38, 43, 60, 0.72)",
-    # hero/featured tier — another visible step up in lightness.
-    "card_hi":     "rgba(52, 59, 82, 0.85)",
+    "card":        "rgba(43, 49, 69, 0.94)",
+    # hero/featured tier — a clear further step (1.31:1) above the card.
+    "card_hi":     "rgba(59, 66, 96, 0.96)",
     "card_hover":  "rgba(125, 155, 255, 0.10)",
     "card_line":   "rgba(255, 255, 255, 0.10)",
     "card_sheen":  "rgba(255, 255, 255, 0.06)",   # top stop of the glass gradient
@@ -281,16 +339,34 @@ _DARK = {
     "accent2":     "#a184ff",
     "accent3":     "#e784ff",
 
-    # text (contrast ≥ WCAG AA on the surfaces above; four deliberate
-    # steps so hierarchy comes from tone, not from size alone).
-    # text_faint sits one step brighter than the v6.2 value (#5a6272):
-    # it carries 10px captions and section headers, and at that size the
-    # old step dipped under 3.5:1 on the charcoal canvas — readable on a
-    # desktop panel, murky on dimmer laptop screens.
-    "text":        "#e8ebf0",
-    "text_soft":   "#c3cad7",
-    "text_muted":  "#8b93a5",
-    "text_faint":  "#646e80",
+    # ---- v10 TEXT RAMP -----------------------------------------------
+    # Rebuilt from a measurement, not by eye. The two lowest steps carry
+    # real 10-13px copy (captions, meta pills, card descriptions), and on
+    # the composited card surface the old values measured 3.00:1
+    # (text_faint) and 3.98:1 (text_muted) — both under AA for body text.
+    # Simply lifting them collapsed the ramp into three indistinguishable
+    # tones, so the whole thing is rebuilt EVENLY IN CIE L*: the floor is
+    # pinned at 4.55:1 on the card and the remaining three steps are spaced
+    # perceptually up to the brightest. Four visibly distinct tones, every
+    # one of them legible.
+    "text":        "#eef1f6",   # 11.76:1 on card
+    "text_soft":   "#d3d6dd",   #  9.14:1
+    "text_muted":  "#b4b9c5",   #  6.80:1
+    "text_faint":  "#8f97a8",   #  4.55:1  <- the floor
+
+    # ---- v10 MODULE ACCENTS ------------------------------------------
+    # The six sidebar/category colours, now real tokens (see
+    # resolve_accent). Solved to clear 4.5:1 as text on the card and 3:1
+    # as a glyph in their own plaque well, with saturation held as high as
+    # those floors allow so the set still reads as a spectrum.
+    "module": {
+        "software":     "#5e96ff",
+        "optimization": "#fba913",
+        "maintenance":  "#18dbb3",
+        "privacy":      "#ec6f96",
+        "information":  "#6598ff",
+        "safety":       "#42cd82",
+    },
 
     # status — GitHub-dark grade: unmistakable but never neon
     "ok":          "#3fb950",
@@ -332,24 +408,29 @@ _LIGHT = {
     # hairlines + a painted contact shadow. Nothing is pure #ffffff except
     # the hero tier, so the whole mode reads as paper under studio light,
     # not a lightbox.
-    "bg":          "rgba(227, 232, 241, 0.98)",
-    "bg_solid":    "#e3e8f1",
-    # A genuine depth gradient: soft porcelain top settling into a deeper
-    # cool slate — this fall is what gives the empty canvas its calm depth.
-    "bg_grad_top":    "#eef1f8",
-    "bg_grad_bottom": "#c8d2e3",
-    # content veil — deliberately LOW alpha so the deeper canvas gradient
-    # reads through as a soft tinted mid-tier; cards float clearly above it
-    # instead of dissolving into a second sheet of white.
-    "overlay":     "rgba(255, 255, 255, 0.20)",
+    "bg":          "rgba(222, 228, 239, 0.98)",
+    "bg_solid":    "#dee4ef",
+    # v10: the canvas floor drops further (#c8d2e3 → #b6c2da). In light
+    # mode elevation CANNOT come from brightening the card — a near-white
+    # card on a near-white page has nowhere to go (pure #ffffff over the
+    # old card measured 1.02:1, i.e. invisible). Depth has to come from
+    # darkening everything the card sits on, so the canvas deepens and the
+    # card stays the brightest thing on screen by a real margin.
+    "bg_grad_top":    "#f2f5fb",
+    "bg_grad_bottom": "#b6c2da",
+    "overlay":     "rgba(255, 255, 255, 0.24)",
     # frosted panels (sidebar / dock) — a soft white glass, clearly a step
     # above the tinted content veil, clearly below the crisp cards.
-    "panel":       "rgba(255, 255, 255, 0.58)",
-    "panel_line":  "rgba(28, 38, 56, 0.10)",
-    # clean off-white cards (not pure white) — the crisp top layer, kept
-    # legible and separated by a firm hairline + contact shadow rather than
-    # blinding brightness.
-    "card":        "rgba(253, 254, 255, 0.97)",
+    "panel":       "rgba(255, 255, 255, 0.62)",
+    "panel_line":  "rgba(28, 38, 56, 0.11)",
+    # clean off-white cards — the crisp top layer, separated by a firm
+    # hairline + painted contact shadow rather than blinding brightness.
+    "card":        "rgba(255, 255, 255, 0.97)",
+    # NOTE: the hero tier is pure white and therefore CANNOT out-lighten
+    # the card. In light mode it earns its distinction from the painted
+    # aurora edge + contact shadow (widgets.GlassCard._paint_featured),
+    # not from luminance — chasing a lighter-than-white card is the one
+    # elevation move this mode can never make.
     "card_hi":     "rgba(255, 255, 255, 1.0)",
     "card_hover":  "rgba(74, 92, 224, 0.06)",
     # A firm, clean hairline — the "clean borders" the redesign calls for;
@@ -366,15 +447,27 @@ _LIGHT = {
     "accent2":     "#7a4fd0",
     "accent3":     "#c24fd0",
 
-    # Both lower steps run one shade deeper than v6.2 (#5d6879 / #8d97a8):
-    # body/desc text lives on text_muted and captions on text_faint, and on
-    # the porcelain canvas the old values were the single biggest source of
-    # "washed-out" reading in light mode — muted now clears ~6:1 and faint
-    # ~4:1 while both keep their place in the four-step hierarchy.
-    "text":        "#1d222b",
-    "text_soft":   "#39404d",
-    "text_muted":  "#4e5a6c",
-    "text_faint":  "#75808f",
+    # v10 text ramp — same L*-even construction as dark (see the note in
+    # _DARK). text_faint measured 3.94:1 before and carries 10px captions;
+    # it is now pinned at 4.55:1 with the three steps above it spaced
+    # perceptually down to near-ink.
+    "text":        "#15191f",   # 17.51:1 on card
+    "text_soft":   "#2b323c",   # 12.85:1
+    "text_muted":  "#454f5f",   #  8.21:1
+    "text_faint":  "#67778e",   #  4.55:1  <- the floor
+
+    # v10 module accents, ink-saturated for paper. Same solve as dark: 4.5:1
+    # as text on the card, 3:1 as a glyph in the plaque well. Amber is the
+    # one hue that cannot be both bright and legible on white, so
+    # 'optimization' lands as a deep gold rather than a light one.
+    "module": {
+        "software":     "#1969ff",
+        "optimization": "#9a6b17",
+        "maintenance":  "#1f826f",
+        "privacy":      "#e11c59",
+        "information":  "#2069ff",
+        "safety":       "#328357",
+    },
 
     # status — GitHub-light grade
     "ok":          "#1a7f37",
@@ -445,7 +538,7 @@ def shell_qss(t: dict) -> str:
         #shell {{
             background: {grad};
             border: 1px solid {t['panel_line']};
-            border-radius: 24px;
+            border-radius: {RADIUS['shell']}px;
         }}
         #shell[flush="true"] {{
             border-radius: 0px;
@@ -458,7 +551,7 @@ def sidebar_qss(t: dict) -> str:
     return f"""
         QFrame {{
             background: {t['panel']};
-            border-radius: 20px;
+            border-radius: {RADIUS['panel']}px;
             border: 1px solid {t['panel_line']};
         }}
     """
@@ -468,7 +561,7 @@ def content_qss(t: dict) -> str:
     return f"""
         QFrame {{
             background: {t['overlay']};
-            border-radius: 20px;
+            border-radius: {RADIUS['panel']}px;
             border: 1px solid {t['panel_line']};
         }}
     """
@@ -485,7 +578,7 @@ def nav_button_qss(t: dict) -> str:
         QPushButton {{
             background-color: transparent;
             border: 1px solid transparent;
-            border-radius: 12px;
+            border-radius: {RADIUS['plaque']}px;
             color: {t['text_muted']};
             font-size: 13px; font-weight: 500;
             /* padding clears the painted icon plaque (12px inset + 30px
@@ -526,7 +619,7 @@ def card_qss(t: dict, accent: str, danger: bool = False,
         GlassCard {{
             background-color: {glass_fill(t, t['card'])};
             border: 1px solid {line};
-            border-radius: 16px;
+            border-radius: {RADIUS['card']}px;
         }}
         GlassCard:hover {{
             background-color: {t['card_hover']};
@@ -579,7 +672,7 @@ def icon_plaque_qss(t: dict, accent: str, featured: bool = False) -> str:
         QLabel {{
             background: {fill};
             border: 1px solid {line};
-            border-radius: 13px;
+            border-radius: {RADIUS['plaque']}px;
             color: {glyph_color};
         }}
     """
@@ -593,12 +686,25 @@ def card_meta_pill_qss(t: dict, accent: str = "") -> str:
         return f"""
             color: {accent}; font-size: 10px; font-weight: 700;
             background: {alpha(accent, 0.12)}; border: 1px solid {alpha(accent, 0.32)};
-            border-radius: 8px; padding: 2px 9px; letter-spacing: 0.5px;
+            border-radius: {RADIUS['chip']}px; padding: 2px 9px; letter-spacing: 0.5px;
         """
     return f"""
         color: {t['text_muted']}; font-size: 10px; font-weight: 600;
         background: {t['panel']}; border: 1px solid {t['panel_line']};
-        border-radius: 8px; padding: 2px 9px; letter-spacing: 0.5px;
+        border-radius: {RADIUS['chip']}px; padding: 2px 9px; letter-spacing: 0.5px;
+    """
+
+
+def applied_chip_qss(t: dict) -> str:
+    """The 'APPLIED' chip on a card whose tweak the backend probe reports
+    as currently in effect (v10). Uses the `ok` token — this is a
+    confirmation of system state, not an alert — and stays small and quiet
+    so a page of applied tweaks reads as reassuring rather than shouty."""
+    return f"""
+        color: {t['ok']}; font-size: 9px; font-weight: 700;
+        background: {alpha(t['ok'], 0.12)};
+        border: 1px solid {alpha(t['ok'], 0.38)};
+        border-radius: {RADIUS['chip']}px; padding: 2px 8px; letter-spacing: 1px;
     """
 
 
@@ -616,7 +722,7 @@ def nav_pill_qss(t: dict) -> str:
         QPushButton {{
             background: {t['card']};
             border: 1px solid {t['card_line']};
-            border-radius: 10px;
+            border-radius: {RADIUS['control']}px;
             color: {t['text_muted']};
             font-size: 12px; font-weight: 500;
         }}
@@ -632,6 +738,93 @@ def nav_pill_qss(t: dict) -> str:
     """
 
 
+def filter_input_qss(t: dict, accent: str) -> str:
+    """The category header's inline filter field. Quieter than the Ctrl+K
+    palette input (this is a refinement of a page you're already on, not a
+    global launcher), so it sits at panel tone until focused, when it takes
+    the module's own accent."""
+    return f"""
+        QLineEdit {{
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']};
+            border-radius: {RADIUS['control']}px;
+            color: {t['text']};
+            font-size: 12px;
+            padding: 0 10px;
+            selection-background-color: {alpha(accent, 0.35)};
+        }}
+        QLineEdit:hover {{ border: 1px solid {alpha(accent, 0.35)}; }}
+        QLineEdit:focus {{
+            border: 1px solid {alpha(accent, 0.65)};
+            background: {t['card']};
+        }}
+    """
+
+
+def count_chip_qss(t: dict, accent: str, filtered: bool = False) -> str:
+    """'12 operations' / 'showing 3 of 12'. Neutral while the full set is
+    shown; accented once a filter is narrowing it, so the chip doubles as
+    the indicator that a filter is active."""
+    if filtered:
+        return f"""
+            color: {accent}; font-size: 10px; font-weight: 700;
+            background: {alpha(accent, 0.12)};
+            border: 1px solid {alpha(accent, 0.38)};
+            border-radius: {RADIUS['chip']}px; padding: 3px 10px;
+            letter-spacing: 0.5px;
+        """
+    return f"""
+        color: {t['text_faint']}; font-size: 10px; font-weight: 700;
+        background: {t['panel']}; border: 1px solid {t['panel_line']};
+        border-radius: {RADIUS['chip']}px; padding: 3px 10px;
+        letter-spacing: 0.5px;
+    """
+
+
+def keycap_qss(t: dict) -> str:
+    """A key rendered as a physical keycap in the shortcut sheet — raised
+    surface, firm hairline, monospace-ish tracking. Reads as 'press this'
+    rather than as quoted text."""
+    return f"""
+        color: {t['text']}; font-size: 11px; font-weight: 600;
+        background: {t['card']}; border: 1px solid {t['card_line']};
+        border-radius: {RADIUS['chip']}px; padding: 5px 8px;
+        letter-spacing: 0.5px;
+    """
+
+
+def empty_state_qss(t: dict) -> str:
+    """The 'no operations match' message shown when a filter empties the
+    grid — an explicit answer beats a blank page, which reads as a bug."""
+    return (f"color: {t['text_muted']}; font-size: 13px; font-weight: 500;"
+            "background: transparent; border: none;")
+
+
+def recent_row_qss(t: dict) -> str:
+    """One row in the sidebar's Recent Operations panel — the same ghost
+    treatment as a nav entry (transparent at rest, surface + accent line on
+    hover) so the block reads as part of the rail rather than a foreign
+    widget bolted underneath it. Left padding clears the painted module
+    glyph, right padding clears the outcome dot (see
+    widgets.RecentOperationRow.paintEvent)."""
+    return f"""
+        QPushButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: {RADIUS['chip']}px;
+            color: {t['text_muted']};
+            font-size: 12px; font-weight: 500;
+            text-align: left; padding-left: 34px; padding-right: 24px;
+        }}
+        QPushButton:hover {{
+            background-color: {t['card_hover']};
+            border: 1px solid {alpha(t['accent'], 0.22)};
+            color: {t['text']};
+        }}
+        QPushButton:pressed {{ background-color: {alpha(t['accent'], 0.16)}; }}
+    """
+
+
 def elevate_button_qss(t: dict) -> str:
     """Sidebar-footer 'Run as Administrator' call-to-action — the relocated,
     far more discoverable home for elevation (was a cramped title-bar badge).
@@ -642,7 +835,7 @@ def elevate_button_qss(t: dict) -> str:
         QPushButton {{
             background: {alpha(t['warn'], 0.13)};
             border: 1px solid {alpha(t['warn'], 0.42)};
-            border-radius: 12px;
+            border-radius: {RADIUS['plaque']}px;
             color: {t['warn']};
             font-size: 12px; font-weight: 600;
             text-align: left; padding-left: 16px;
@@ -665,7 +858,7 @@ def admin_status_qss(t: dict) -> str:
         QLabel {{
             background: {alpha(t['ok'], 0.10)};
             border: 1px solid {alpha(t['ok'], 0.32)};
-            border-radius: 12px;
+            border-radius: {RADIUS['plaque']}px;
             color: {t['ok']};
             font-size: 12px; font-weight: 600;
             padding: 0 16px;
@@ -681,7 +874,7 @@ def titlebar_button_qss(t: dict, hover: str) -> str:
     Enter/Leave there, so the hover look is driven by property flips."""
     return f"""
         QPushButton {{
-            background: transparent; border: none; border-radius: 7px;
+            background: transparent; border: none; border-radius: {RADIUS['chip']-1}px;
             color: {t['text_muted']}; font-size: 13px;
         }}
         QPushButton:hover, QPushButton[nchover="true"] {{
@@ -699,7 +892,7 @@ def titlebar_close_qss(t: dict) -> str:
     HTCLOSEBUTTON non-client zone — see main.nativeEvent)."""
     return f"""
         QPushButton {{
-            background: transparent; border: none; border-radius: 7px;
+            background: transparent; border: none; border-radius: {RADIUS['chip']-1}px;
             color: {t['text_muted']}; font-size: 13px;
         }}
         QPushButton:hover, QPushButton[nchover="true"] {{
@@ -716,7 +909,7 @@ def beta_badge_qss(t: dict) -> str:
         color: {t['accent2']}; font-size: 9px; font-weight: 700;
         background: {alpha(t['accent2'], 0.12)};
         border: 1px solid {alpha(t['accent2'], 0.35)};
-        border-radius: 8px; padding: 2px 8px; letter-spacing: 1px;
+        border-radius: {RADIUS['chip']}px; padding: 2px 8px; letter-spacing: 1px;
     """
 
 
@@ -730,7 +923,7 @@ def toast_qss(t: dict, accent: str) -> str:
             background-color: {glass_fill(t, t['toast_bg'], sheen_stop=0.20)};
             border: 1px solid {t['panel_line']};
             border-left: 3px solid {accent};
-            border-radius: 12px;
+            border-radius: {RADIUS['plaque']}px;
         }}
     """
 
@@ -746,7 +939,7 @@ def toast_icon_qss(t: dict, accent: str) -> str:
         color: {accent}; font-size: 11px; font-weight: 700;
         background: {alpha(accent, 0.14)};
         border: 1px solid {alpha(accent, 0.40)};
-        border-radius: 11px;
+        border-radius: {RADIUS['control']}px;
     """
 
 
@@ -776,7 +969,7 @@ def chip_qss(t: dict, ok: bool = True) -> str:
     return f"""
         color: {color}; font-size: 12px; font-weight: 500;
         background: {t['card']}; border: 1px solid {border};
-        border-radius: 14px; padding: 8px 18px;
+        border-radius: {RADIUS['plaque']}px; padding: 8px 18px;
     """
 
 
@@ -785,7 +978,7 @@ def badge_qss(t: dict) -> str:
         color: {t['warn']}; font-size: 9px; font-weight: 600;
         background: {alpha(t['warn'], 0.08)};
         border: 1px solid {alpha(t['warn'], 0.28)};
-        border-radius: 7px; padding: 2px 7px;
+        border-radius: {RADIUS['chip']-1}px; padding: 2px 7px;
     """
 
 
@@ -799,7 +992,7 @@ def dialog_panel_qss(t: dict, accent: str) -> str:
         QFrame {{
             background-color: {glass_fill(t, t['dialog_bg'], sheen_stop=0.18)};
             border: 1px solid {alpha(accent, 0.35)};
-            border-radius: 18px;
+            border-radius: {RADIUS['panel']}px;
         }}
     """
 
@@ -812,7 +1005,7 @@ def dialog_cancel_qss(t: dict) -> str:
     return f"""
         QPushButton {{
             background: {t['panel']}; border: 1px solid {t['card_line']};
-            border-radius: 10px; color: {t['text_soft']};
+            border-radius: {RADIUS['control']}px; color: {t['text_soft']};
             font-size: 12px; font-weight: 600;
         }}
         QPushButton:hover {{
@@ -830,7 +1023,7 @@ def console_qss(t: dict) -> str:
             background-color: {t['bg_solid']};
             color: {t['text_soft']};
             border: 1px solid {t['card_line']};
-            border-radius: 12px;
+            border-radius: {RADIUS['plaque']}px;
             padding: 8px 10px;
             selection-background-color: {alpha(t['accent'], 0.35)};
         }}
@@ -866,7 +1059,7 @@ def activity_rail_qss(t: dict) -> str:
         QFrame#activityRail {{
             background: {t['panel']};
             border: 1px solid {t['panel_line']};
-            border-radius: 12px;
+            border-radius: {RADIUS['plaque']}px;
         }}
     """
 
@@ -875,7 +1068,7 @@ def activity_toggle_qss(t: dict) -> str:
     """The chevron button that expands / pins the Activity drawer."""
     return f"""
         QPushButton {{
-            background: transparent; border: none; border-radius: 8px;
+            background: transparent; border: none; border-radius: {RADIUS['chip']}px;
             color: {t['text_faint']}; font-size: 13px; font-weight: 700;
         }}
         QPushButton:hover {{
@@ -892,7 +1085,7 @@ def stop_button_qss(t: dict) -> str:
         QPushButton {{
             background: {alpha(t['err'], 0.10)};
             border: 1px solid {alpha(t['err'], 0.45)};
-            border-radius: 8px;
+            border-radius: {RADIUS['chip']}px;
             color: {t['err']};
             font-size: 11px; font-weight: 600;
         }}
@@ -909,8 +1102,8 @@ def stop_button_qss(t: dict) -> str:
 def state_pill_qss(t: dict) -> str:
     """Execution-state chip: IDLE / RUNNING / SUCCESS / ERROR / STOPPED.
     One string per theme switch — states are dynamic-property flips."""
-    base = ("font-size: 9px; font-weight: 700; letter-spacing: 2px;"
-            "border-radius: 10px; padding: 3px 12px;")
+    base = (f"font-size: 9px; font-weight: 700; letter-spacing: 2px;"
+            f"border-radius: {RADIUS['control']}px; padding: 3px 12px;")
     return f"""
         QLabel#statePill {{ {base}
             color: {t['text_faint']};
@@ -946,7 +1139,7 @@ def checkbox_qss(t: dict, accent: str) -> str:
             background: transparent; border: none; spacing: 10px; padding: 4px 2px;
         }}
         QCheckBox::indicator {{
-            width: 16px; height: 16px; border-radius: 5px;
+            width: 16px; height: 16px; border-radius: {RADIUS['chip']-2}px;
             border: 1px solid {t['card_line']}; background: {t['card']};
         }}
         QCheckBox::indicator:hover {{
@@ -971,7 +1164,7 @@ def wizard_link_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
             background: {t['card']}; border: 1px solid {t['card_line']};
-            border-radius: 12px; color: {t['text']}; font-size: 13px; font-weight: 600;
+            border-radius: {RADIUS['plaque']}px; color: {t['text']}; font-size: 13px; font-weight: 600;
             text-align: left; padding: 0 16px;
         }}
         QPushButton:hover {{
@@ -991,7 +1184,7 @@ def warning_banner_qss(t: dict) -> str:
         QLabel {{
             background: {alpha(t['warn'], 0.12)};
             border: 1px solid {alpha(t['warn'], 0.45)};
-            border-radius: 12px;
+            border-radius: {RADIUS['plaque']}px;
             color: {t['warn']};
             font-size: 12px; font-weight: 600;
             padding: 14px 16px;
@@ -1011,7 +1204,7 @@ def dev_hub_row_qss(t: dict) -> str:
         QFrame {{
             background: {t['card']};
             border: 1px solid {t['card_line']};
-            border-radius: 10px;
+            border-radius: {RADIUS['control']}px;
         }}
         QFrame:hover {{
             background: {t['card_hover']};
@@ -1050,7 +1243,7 @@ def icon_ghost_button_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
             background: transparent; border: 1px solid {t['card_line']};
-            border-radius: 6px; color: {t['text_muted']}; font-size: 13px; font-weight: 700;
+            border-radius: {RADIUS['chip']-2}px; color: {t['text_muted']}; font-size: 13px; font-weight: 700;
         }}
         QPushButton:hover {{
             background: {alpha(accent, 0.14)}; border: 1px solid {alpha(accent, 0.45)};
@@ -1076,7 +1269,7 @@ def command_input_qss(t: dict) -> str:
         QLineEdit {{
             background: {t['panel']};
             border: 1px solid {t['panel_line']};
-            border-radius: 10px;
+            border-radius: {RADIUS['control']}px;
             color: {t['text']};
             font-size: 15px;
             padding: 0 14px;
@@ -1098,7 +1291,7 @@ def command_list_qss(t: dict) -> str:
         }}
         QListWidget::item {{
             padding: 10px 12px;
-            border-radius: 8px;
+            border-radius: {RADIUS['chip']}px;
             margin: 1px 2px;
         }}
         QListWidget::item:selected {{
@@ -1119,7 +1312,7 @@ def dialog_secondary_go_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
             background: {alpha(accent, 0.08)}; border: 1px solid {alpha(accent, 0.35)};
-            border-radius: 10px; color: {accent}; font-size: 12px; font-weight: 600;
+            border-radius: {RADIUS['control']}px; color: {accent}; font-size: 12px; font-weight: 600;
         }}
         QPushButton:hover {{ background: {alpha(accent, 0.18)}; color: {t['text']}; }}
         QPushButton:pressed {{ background: {alpha(accent, 0.28)}; color: {t['text']}; }}
@@ -1144,7 +1337,7 @@ def stat_chip_qss(t: dict, tone: str = "neutral") -> str:
     return f"""
         color: {color}; font-size: 12px; font-weight: 600;
         background: {bg}; border: 1px solid {border};
-        border-radius: 12px; padding: 7px 14px;
+        border-radius: {RADIUS['plaque']}px; padding: 7px 14px;
     """
 
 
@@ -1155,12 +1348,12 @@ def version_chip_qss(t: dict, accent: bool = False) -> str:
         return f"""
             color: {t['accent']}; font-size: 11px; font-weight: 700;
             background: {alpha(t['accent'], 0.14)}; border: 1px solid {alpha(t['accent'], 0.40)};
-            border-radius: 7px; padding: 3px 9px;
+            border-radius: {RADIUS['chip']-1}px; padding: 3px 9px;
         """
     return f"""
         color: {t['text_muted']}; font-size: 11px; font-weight: 600;
         background: {t['panel']}; border: 1px solid {t['panel_line']};
-        border-radius: 7px; padding: 3px 9px;
+        border-radius: {RADIUS['chip']-1}px; padding: 3px 9px;
     """
 
 
@@ -1170,7 +1363,7 @@ def impact_badge_qss(t: dict, level: str) -> str:
     return f"""
         color: {color}; font-size: 9px; font-weight: 700; letter-spacing: 1px;
         background: {alpha(color, 0.12)}; border: 1px solid {alpha(color, 0.40)};
-        border-radius: 8px; padding: 2px 8px;
+        border-radius: {RADIUS['chip']}px; padding: 2px 8px;
     """
 
 
@@ -1181,7 +1374,7 @@ def recommendation_badge_qss(t: dict, recommendation: str) -> str:
     return f"""
         color: {color}; font-size: 10px; font-weight: 700;
         background: {alpha(color, 0.10)}; border: 1px solid {alpha(color, 0.35)};
-        border-radius: 9px; padding: 3px 10px;
+        border-radius: {RADIUS['chip']}px; padding: 3px 10px;
     """
 
 
@@ -1194,7 +1387,7 @@ def startup_row_qss(t: dict) -> str:
     return f"""
         QFrame {{
             background: {t['card']}; border: 1px solid {t['card_line']};
-            border-radius: 12px;
+            border-radius: {RADIUS['plaque']}px;
         }}
         QFrame:hover {{ border: 1px solid {alpha(t['accent'], 0.30)}; }}
         QFrame[disabled_item="true"] {{
@@ -1211,7 +1404,7 @@ def inline_status_qss(t: dict, tone: str = "ok") -> str:
     return f"""
         color: {color}; font-size: 12px; font-weight: 600;
         background: {alpha(color, 0.10)}; border: 1px solid {alpha(color, 0.32)};
-        border-radius: 10px; padding: 8px 14px;
+        border-radius: {RADIUS['control']}px; padding: 8px 14px;
     """
 
 
@@ -1225,7 +1418,7 @@ def dialog_go_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
             background: {fill(0.16, 0.11)}; border: 1px solid {alpha(accent, 0.55)};
-            border-radius: 10px; color: {accent}; font-size: 12px; font-weight: 600;
+            border-radius: {RADIUS['control']}px; color: {accent}; font-size: 12px; font-weight: 600;
         }}
         QPushButton:hover {{ background: {fill(0.30, 0.24)}; color: {t['text']}; }}
         QPushButton:pressed {{ background: {fill(0.42, 0.34)}; color: {t['text']}; }}
@@ -1241,8 +1434,14 @@ def dialog_go_qss(t: dict, accent: str) -> str:
 # from contrast, per the app's standing philosophy — just tuned harder).
 # A new `meta` role carries the card footer's count pills / hints.
 _LABEL_ROLES = {
-    "hero":     ("34px", "700", "text",       "letter-spacing: 6px;"),
     "title":    ("22px", "680", "text",       ""),
+    # v10: a REAL dialog heading role. Every dialog used to build its
+    # header as `label_qss(t, "card").replace("14px", "16px")` — but the
+    # card role has been 16px since v7, so that replace matched nothing
+    # and silently did nothing in all 8 call sites. Dialog titles have
+    # been rendering at plain card-title size ever since; they now have
+    # their own step above it.
+    "dialog":   ("18px", "700", "text",       ""),
     "version":  ("11px", "500", "text_faint", ""),
     "card":     ("16px", "650", "text",       ""),
     "body":     ("13px", "400", "text_muted", ""),
@@ -1252,10 +1451,11 @@ _LABEL_ROLES = {
     "faint":    ("12px", "400", "text_faint", ""),
     "section":  ("10px", "700", "text_faint", "letter-spacing: 4px;"),
     "brand":    ("11px", "600", "text_muted", "letter-spacing: 2px;"),
-    "value":    ("16px", "650", "text",       ""),
-    "meta":     ("11px", "600", "text_faint", "letter-spacing: 0.5px;"),
     "caption":  ("10px", "500", "text_faint", "letter-spacing: 1px;"),
 }
+# Removed in v10: "hero", "value" and "meta" — all three had zero call
+# sites anywhere in the app (the card meta pills use card_meta_pill_qss,
+# which carries its own sizing).
 
 
 def hero_banner_qss(t: dict) -> str:
@@ -1267,7 +1467,7 @@ def hero_banner_qss(t: dict) -> str:
         QFrame#heroBanner {{
             background: {glass_fill(t, t['card'])};
             border: 1px solid {t['card_line']};
-            border-radius: 22px;
+            border-radius: {RADIUS['panel']}px;
         }}
     """
 
@@ -1281,7 +1481,7 @@ def telemetry_qss(t: dict) -> str:
         QFrame#telemetry {{
             background: {t['panel']};
             border: 1px solid {t['panel_line']};
-            border-radius: 16px;
+            border-radius: {RADIUS['card']}px;
         }}
     """
 

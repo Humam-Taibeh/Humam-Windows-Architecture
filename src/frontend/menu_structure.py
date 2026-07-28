@@ -20,6 +20,15 @@ Contract with the backend (src/backend/core.ps1 + src/backend/modules/):
         @open_onedrive_backup  -> opens Desktop\\Pulse_OneDriveBackup
 
 Item schema:
+    NOTE ON `accent` (v10): a category's "accent" is a SEMANTIC MODULE KEY
+    ("software", "optimization", ...), not a colour. The literal hex for
+    each key lives in theme.py's per-mode token sets and is resolved at
+    paint time via theme.resolve_accent(t, key), so the palette can differ
+    between dark and light. It has to: the old shared hex values measured
+    1.86-2.64:1 against the light-mode card, well under the 3:1 floor for
+    an icon, which washed the whole colour system out in light mode.
+    Widgets store the KEY and re-resolve inside apply_theme().
+
     icon     str   emoji shown on the card
     title    str   card headline
     desc     str   one-line explanation shown under the title
@@ -186,15 +195,15 @@ CATEGORIES = [
         "glyph": "package",
         "title": "Software Management",
         "tagline": "Deploy apps, runtimes and audit startup programs",
-        "accent": "#4d8bff",
+        "accent": "software",
         "items": [
             # -- HUB 1: everyday consumer/productivity apps ---------------
             {"icon": "🧰", "glyph": "globe", "title": "Browsers & Daily Apps",
-             "desc": "Browsers, chat, media and productivity essentials — pick a pack below.",
+             "desc": "Browsers, chat, media and productivity essentials.",
              "hub": True,
              "items": [
                  {"icon": "🌐", "title": "Browsers, Chat & Media",
-                  "desc": "Chrome, Brave, Firefox, Discord, Telegram, WhatsApp, Spotify, VLC, 7-Zip and more.",
+                  "desc": "Chrome, Brave, Discord, Spotify, VLC, 7-Zip and more.",
                   "glyph": "globe", "task": "InstallEssentialApps", "timeout": 3600, "confirm": True,
                   "apps": [
                       ("Google.Chrome", "Google Chrome",
@@ -241,7 +250,7 @@ CATEGORIES = [
                        "https://www.notion.com/desktop"),
                   ]},
                  {"icon": "📄", "title": "Microsoft Office Suite",
-                  "desc": "Word, Excel, PowerPoint, Outlook and more — via the official Deployment Tool wizard.",
+                  "desc": "Word, Excel, PowerPoint and Outlook via the official ODT.",
                   "glyph": "document", "task": "InstallOfficeODT", "timeout": 3600, "wizard": "office"},
                  # OneDrive install/restore was moved OUT of here to live
                  # beside 'Purge OneDrive' under System Tools & Utilities (all
@@ -249,7 +258,7 @@ CATEGORIES = [
                  # from the catalog entirely. This hub is now exactly three
                  # core app selections: apps, Office and runtimes.
                  {"icon": "🧩", "title": "Core API Runtimes",
-                  "desc": "DirectX, Visual C++, .NET and Java runtimes — the invisible prerequisites most apps need.",
+                  "desc": "DirectX, Visual C++, .NET and Java prerequisites.",
                   "glyph": "puzzle", "task": "InstallRuntimes", "timeout": 3600, "confirm": True,
                   "apps": [
                       ("Microsoft.DirectX", "DirectX End-User Runtime",
@@ -268,20 +277,20 @@ CATEGORIES = [
              ]},
             # -- HUB 2: developer tooling (single flow -> direct passthrough) --
             {"icon": "🎓", "glyph": "code", "title": "Developer & University Hub",
-             "desc": "VS Code, Cursor, Python, Java, Git, Node.js and more — pick exactly what you need.",
+             "desc": "VS Code, Python, Java, Git, Node.js and more.",
              "hub": True,
              "items": [
                  {"icon": "🎓", "title": "Developer & University Hub",
-                  "desc": "Runtimes, compilers, IDEs, AI tools, databases and containers — pick exactly what you need.",
+                  "desc": "Runtimes, IDEs, AI tools, databases and containers.",
                   "glyph": "code", "task": "InstallDevHub", "timeout": 3600, "devhub": True},
              ]},
             # -- HUB 3: gaming (single flow -> direct passthrough) --------
             {"icon": "🎮", "glyph": "game", "title": "Gaming & Launchers",
-             "desc": "Steam, Epic, Rockstar and BlueStacks — matching GPU software added automatically.",
+             "desc": "Steam, Epic, Rockstar and BlueStacks.",
              "hub": True,
              "items": [
                  {"icon": "🎮", "title": "Gaming Launchers",
-                  "desc": "Steam, Epic and the other launchers you actually use — your GPU's companion app (NVIDIA/AMD/Intel) is detected and added automatically.",
+                  "desc": "Steam, Epic and more — GPU software added automatically.",
                   "glyph": "game", "task": "InstallGamingApps", "timeout": 3600, "confirm": True,
                   "apps": [
                       ("Valve.Steam", "Steam",
@@ -310,12 +319,12 @@ CATEGORIES = [
             # menu_structure's hub_items() flattens it for the command
             # palette / counters and main.py's hub navigation.
             {"icon": "🛠️", "glyph": "tools", "title": "System Tools & Utilities",
-             "desc": "Hardware diagnostics, environment repair, startup optimization, live update audits, and Edge/OneDrive removal & restore.",
+             "desc": "Diagnostics, environment repair and update audits.",
              "hub": True,
              "groups": [
                  {"title": "DIAGNOSTICS & OPTIMIZATION", "items": [
                      {"icon": "🔬", "title": "Hardware Diagnostics",
-                      "desc": "Monitoring and diagnostic utilities for CPU, GPU, RAM and disks.",
+                      "desc": "Monitors CPU, GPU, RAM and disk health.",
                       "glyph": "diagnostics", "task": "InstallDiagnosticApps", "timeout": 3600, "confirm": True,
                       "apps": [
                           ("CPUID.CPU-Z", "CPU-Z",
@@ -334,30 +343,30 @@ CATEGORIES = [
                            "GPU overclocking and on-screen performance monitoring.",
                            "https://www.msi.com/Landing/afterburner"),
                       ]},
-                     {"icon": "🧭", "title": "PATH Doctor (Auto-Fix Environment)",
-                      "desc": "Makes sure Windows can find your dev tools by name in any terminal — checks Git, Python, Java, VS Code, GCC, Node & Ollama and fixes any that aren't wired up yet.",
+                     {"icon": "🧭", "title": "PATH Doctor",
+                      "desc": "Makes Windows find your dev tools by name in any terminal.",
                       "glyph": "terminal", "task": "VerifyEnvironment", "timeout": 300},
                      {"icon": "🚀", "title": "Startup Manager",
-                      "desc": "Smart boot-impact audit of everything that launches at sign-in, with instant enable/disable toggles.",
+                      "desc": "Boot-impact audit with instant enable/disable toggles.",
                       "glyph": "boot", "task": "StartupReport", "timeout": 300, "startup_manager": True},
                      {"icon": "🔄", "title": "Check for Updates",
-                      "desc": "Live winget scan for every installed app — audit current vs. available versions, then update exactly what you pick.",
+                      "desc": "Live scan of installed apps — update exactly what you pick.",
                       "glyph": "refresh", "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
                  ]},
                  {"title": "MICROSOFT EDGE", "items": [
                      {"icon": "🌐", "title": "Remove Microsoft Edge",
-                      "desc": "Force-purge Chromium Edge — kills locking processes, clears registry protection flags and cleans up leftover stubs (backup kept).",
+                      "desc": "Force-purge Chromium Edge, with a backup kept.",
                       "glyph": "delete", "task": "RemoveEdge", "timeout": 900, "confirm": True, "danger": True},
-                     {"icon": "🔁", "title": "Install / Restore Microsoft Edge",
-                      "desc": "Reinstall Microsoft Edge via winget and restore your backed-up settings.",
+                     {"icon": "🔁", "title": "Reinstall Microsoft Edge",
+                      "desc": "Reinstall Edge and restore your backed-up settings.",
                       "glyph": "sync", "task": "RestoreEdge", "timeout": 1800},
                  ]},
                  {"title": "MICROSOFT ONEDRIVE", "items": [
                      {"icon": "☁️", "title": "Purge OneDrive",
-                      "desc": "Back up local OneDrive files, then terminate and uninstall OneDrive.",
+                      "desc": "Back up local files, then uninstall OneDrive.",
                       "glyph": "cloud", "task": "RemoveOneDrive", "timeout": 900, "confirm": True, "danger": True},
                      {"icon": "🔁", "title": "Install / Restore OneDrive",
-                      "desc": "Reinstall Microsoft OneDrive via winget so it's back and syncing.",
+                      "desc": "Reinstall OneDrive so it's back and syncing.",
                       "glyph": "sync", "task": "RestoreOneDrive", "timeout": 1800},
                  ]},
              ]},
@@ -372,28 +381,28 @@ CATEGORIES = [
         "glyph": "bolt",
         "title": "System Optimization",
         "tagline": "Smart tweaks, performance and gaming optimizations",
-        "accent": "#e0a12e",
+        "accent": "optimization",
         "items": [
             {"icon": "🌙", "title": "Global Dark Mode",
              "desc": "Force the dark theme across Windows and all apps.",
              "glyph": "moon", "task": "DarkMode", "timeout": 120},
             {"icon": "🖱️", "title": "Disable Mouse Acceleration",
-             "desc": "True raw pointer precision — removes speed curves and thresholds.",
+             "desc": "Raw pointer precision — no speed curves or thresholds.",
              "glyph": "mouse", "task": "DisableMouseAccel", "timeout": 120},
             {"icon": "📌", "title": "Minimalist Taskbar",
-             "desc": "Left-aligned, widget-free, chat-free Windows 11 taskbar.",
+             "desc": "Left-aligned, widget-free, chat-free taskbar.",
              "glyph": "pin", "task": "MinimalistTaskbar", "timeout": 120, "note": "Windows 11 only"},
             {"icon": "📋", "title": "Classic Context Menu",
-             "desc": "Restore the full Windows 10 right-click menu — no 'Show more options'.",
+             "desc": "Restore the full Windows 10 right-click menu.",
              "glyph": "list", "task": "ClassicContextMenu", "timeout": 120, "note": "Windows 11 only"},
             {"icon": "🕹️", "title": "Game Mode & Game Bar",
-             "desc": "Enable Game Mode and kill background recording (Game DVR).",
+             "desc": "Enable Game Mode, kill background recording.",
              "glyph": "game", "task": "GameMode", "timeout": 120},
             {"icon": "📡", "title": "Network & Ping Optimizer",
-             "desc": "Flush DNS, reset Winsock and the IP stack for the lowest latency.",
+             "desc": "Flush DNS and reset Winsock for lower latency.",
              "glyph": "network", "task": "NetworkOptimization", "timeout": 300, "confirm": True},
             {"icon": "⚡", "title": "Ultimate Power Plan",
-             "desc": "Unlock the hidden high-performance power scheme, renamed for you.",
+             "desc": "Unlock the hidden high-performance power scheme.",
              "glyph": "bolt", "task": "UltimatePowerPlan", "timeout": 300},
         ],
     },
@@ -406,22 +415,22 @@ CATEGORIES = [
         "glyph": "repair",
         "title": "Maintenance & Repair",
         "tagline": "System file repair, cache cleanup and disk optimization",
-        "accent": "#2ec4a6",
+        "accent": "maintenance",
         "items": [
             {"icon": "🛠️", "title": "System Repair (SFC + DISM)",
-             "desc": "Scan and repair protected system files and the component store.",
+             "desc": "Repair protected system files and the component store.",
              "glyph": "repair", "task": "RunSFC", "timeout": 3600},
             {"icon": "🧹", "title": "Aggressive Cache Clean",
-             "desc": "Wipe temp files, the Windows Update cache and system caches.",
+             "desc": "Wipe temp, Windows Update and system caches.",
              "glyph": "broom", "task": "CleanCache", "timeout": 900, "confirm": True},
             {"icon": "💾", "title": "Optimize All Drives",
              "desc": "TRIM SSDs and defragment HDDs — drive by drive.",
              "glyph": "disk", "task": "OptimizeDrives", "timeout": 1800},
             {"icon": "🗑️", "title": "Remove Windows.old",
-             "desc": "Reclaim gigabytes held by a previous Windows installation.",
+             "desc": "Reclaim gigabytes from a previous Windows install.",
              "glyph": "delete", "task": "RemoveWindowsOld", "timeout": 1800, "confirm": True, "danger": True},
             {"icon": "😴", "title": "Disable Hibernation",
-             "desc": "Delete hiberfil.sys and free disk space equal to your RAM.",
+             "desc": "Delete hiberfil.sys and free disk space.",
              "glyph": "sleep", "task": "DisableHibernation", "timeout": 120},
             {"icon": "🔋", "title": "Enable Hibernation",
              "desc": "Bring hibernation (and hiberfil.sys) back.",
@@ -440,13 +449,13 @@ CATEGORIES = [
         "glyph": "shield",
         "title": "Privacy & Security",
         "tagline": "Debloat, kill telemetry and stop data collection",
-        "accent": "#ec6b93",
+        "accent": "privacy",
         "items": [
             {"icon": "📦", "title": "Remove Bloatware",
-             "desc": "Uninstall the pre-loaded Store apps you never asked for.",
+             "desc": "Uninstall pre-loaded Store apps you never asked for.",
              "glyph": "delete", "task": "RemoveBloatware", "timeout": 900, "confirm": True},
             {"icon": "🛡️", "title": "Disable Telemetry",
-             "desc": "Stop diagnostic data collection services and scheduled tasks.",
+             "desc": "Stop diagnostic data collection and scheduled tasks.",
              "glyph": "shieldplain", "task": "DisableTelemetry", "timeout": 300},
             {"icon": "🎯", "title": "Disable Advertising ID",
              "desc": "Remove the per-user identifier that ad networks track.",
@@ -455,7 +464,7 @@ CATEGORIES = [
              "desc": "Stop Timeline activity sync to Microsoft servers.",
              "glyph": "history", "task": "DisableActivityHistory", "timeout": 120},
             {"icon": "🔒", "title": "Apply ALL Privacy Settings",
-             "desc": "Run all four privacy hardening actions in a single pass.",
+             "desc": "Run every privacy hardening action in one pass.",
              "glyph": "defender", "task": "ApplyAllPrivacy", "timeout": 1800, "confirm": True},
         ],
     },
@@ -468,16 +477,16 @@ CATEGORIES = [
         "glyph": "info",
         "title": "Information & Utilities",
         "tagline": "System insight, driver tools and the operation log",
-        "accent": "#6f9bf5",
+        "accent": "information",
         "items": [
             {"icon": "📊", "title": "System Info Snapshot",
-             "desc": "Hardware summary, uptime and drive space — written to the log.",
+             "desc": "Hardware, uptime and drive space — written to the log.",
              "glyph": "chartline", "task": "SystemInfo", "timeout": 300},
             {"icon": "💿", "title": "Driver Backup",
              "desc": "Export every current hardware driver to your Desktop.",
              "glyph": "save", "task": "DriverBackup", "timeout": 1800},
             {"icon": "🔍", "title": "Missing Driver Scan",
-             "desc": "Query Windows Update's catalog for drivers you're missing.",
+             "desc": "Check Windows Update for drivers you're missing.",
              "glyph": "search", "task": "DriverScan", "timeout": 900},
             {"icon": "🛟", "title": "Create Restore Point",
              "desc": "Manual System Restore checkpoint before big changes.",
@@ -496,10 +505,10 @@ CATEGORIES = [
         "glyph": "restore",
         "title": "Safety & Recovery",
         "tagline": "Undo tweaks, restore services and recover backups",
-        "accent": "#52bd83",
+        "accent": "safety",
         "items": [
             {"icon": "↩️", "title": "Reset All Tweaks",
-             "desc": "Revert every registry tweak to your original backed-up values.",
+             "desc": "Revert every registry tweak to your backed-up values.",
              "glyph": "restore", "task": "ResetTweaks", "timeout": 300, "confirm": True},
             {"icon": "🔧", "title": "Restore Services",
              "desc": "Re-enable Windows services disabled by the optimizer.",
@@ -508,7 +517,7 @@ CATEGORIES = [
              "desc": "Manual System Restore checkpoint — your safety net.",
              "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600},
             {"icon": "☁️", "title": "OneDrive Backup Folder",
-             "desc": "Open the folder holding files rescued before OneDrive removal.",
+             "desc": "Open files rescued before OneDrive removal.",
              "glyph": "folder", "task": "@open_onedrive_backup"},
         ],
     },
@@ -533,23 +542,8 @@ def _count_leaves(items: list[dict]) -> int:
     )
 
 
-def total_operations() -> int:
-    """Number of runnable operations across all categories — a hub
-    container itself isn't one, so this counts through into `items`
-    instead of stopping at the top-level card count."""
-    return sum(_count_leaves(c["items"]) for c in CATEGORIES)
-
-
-def category_operations(category: dict) -> int:
-    """Runnable operations within a single category (expands hub
-    containers, exactly like total_operations does per-category). Used by
-    the Welcome dashboard's module launchpad cards to show a truthful
-    'N operations' count per module."""
-    return _count_leaves(category["items"])
-
-
 def find_action(cat_index: int, task: str) -> tuple[dict | None, str]:
-    """(item, category_accent) for a runnable action located by its `task`
+    """(item, category_accent_KEY) for a runnable action located by its `task`
     name within CATEGORIES[cat_index], expanding hub containers recursively.
     Powers the Welcome dashboard's Quick Actions band — direct shortcuts to
     the highest-value single operations, deliberately DISTINCT from the
@@ -603,6 +597,53 @@ def requires_admin(task: str | None) -> bool:
     needs an elevated Pulse. Used by the GUI to pre-check before running an
     admin-gated action (see main.PulseApp.request_task)."""
     return bool(task) and task in ADMIN_REQUIRED_TASKS
+
+
+def _count_leaves(items: list[dict]) -> int:
+    return sum(_count_leaves(hub_items(it)) if it.get("hub") else 1
+               for it in items)
+
+
+def category_operations(category: dict) -> int:
+    """Runnable operations inside one category, counting THROUGH hub
+    containers — a hub card is a container, not an operation, so a naive
+    len(category["items"]) under-reports Software Management by a factor
+    of three. Powers the category header's count chip."""
+    return _count_leaves(category["items"])
+
+
+def search_haystack(item: dict) -> str:
+    """Everything a category-page filter should match an item against,
+    lowercased. Hub containers fold in their sub-items' titles so typing
+    "office" still surfaces the Browsers & Daily Apps hub that holds it —
+    otherwise filtering would hide actions that are genuinely there, just
+    one level down."""
+    parts = [item.get("title", ""), item.get("desc", ""), item.get("note", "")]
+    if item.get("hub"):
+        parts.extend(sub.get("title", "") for sub in hub_items(item))
+    return " ".join(parts).lower()
+
+
+def accent_for_task(task: str | None) -> str:
+    """The module accent KEY of whichever category owns `task` (hubs
+    expanded), or "" when nothing matches. Lets a consumer that only has a
+    task name — the Recent Operations trail, which is re-read from storage
+    with no widget context — colour it in its own module's accent."""
+    if not task:
+        return ""
+    for cat in CATEGORIES:
+        def walk(items: list[dict]) -> bool:
+            for it in items:
+                if it.get("hub"):
+                    if walk(hub_items(it)):
+                        return True
+                elif it.get("task") == task:
+                    return True
+            return False
+
+        if walk(cat["items"]):
+            return cat["accent"]
+    return ""
 
 
 def iter_leaf_items():

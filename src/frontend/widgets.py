@@ -20,15 +20,17 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QRectF,
-    Qt, QThread, QTimer, QUrl, QVariantAnimation, Signal,
+    QDateTime, QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation,
+    QRect, QRectF, Qt, QThread, QTime, QTimer, QUrl, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
-    QColor, QDesktopServices, QFont, QLinearGradient, QPainter, QPainterPath,
-    QPen, QPixmap, QRadialGradient, QTextCursor,
+    QColor, QDesktopServices, QFont, QFontMetrics, QLinearGradient, QPainter,
+    QPainterPath, QPen, QPixmap, QRadialGradient, QTextCursor, QTextLayout,
+    QTextOption,
 )
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
+    QApplication, QCheckBox, QDialog, QFileDialog, QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QPlainTextEdit, QPushButton, QScrollArea, QSizeGrip, QStackedWidget,
     QVBoxLayout, QWidget,
@@ -467,7 +469,7 @@ class NavButton(QPushButton):
     _PLAQUE = 30       # plaque edge (px)
     _PLAQUE_X = 12     # left inset — must stay in sync with nav_button_qss padding
 
-    def __init__(self, glyph_key: str, title: str, accent: str, t: dict):
+    def __init__(self, glyph_key: str, title: str, accent_key: str, t: dict):
         # QPushButton treats a lone "&" as a mnemonic marker (it vanishes
         # and the following character gets an accelerator underline) —
         # category titles like "Maintenance & Repair" need it escaped to
@@ -475,19 +477,27 @@ class NavButton(QPushButton):
         # PAINTED (a plaque), so only the title is button text.
         super().__init__(title.replace("&", "&&"))
         self._glyph_key = glyph_key
+        # v10: the module's accent KEY, not a frozen hex — re-resolved on
+        # every theme switch inside apply_theme (see theme.resolve_accent).
+        self._accent_key = accent_key
         self.setFixedHeight(46)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setProperty("selected", False)
-        self._glow = GlowController(self, accent)
+        self._glow = GlowController(self, TH.resolve_accent(t, accent_key))
         self._ripple = RippleController(self)
-        self._accent = QColor(accent)
+        self._accent = QColor(TH.resolve_accent(t, accent_key))
         self._accent2 = QColor(t["accent2"])
         self._icon_font: QFont | None = None
         self.apply_theme(t)
 
     def apply_theme(self, t: dict):
         self.setStyleSheet(TH.nav_button_qss(t))
-        self._accent = QColor(t["accent"])
+        # the module's OWN colour for this theme — the sidebar rail reads as
+        # a spectrum, and the glow/plaque follow it (previously the plaque
+        # used the module colour while the glow used the generic app accent,
+        # so a hovered nav entry lit up in the wrong colour).
+        self._accent = QColor(TH.resolve_accent(t, self._accent_key))
+        self._glow.set_accent(TH.resolve_accent(t, self._accent_key))
         self._accent2 = QColor(t["accent2"])
         self._glyph_char, self._glyph_fluent = TH.glyph(self._glyph_key)
         self._icon_font = TH.icon_font(16) if self._glyph_fluent else None
@@ -581,25 +591,215 @@ def _derive_card_meta(item: dict) -> list[str]:
     return []
 
 
+class ResponsiveGridHost(QWidget):
+    """The widget a responsive card grid lives inside, which reports its
+    own width changes.
+
+    v10: column counts used to be derived from the PAGE's width minus a
+    hand-tallied chrome constant, while the cards were actually laid out
+    inside this host — whose width is the scroll VIEWPORT's and settles a
+    layout pass later. Whenever the two disagreed (every frame of a live
+    drag-resize, and on any page not yet shown) the grid was given a
+    column count that did not fit the container, and cards were positioned
+    past its right edge: measured at 974px window width, a 1719px-wide
+    grid inside a 590px host.
+
+    Driving the relayout from the host's OWN resizeEvent removes the
+    disagreement by construction — the width used to choose the column
+    count is, by definition, the width the cards are laid out in."""
+
+    resized = Signal(int)   # new available content width
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        layout = self.layout()
+        margins = layout.contentsMargins() if layout is not None else None
+        chrome = (margins.left() + margins.right()) if margins else 0
+        self.resized.emit(self.width() - chrome)
+
+
+class ClampedLabel(QLabel):
+    """A word-wrapped label with a HARD line budget.
+
+    Why this exists: a plain wordWrap QLabel grows without limit, but
+    GlassCard caps its own height (setMaximumHeight). The two disagreed
+    silently — measured across the real catalog at a 3-column width, 14
+    cards had their description cut off mid-sentence and 5 also lost part
+    of their title; the worst (PATH Doctor) lost 88px, more than half its
+    copy. Nothing warned; the text was simply painted outside the card's
+    clip and vanished.
+
+    This label instead lays the text out itself (QTextLayout, the same
+    engine QLabel uses), keeps at most `max_lines` of it, elides the last
+    kept line with an ellipsis, and puts the FULL text in the tooltip so
+    nothing is ever unreachable. Its height is pinned to exactly
+    max_lines * lineSpacing, so a card's height is now a deterministic
+    function of its line budget rather than of how long someone's
+    description happened to be.
+    """
+
+    def __init__(self, text: str = "", max_lines: int = 2,
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWordWrap(True)
+        self._max_lines = max(1, max_lines)
+        self._full = text
+        self._elided = False
+        self._reflowing = False
+        super().setText(text)
+
+    # -- public API -------------------------------------------
+    def setFullText(self, text: str):
+        self._full = text
+        self._reflow()
+
+    def fullText(self) -> str:
+        return self._full
+
+    def setMaxLines(self, n: int):
+        n = max(1, n)
+        if n != self._max_lines:
+            self._max_lines = n
+            self._pin_height()
+            self._reflow()
+
+    def is_elided(self) -> bool:
+        return self._elided
+
+    # -- layout -----------------------------------------------
+    def _pin_height(self, lines: int | None = None):
+        """Height = exactly the number of lines actually used, capped at
+        the budget.
+
+        The first cut of this reserved max_lines unconditionally, which
+        made every short one-line blurb claim three lines of vertical
+        space — enough to overflow the Welcome page's shorter Quick Action
+        cards. The cap is a CEILING, not a quota: a 1-line description
+        should occupy 1 line and let the card breathe."""
+        used = self._max_lines if lines is None else max(1, min(lines, self._max_lines))
+        target = QFontMetrics(self.font()).lineSpacing() * used
+        if self.height() != target or self.minimumHeight() != target:
+            self.setFixedHeight(target)
+
+    def changeEvent(self, e):
+        # Every label in this app takes its font-size from QSS, and QSS is
+        # applied during POLISH — long after setStyleSheet() returns. Pinning
+        # the height inside setStyleSheet therefore measured the widget's
+        # pre-QSS default font and produced a budget for the wrong type size.
+        # FontChange is the event Qt emits once the effective font (QSS
+        # included) has actually resolved, so that is where the budget is
+        # computed. StyleChange covers a live theme re-skin.
+        super().changeEvent(e)
+        if e.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._pin_height()
+            self._reflow()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._reflow()
+
+    def _reflow(self):
+        width = self.width() - self.margin() * 2
+        if width <= 0 or not self._full:
+            return
+        if self._reflowing:      # setFixedHeight below re-enters via resizeEvent
+            return
+        self._reflowing = True
+        try:
+            self._reflow_impl(width)
+        finally:
+            self._reflowing = False
+
+    def _reflow_impl(self, width: int):
+        layout = QTextLayout(self._full, self.font())
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        layout.setTextOption(option)
+        layout.beginLayout()
+        starts: list[int] = []
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            starts.append(line.textStart())
+        layout.endLayout()
+
+        # height tracks the lines actually used, capped at the budget
+        self._pin_height(len(starts))
+
+        if len(starts) <= self._max_lines:
+            if super().text() != self._full:
+                super().setText(self._full)
+            self._elided = False
+            self.setToolTip("")
+            return
+
+        # Keep the whole prefix verbatim (so Qt re-wraps it identically),
+        # then elide only what would have spilled past the budget.
+        cut = starts[self._max_lines - 1]
+        fm = QFontMetrics(self.font())
+        tail = fm.elidedText(self._full[cut:], Qt.TextElideMode.ElideRight, width)
+        super().setText(self._full[:cut] + tail)
+        self._elided = True
+        self.setToolTip(self._full)
+
+
 class GlassCard(QFrame):
     clicked = Signal()
+    # Arrow-key traversal request: "left" | "right" | "up" | "down". The
+    # card knows a key was pressed but not where its neighbours are — the
+    # page that owns the grid resolves that (see main._focus_neighbour).
+    navigate = Signal(str)
 
     _ICON_BASE_PX = 21
     _ICON_GROW_PX = 2   # subtle hover "pop" — see _sync_icon_scale()
     _PLAQUE = 42        # icon plaque footprint (v9.1: tighter, denser card)
 
+    # v10 height envelope, DERIVED from the card's anatomy rather than
+    # guessed. With the header-row layout the arithmetic is:
+    #   padding 12+12  +  plaque row 42  +  gap 8  +  desc 3x15  = 119
+    #   ... plus the optional meta footer (gap 8 + pill 20)       = 147
+    # Because ClampedLabel caps each block at an exact line count, 152 is a
+    # ceiling the content genuinely cannot exceed — which is what makes a
+    # maximum safe at all. (Pre-v10 the cap was 146 and content simply
+    # overflowed it invisibly; the minimum was 112, itself below the 119 a
+    # three-line description needs, so the minimum could clip too.)
+    CARD_MIN_H = 120
+    CARD_MAX_H = 152
+
     def __init__(self, item: dict, accent: str, t: dict,
                  featured: bool = False, locked: bool = False):
         super().__init__()
         self.item = item
-        self._accent = accent
+        # v10: `accent` is a module KEY ("software") for category/dashboard
+        # cards, or a literal hex when a dialog passes t["accent"] directly.
+        # Both are stored unresolved and turned into a real colour inside
+        # apply_theme() via theme.resolve_accent, so a card built under one
+        # theme repaints correctly under the other.
+        self._accent_key = accent
+        self._accent = TH.resolve_accent(t, accent)
         self._danger = bool(item.get("danger"))
         self._featured = featured
         # v9.4: `locked` marks an admin-gated action shown on a non-elevated
         # Pulse — a small lock glyph in the head signals "needs Administrator"
         # up front (the click then opens the inline elevate prompt).
         self._locked = locked
+        self._applied: bool | None = None
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # v10 ACCESSIBILITY: cards were QFrames with mouse handlers only —
+        # no focus policy, no key handling — so the entire operation grid,
+        # the app's primary surface, was unreachable by keyboard. Tab
+        # stopped at the sidebar. StrongFocus puts every card in the tab
+        # order; keyPressEvent below adds Enter/Space activation and arrow
+        # traversal, and paintEvent draws a real focus ring.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(item.get("title", ""))
+        self.setAccessibleDescription(item.get("desc", ""))
         # v8 proportion fix: a min AND a max so cards never balloon. The
         # equal-row-stretch grid (main.CategoryPage._relayout) still fills the
         # canvas, but a capped card can't grow into a tall, empty slab — it
@@ -618,11 +818,17 @@ class GlassCard(QFrame):
         # stop ballooning into empty slabs — content sits closer together and
         # reads denser, and the equal-row-stretch grid distributes the saved
         # space as clean breathing room between rows.
-        self.setMinimumHeight(112)
-        self.setMaximumHeight(146)
+        # Only a MAXIMUM is set explicitly. An explicit setMinimumHeight
+        # OVERRIDES minimumSizeHint(), so a fixed floor below what a
+        # particular card's content needs (e.g. 120 on a footer card that
+        # needs 147) silently let the layout squeeze it and clip the
+        # content again. The floor is applied in minimumSizeHint() instead,
+        # where it can be combined with — never override — the layout's own
+        # requirement.
+        self.setMaximumHeight(self.CARD_MAX_H)
         self.setProperty("running", False)
 
-        glow_color = t["err"] if self._danger else accent
+        glow_color = t["err"] if self._danger else self._accent
         self._glow = GlowController(self, glow_color)
         self._ripple = RippleController(self)
 
@@ -635,9 +841,24 @@ class GlassCard(QFrame):
         self._press_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._press_anim.valueChanged.connect(self._on_press_frame)
 
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(15, 13, 16, 13)
-        lay.setSpacing(13)
+        # v10 CARD ANATOMY — a header row (plaque + title) above a
+        # FULL-WIDTH description, replacing the old two-column "plaque to
+        # the left of everything" arrangement.
+        #
+        # This is a measurement-driven change, not a restyle. In the old
+        # layout the description shared a column with the title, so at the
+        # 3-column grid width it was only ~256px wide — narrow enough that a
+        # 48-character sentence ("Force the dark theme across Windows and
+        # all apps.") already needed FOUR lines and got truncated. Dropping
+        # the description onto its own row gives it the card's full inner
+        # width (~312px at the same grid width, +22%), which is what finally
+        # lets ordinary copy render complete.
+        lay = QVBoxLayout(self)
+        # symmetric, on-scale padding (was 15/13/16/13 — asymmetric by
+        # accident, which is what made cards read subtly misaligned in a grid)
+        lay.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
+                               TH.SPACE["lg"], TH.SPACE["md"])
+        lay.setSpacing(TH.SPACE["sm"])
 
         # -- icon plaque (v7) — a Fluent glyph in an accent-tinted well ----
         char, self._glyph_fluent = (
@@ -655,15 +876,15 @@ class GlassCard(QFrame):
         self._icon_font.setPixelSize(self._ICON_BASE_PX)
         self._icon.setFont(self._icon_font)
         self._icon_px = self._ICON_BASE_PX
-        lay.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignTop)
 
-        col = QVBoxLayout()
-        col.setSpacing(4)
+        # -- header row: plaque + title (+ chevron / lock) -----------------
         head = QHBoxLayout()
-        head.setSpacing(8)
-        self._title = QLabel(item["title"])
-        # Long titles wrap instead of clipping at narrow card widths.
-        self._title.setWordWrap(True)
+        head.setSpacing(TH.SPACE["md"])
+        head.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        # v10 line budget: title 2 lines, description 3. Both are
+        # ClampedLabels, so a long string elides with its full text in the
+        # tooltip instead of being painted outside the card.
+        self._title = ClampedLabel(item["title"], max_lines=2)
         head.addWidget(self._title, 1)
         # v9.1 density fix: the note badge ('Windows 11 only') used to sit on
         # the TITLE's row, so a card's minimum width became plaque + title +
@@ -699,35 +920,44 @@ class GlassCard(QFrame):
                 self._lock.setFont(lf)
             self._lock.setToolTip(
                 "Needs Administrator — clicking will offer to relaunch Pulse elevated.")
-            head.addWidget(self._lock, 0, Qt.AlignmentFlag.AlignTop)
-        col.addLayout(head)
+            head.addWidget(self._lock, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(head)
 
-        self._desc = QLabel(item["desc"])
-        self._desc.setWordWrap(True)
-        col.addWidget(self._desc)
-        col.addStretch()
+        # -- description: its own FULL-WIDTH row (the v10 change) ----------
+        # A uniform 3-line budget. Combined with the full card width this
+        # lets the tightened catalog copy render complete on every card at
+        # every column count, with elision left as a pure safety net.
+        self._desc = ClampedLabel(item["desc"], max_lines=3)
+        lay.addWidget(self._desc)
+        lay.addStretch()
 
         # -- meta footer (v7) — count/hint pills fill the card with signal,
         #    plus the relocated note badge pinned bottom-right (v9.1) --------
+        # v10: the footer now ALWAYS exists, because the applied-state chip
+        # can appear on any card once the backend probe reports on it. It
+        # stays zero-height until something needs it (the chip and badge
+        # both start hidden), so a plain action card is unchanged visually.
         self._meta_pills: list[QLabel] = []
-        if self._meta_texts or self._badge is not None:
-            foot = QHBoxLayout()
-            foot.setSpacing(7)
-            for i, text in enumerate(self._meta_texts):
-                pill = QLabel(text)
-                self._meta_pills.append(pill)
-                foot.addWidget(pill)
-            foot.addStretch()
-            if self._badge is not None:
-                foot.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
-            col.addLayout(foot)
-
-        lay.addLayout(col, 1)
+        self._applied_chip = QLabel("APPLIED")
+        self._applied_chip.hide()
+        foot = QHBoxLayout()
+        foot.setSpacing(TH.SPACE["sm"])
+        for text in self._meta_texts:
+            pill = QLabel(text)
+            self._meta_pills.append(pill)
+            foot.addWidget(pill)
+        foot.addWidget(self._applied_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+        foot.addStretch()
+        if self._badge is not None:
+            foot.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(foot)
 
         self.apply_theme(t)
 
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
+        # re-resolve first: the module palette differs per theme (v10)
+        self._accent = TH.resolve_accent(t, self._accent_key)
         self.setStyleSheet(TH.card_qss(t, self._accent, self._danger, self._featured))
         plaque_accent = t["err"] if self._danger else self._accent
         self._icon.setStyleSheet(TH.icon_plaque_qss(t, plaque_accent, self._featured))
@@ -744,6 +974,7 @@ class GlassCard(QFrame):
             # the lead pill on the featured card carries the accent tint
             tint = plaque_accent if (self._featured and i == 0) else ""
             pill.setStyleSheet(TH.card_meta_pill_qss(t, tint))
+        self._applied_chip.setStyleSheet(TH.applied_chip_qss(t))
         self._glow.set_accent(plaque_accent)
         # painted-material state, read in paintEvent
         self._bevel = TH.bevel_alphas(t)
@@ -752,6 +983,31 @@ class GlassCard(QFrame):
         self._aur1 = QColor(t["accent"])
         self._aur2 = QColor(t["accent2"])
         self._aur3 = QColor(t["accent3"])
+
+    def set_applied(self, applied: bool | None):
+        """Reflect the backend's read-only applied-state probe.
+
+        Three states, deliberately: True shows the chip, False hides it,
+        and None (unknown — unreadable key, unsupported Windows build, or
+        a task the probe doesn't cover) ALSO hides it. Never guess: a card
+        with no chip means "we're not claiming anything", which is honest,
+        whereas a wrong 'Applied' badge would actively mislead someone into
+        skipping a tweak they still need."""
+        self._applied = applied
+        show = applied is True
+        self._applied_chip.setVisible(show)
+        self._applied_chip.setToolTip(
+            "This setting is currently active on your system." if show else "")
+
+    def minimumSizeHint(self):     # noqa: N802 - Qt casing
+        """The card's real floor: whatever its content needs, but never
+        squatter than CARD_MIN_H. Combining here (rather than via
+        setMinimumHeight) means the aesthetic floor can never win over a
+        content requirement — it can only raise a short card, never crush
+        a tall one."""
+        hint = super().minimumSizeHint()
+        hint.setHeight(max(hint.height(), self.CARD_MIN_H))
+        return hint
 
     # -- state ------------------------------------------------
     def set_running(self, on: bool):
@@ -785,8 +1041,43 @@ class GlassCard(QFrame):
         self._press_anim.setEndValue(target)
         self._press_anim.start()
 
+    _NAV_KEYS = {
+        Qt.Key.Key_Left: "left", Qt.Key.Key_Right: "right",
+        Qt.Key.Key_Up: "up", Qt.Key.Key_Down: "down",
+    }
+
+    def keyPressEvent(self, e):
+        key = e.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            # Same feedback a click gets, so activating from the keyboard
+            # feels like the same action rather than a silent shortcut.
+            self._ramp_press(1.0)
+            self._ripple.trigger(QPointF(self.rect().center()))
+            QTimer.singleShot(90, lambda: self._ramp_press(0.0))
+            self.clicked.emit()
+            return
+        direction = self._NAV_KEYS.get(key)
+        if direction is not None:
+            self.navigate.emit(direction)
+            return
+        super().keyPressEvent(e)
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        # Keyboard focus lights the same glow the pointer does, so the two
+        # input methods produce one consistent "this is active" state.
+        self._glow._ramp_to(1.0)
+        self.update()
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        if not self.underMouse():
+            self._glow._ramp_to(0.0)
+        self.update()
+
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
             self._ramp_press(1.0)
             self._ripple.trigger(e.position())
         super().mousePressEvent(e)
@@ -855,6 +1146,18 @@ class GlassCard(QFrame):
                            self._ripple.progress, self._ripple.origin)
         paint_glow_frame(p, self.rect(), 16, self._glow.color,
                          self._glow.intensity, self._glow.cursor)
+        # Keyboard focus ring — painted LAST so it sits above the hover
+        # glow and stays unambiguous even on a card the pointer is also
+        # over. A solid 2px accent ring rather than Qt's dotted default,
+        # which is invisible against this material.
+        if self.hasFocus():
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            ring = QColor(self._glow.color)
+            ring.setAlphaF(0.95)
+            p.setPen(QPen(ring, 2.0))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5),
+                              15, 15)
         p.end()
 
 
@@ -982,11 +1285,28 @@ class AmbientGlow(QWidget):
         self.update()
 
     # -- orb pixmap cache -------------------------------------
-    def _orb_pixmap(self, color: QColor, diameter: int, peak: float) -> QPixmap:
-        key = (color.rgb(), diameter, round(peak * 1000))
+    # v10: orbs are rendered ONCE at a fixed texture size and SCALED on
+    # blit, instead of being re-rasterised at the window's current size.
+    #
+    # The old cache was keyed on `diameter = max(w, h) * 1.25`, i.e. on the
+    # window size — so every single pixel of a drag-resize minted three
+    # fresh ~1800x1800 pixmaps and kept them forever. Measured on a plain
+    # 1000->1440px drag: 1,323 cached pixmaps totalling 11.9 GB, at 34.9 ms
+    # per resize step. That was both the resize stutter and an unbounded
+    # memory leak keyed on how much the user dragged.
+    #
+    # A radial-gradient blob is smooth by construction, so scaling one up
+    # is visually identical to rasterising it at full size (the painter
+    # already runs with SmoothPixmapTransform). The cache is now keyed only
+    # on (colour, peak): at most a handful of entries, a few MB, forever.
+    _ORB_TEX = 512
+
+    def _orb_pixmap(self, color: QColor, peak: float) -> QPixmap:
+        key = (color.rgb(), round(peak * 1000))
         pm = self._orb_cache.get(key)
         if pm is not None:
             return pm
+        diameter = self._ORB_TEX
         pm = QPixmap(diameter, diameter)
         pm.fill(Qt.GlobalColor.transparent)
         pp = QPainter(pm)
@@ -1035,7 +1355,13 @@ class AmbientGlow(QWidget):
         # clouds (dusty indigo / rose / violet), with the alpha pushed up to
         # match. Same motion, opposite blend, visible in both worlds.
         if self._light:
-            peaks = (0.30, 0.27, 0.24)
+            # v10: pulled well back (was 0.30/0.27/0.24). Those peaks were
+            # tuned against the older, lighter porcelain canvas; once the
+            # v10 elevation pass deepened the canvas gradient so cards could
+            # actually float, the same multiply strength turned the whole
+            # page a hazy lavender. The wash should tint the paper, not
+            # dye it.
+            peaks = (0.16, 0.14, 0.12)
             p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
         else:
             peaks = (0.17, 0.12, 0.11)
@@ -1047,9 +1373,10 @@ class AmbientGlow(QWidget):
             cx = bx * w + dx - diameter / 2.0
             cy = by * h + dy - diameter / 2.0
             breathe = 1.0 + 0.16 * math.sin(self._t * bspd * math.tau + bph)
-            pm = self._orb_pixmap(colors[i], diameter, peaks[i])
+            pm = self._orb_pixmap(colors[i], peaks[i])
             p.setOpacity(max(0.0, min(1.0, breathe)))
-            p.drawPixmap(int(cx), int(cy), pm)
+            # scale the fixed-size texture to the window — see _orb_pixmap
+            p.drawPixmap(QRect(int(cx), int(cy), diameter, diameter), pm)
         p.setOpacity(1.0)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
@@ -1205,7 +1532,7 @@ class ConfirmDialog(PulseDialog):
         lay.setSpacing(10)
 
         head = QLabel(f"{item['icon']}  {item['title']}")
-        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
         lay.addWidget(head)
 
         body = QLabel(item["desc"])
@@ -1303,6 +1630,60 @@ class ElevatePromptDialog(PulseDialog):
 
 
 # ============================================================
+#  SHORTCUT SHEET — F1 / ? keyboard reference
+# ============================================================
+class ShortcutSheetDialog(PulseDialog):
+    """The keyboard reference (F1 or ?).
+
+    v10 added a real keyboard layer; a shortcut nobody can discover is a
+    shortcut that doesn't exist, and Ctrl+K had been undiscoverable for
+    exactly that reason. Rows are rendered from PulseApp.SHORTCUTS, so the
+    sheet cannot drift out of sync with the bindings actually installed."""
+
+    def __init__(self, parent: QWidget, t: dict, shortcuts: list[tuple[str, str]]):
+        super().__init__(parent)
+        accent = t["accent"]
+        panel = _dialog_chrome(self, t, accent, width=440)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(TH.SPACE["xl"], TH.SPACE["xl"],
+                               TH.SPACE["xl"], TH.SPACE["lg"])
+        lay.setSpacing(TH.SPACE["md"])
+
+        head = QLabel("Keyboard shortcuts")
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
+        lay.addWidget(head)
+
+        for keys, description in shortcuts:
+            row = QHBoxLayout()
+            row.setSpacing(TH.SPACE["md"])
+            key_label = QLabel(keys)
+            key_label.setStyleSheet(TH.keycap_qss(t))
+            key_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            key_label.setFixedWidth(120)
+            row.addWidget(key_label, 0, Qt.AlignmentFlag.AlignVCenter)
+            desc = QLabel(description)
+            desc.setStyleSheet(TH.label_qss(t, "body"))
+            row.addWidget(desc, 1)
+            lay.addLayout(row)
+
+        lay.addSpacing(TH.SPACE["sm"])
+        foot = QHBoxLayout()
+        foot.addStretch()
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_cancel_qss(t))
+        close.clicked.connect(self.reject)
+        foot.addWidget(close)
+        lay.addLayout(foot)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+
+# ============================================================
 #  HUB DIALOG — a hub card's landing screen (drill-down navigation)
 # ============================================================
 class HubDialog(PulseDialog):
@@ -1329,7 +1710,7 @@ class HubDialog(PulseDialog):
         lay.setSpacing(14)
 
         head = QLabel(f"{hub['icon']}  {hub['title']}")
-        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
         lay.addWidget(head)
 
         sub = QLabel(hub.get("desc", ""))
@@ -1433,12 +1814,14 @@ class LiveConsole(QPlainTextEdit):
     MAX_LINES = 2000  # bound memory on very long-running tasks (SFC/DISM)
     _EMPTY_MESSAGE = "Idle — output streams here in real time while a task runs."
 
-    def __init__(self, t: dict, parent: QWidget | None = None):
+    def __init__(self, t: dict, parent: QWidget | None = None,
+                 timestamps: bool = True):
         super().__init__(parent)
         self.setReadOnly(True)
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setFont(QFont("Cascadia Mono", 9))
+        self._timestamps = timestamps
         # No native placeholder text: the empty state is a custom-painted
         # "pulse" waveform motif + message (see paintEvent), not plain text.
         self.apply_theme(t)
@@ -1448,6 +1831,21 @@ class LiveConsole(QPlainTextEdit):
         self._empty_accent = QColor(t["accent"])
         self._empty_text = QColor(t["text_faint"])
 
+    def set_timestamps(self, on: bool):
+        """Toggle the HH:MM:SS gutter. Only affects lines written AFTER the
+        change — retro-stamping existing output would invent times we never
+        observed, and un-stamping would have to parse them back out of text
+        that may legitimately contain a similar prefix."""
+        self._timestamps = bool(on)
+
+    def timestamps_enabled(self) -> bool:
+        return self._timestamps
+
+    def _stamp(self, text: str) -> str:
+        if not self._timestamps:
+            return text
+        return f"{QTime.currentTime().toString('HH:mm:ss')}  {text}"
+
     def put_line(self, text: str, replace_last: bool = False):
         """Slot for PowerShellTask.output(text, replace_last)."""
         if replace_last and not self.document().isEmpty():
@@ -1456,7 +1854,7 @@ class LiveConsole(QPlainTextEdit):
             self.append_line(text)
 
     def append_line(self, text: str):
-        self.appendPlainText(text)
+        self.appendPlainText(self._stamp(text))
         if self.blockCount() > self.MAX_LINES:
             cursor = self.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.Start)
@@ -1477,9 +1875,34 @@ class LiveConsole(QPlainTextEdit):
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock,
                             QTextCursor.MoveMode.KeepAnchor)
-        cursor.insertText(text)
+        # re-stamped, not stamp-preserved: a carriage-return progress line is
+        # rewritten continuously, so the useful timestamp is the moment of
+        # the LATEST update, not of the first one
+        cursor.insertText(self._stamp(text))
         bar = self.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    # -- v10 output actions ------------------------------------
+    def copy_all(self) -> int:
+        """Whole buffer to the clipboard. Returns the line count so the
+        caller can confirm what was taken — a silent copy leaves the user
+        unsure it worked."""
+        text = self.toPlainText()
+        QApplication.clipboard().setText(text)
+        return len(text.splitlines()) if text else 0
+
+    def export_to(self, path: str) -> int:
+        """Write the buffer to `path`, returning the line count. Raises
+        OSError on failure — the caller reports it; this must not swallow
+        a failed write and imply the log was saved."""
+        text = self.toPlainText()
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return len(text.splitlines()) if text else 0
+
+    def line_count(self) -> int:
+        text = self.toPlainText()
+        return len(text.splitlines()) if text else 0
 
     def clear_console(self):
         self.clear()
@@ -1639,9 +2062,15 @@ class ActivityDrawer(QWidget):
     BODY_H = 186   # console (172) + spacing (8) + shimmer (6)
     ANIM_MS = 200
 
-    def __init__(self, t: dict, on_stop=None, parent: QWidget | None = None):
+    # Emitted on every frame of the open/close animation so anything
+    # anchored to the drawer's top edge (the toast stack) tracks it live
+    # rather than snapping once the animation has finished.
+    height_changed = Signal()
+
+    def __init__(self, t: dict, on_stop=None, parent: QWidget | None = None,
+                 pinned: bool = False):
         super().__init__(parent)
-        self._pinned = False
+        self._pinned = pinned
         self._active = False   # a task is currently running
 
         outer = QVBoxLayout(self)
@@ -1678,6 +2107,38 @@ class ActivityDrawer(QWidget):
         self.stop_btn.hide()
         rail.addWidget(self.stop_btn)
 
+        # -- v10 output actions -------------------------------
+        # Live output was previously a dead end: you could watch it scroll
+        # past and nothing else. These four turn it into something you can
+        # actually take away — copy it into a bug report, save it beside a
+        # failed run, clear it before a fresh attempt, or drop the
+        # timestamp gutter when pasting somewhere narrow. Icon-only ghost
+        # buttons so the rail stays quiet.
+        self._tools: list[QPushButton] = []
+
+        def tool(glyph_key: str, tip: str, slot, checkable: bool = False):
+            char, fluent = TH.glyph(glyph_key)
+            btn = QPushButton(char)
+            btn.setFixedSize(26, 26)
+            btn.setCheckable(checkable)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setToolTip(tip)
+            font = TH.icon_font(12) if fluent else None
+            if font is not None:
+                btn.setFont(font)
+            btn.clicked.connect(slot)
+            rail.addWidget(btn)
+            self._tools.append(btn)
+            return btn
+
+        self._btn_stamp = tool("clock", "Show timestamps in the output",
+                               self._toggle_timestamps, checkable=True)
+        self._btn_stamp.setChecked(True)
+        tool("copy", "Copy all output to the clipboard", self._copy_output)
+        tool("export", "Save the output to a file…", self._export_output)
+        tool("clear", "Clear the output", self._clear_output)
+
         self._toggle = QPushButton(TH.glyph("chevron")[0])
         self._toggle.setCheckable(True)
         self._toggle.setFixedSize(28, 28)
@@ -1706,21 +2167,77 @@ class ActivityDrawer(QWidget):
         body.addWidget(self.shimmer)
         outer.addWidget(self._body)
 
-        # start collapsed (idle) — the whole point of the drawer
-        self._body.setMaximumHeight(0)
-        self._body.setVisible(False)
+        # Start collapsed (idle) — the whole point of the drawer — unless
+        # the user pinned it open in a previous session (v10 persistence).
+        self._body.setMaximumHeight(self.BODY_H if pinned else 0)
+        self._body.setVisible(pinned)
+        if pinned:
+            self._toggle.setChecked(True)
 
         self._anim = QPropertyAnimation(self._body, b"maximumHeight", self)
         self._anim.setDuration(self.ANIM_MS)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.finished.connect(self._on_anim_done)
+        self._anim.valueChanged.connect(lambda _v: self.height_changed.emit())
 
         self.apply_theme(t)
+
+    # -- output actions ---------------------------------------
+    # `notify` is supplied by main.py so these report through the app's own
+    # ToastManager; the drawer has no business owning notification UI.
+    def set_notifier(self, notify):
+        self._notify = notify
+
+    def _tell(self, kind: str, message: str):
+        notify = getattr(self, "_notify", None)
+        if notify is not None:
+            notify(kind, message)
+
+    def _toggle_timestamps(self, checked: bool):
+        self.console.set_timestamps(checked)
+        self._btn_stamp.setToolTip(
+            "Hide timestamps in the output" if checked
+            else "Show timestamps in the output")
+
+    def _copy_output(self):
+        lines = self.console.copy_all()
+        if lines:
+            self._tell("success", f"Copied {lines} line(s) to the clipboard.")
+        else:
+            self._tell("info", "There is no output to copy yet.")
+
+    def _clear_output(self):
+        if not self.console.line_count():
+            self._tell("info", "The output is already empty.")
+            return
+        self.console.clear_console()
+        self._tell("info", "Output cleared.")
+
+    def _export_output(self):
+        if not self.console.line_count():
+            self._tell("info", "There is no output to save yet.")
+            return
+        default = os.path.join(
+            os.path.join(os.path.expanduser("~"), "Desktop"),
+            f"Pulse_Output_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.txt")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save live output", default, "Text files (*.txt);;All files (*)")
+        if not path:
+            return
+        try:
+            lines = self.console.export_to(path)
+        except OSError as exc:
+            # never claim a save that didn't happen
+            self._tell("error", f"Could not save the output: {exc}")
+            return
+        self._tell("success", f"Saved {lines} line(s) to {os.path.basename(path)}")
 
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
         self._rail.setStyleSheet(TH.activity_rail_qss(t))
         self._console_label.setStyleSheet(TH.console_header_qss(t))
+        for btn in self._tools:
+            btn.setStyleSheet(TH.activity_toggle_qss(t))
         self.status_text.setStyleSheet(TH.label_qss(t, "status"))
         self.state_pill.apply_theme(t)
         self.stop_btn.setStyleSheet(TH.stop_button_qss(t))
@@ -1775,10 +2292,136 @@ class ActivityDrawer(QWidget):
         if not self._active and not self._pinned:
             self._close()
 
+    def is_pinned(self) -> bool:
+        """Persisted across sessions — see utils.prefs.drawer_pinned."""
+        return self._pinned
+
+    def toggle_pinned(self):
+        """Ctrl+\\ — flip the pin through the toggle button so the chevron's
+        checked state, the tooltip and the drawer stay in one truth."""
+        self._toggle.setChecked(not self._toggle.isChecked())
+
 
 # ============================================================
 #  TOGGLE SWITCH — native-feeling animated on/off control
 # ============================================================
+class RecentOperationRow(QPushButton):
+    """One entry in the sidebar's Recent Operations panel: the operation's
+    own module-accented glyph, its title, and a small outcome dot (green /
+    red) recording how the last run ended. Clicking re-runs it through the
+    app's normal request_task pipeline, so confirmations, selectors and the
+    admin gate all still apply."""
+
+    _DOT = 6
+
+    def __init__(self, entry: dict, t: dict, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.entry = entry
+        self._accent_key = entry.get("accent", "")
+        self._glyph_key = entry.get("glyph", "")
+        self._outcome = entry.get("outcome", "ok")
+        self.setFixedHeight(34)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setText(str(entry.get("title", "")).replace("&", "&&"))
+        self.setToolTip(f"Run “{entry.get('title', '')}” again")
+        self._glow = GlowController(self, TH.resolve_accent(t, self._accent_key))
+        self.apply_theme(t)
+
+    def apply_theme(self, t: dict):
+        self._accent = QColor(TH.resolve_accent(t, self._accent_key))
+        self._glow.set_accent(TH.resolve_accent(t, self._accent_key))
+        self._dot_color = QColor(t["ok"] if self._outcome == "ok" else t["err"])
+        self.setStyleSheet(TH.recent_row_qss(t))
+        self._glyph_char, fluent = TH.glyph(self._glyph_key)
+        self._icon_font = TH.icon_font(13) if fluent else None
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # leading module glyph
+        p.setPen(self._accent)
+        if self._icon_font is not None:
+            p.setFont(self._icon_font)
+        else:
+            f = QFont(self.font())
+            f.setPixelSize(12)
+            p.setFont(f)
+        p.drawText(QRectF(10, 0, 18, self.height()),
+                   Qt.AlignmentFlag.AlignCenter, self._glyph_char)
+        # trailing outcome dot
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._dot_color)
+        cy = self.height() / 2.0
+        p.drawEllipse(QPointF(self.width() - 14, cy), self._DOT / 2, self._DOT / 2)
+        paint_glow_frame(p, self.rect(), TH.RADIUS["chip"], self._glow.color,
+                         self._glow.intensity, self._glow.cursor)
+        p.end()
+
+
+class RecentOperationsPanel(QWidget):
+    """The sidebar's 'Recent' block (v10).
+
+    The nav rail ended after six module buttons and then ran into ~360px of
+    dead space before the elevation CTA — the single largest unused area in
+    the app. This fills it with the one thing a rail like this can offer
+    that navigation cannot: the operations you actually ran, one click from
+    running again.
+
+    Hidden entirely when the trail is empty (a first launch shows no
+    stub/placeholder — an empty panel would be worse than the void it
+    replaced), so it costs nothing until it has something to say."""
+
+    rerun_requested = Signal(str)   # task name
+
+    def __init__(self, t: dict, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._rows: list[RecentOperationRow] = []
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(TH.SPACE["xs"])
+
+        header = QHBoxLayout()
+        header.setSpacing(TH.SPACE["md"])
+        self._title = QLabel("RECENT")
+        self._title.setIndent(10)
+        header.addWidget(self._title)
+        self._rule = QFrame()
+        self._rule.setFixedHeight(1)
+        header.addWidget(self._rule, 1)
+        lay.addLayout(header)
+        lay.addSpacing(TH.SPACE["xs"])
+
+        self._rows_box = QVBoxLayout()
+        self._rows_box.setContentsMargins(0, 0, 0, 0)
+        self._rows_box.setSpacing(TH.SPACE["xs"])
+        lay.addLayout(self._rows_box)
+        self._t = t
+        self.apply_theme(t)
+        self.setVisible(False)
+
+    def set_entries(self, entries: list[dict]):
+        for row in self._rows:
+            self._rows_box.removeWidget(row)
+            row.deleteLater()
+        self._rows.clear()
+        for entry in entries:
+            row = RecentOperationRow(entry, self._t)
+            row.clicked.connect(
+                lambda checked=False, task=entry.get("task", ""):
+                self.rerun_requested.emit(task))
+            self._rows_box.addWidget(row)
+            self._rows.append(row)
+        self.setVisible(bool(entries))
+
+    def apply_theme(self, t: dict):
+        self._t = t
+        self._title.setStyleSheet(TH.label_qss(t, "section"))
+        self._rule.setStyleSheet(TH.hub_group_rule_qss(t, t["accent"]))
+        for row in self._rows:
+            row.apply_theme(t)
+
+
 class ToggleSwitch(QWidget):
     """A macOS/iOS-style pill switch, pure-paint per the animations.py
     doctrine (no QGraphicsEffect, no per-frame QSS rebuild — one looping
@@ -1942,7 +2585,7 @@ class AppSelectorDialog(PulseDialog):
         lay.setSpacing(12)
 
         head = QLabel(f"{item['icon']}  {item['title']}")
-        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
         lay.addWidget(head)
 
         sub = QLabel(f"All {len(apps)} apps are pre-selected — untick anything "
@@ -2242,7 +2885,7 @@ class OfficeWizardDialog(PulseDialog):
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
         title = QLabel("📄  Microsoft Office Deployment")
-        title.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        title.setStyleSheet(TH.label_qss(t, "dialog"))
         title_col.addWidget(title)
         self._step_label = QLabel("")
         self._step_label.setStyleSheet(TH.label_qss(t, "caption"))
@@ -2768,7 +3411,7 @@ class ToolInstallWizardDialog(PulseDialog):
         lay.setSpacing(12)
 
         head = QLabel(f"⚙️  {app_name}")
-        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
         lay.addWidget(head)
 
         if desc:
@@ -2944,7 +3587,7 @@ class DevHubSelectorDialog(PulseDialog):
         lay.setSpacing(10)
 
         head = QLabel("🎓  Developer Toolkit")
-        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
         lay.addWidget(head)
 
         sub = QLabel("Nothing is pre-selected — tick exactly what you need, "
@@ -3220,7 +3863,7 @@ class UpdateCenterDialog(PulseDialog):
         lay.setSpacing(12)
 
         head = QLabel("🔄  Update Center")
-        head.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
         lay.addWidget(head)
 
         self._subtitle = QLabel("Scanning installed apps against winget…")
@@ -3653,7 +4296,7 @@ class StartupManagerDialog(PulseDialog):
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
         title = QLabel("🚀  Startup Manager")
-        title.setStyleSheet(TH.label_qss(t, "card").replace("14px", "16px"))
+        title.setStyleSheet(TH.label_qss(t, "dialog"))
         title_col.addWidget(title)
         self._subtitle = QLabel("Auditing Run keys and Startup folders…")
         self._subtitle.setWordWrap(True)

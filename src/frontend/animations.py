@@ -451,12 +451,26 @@ class CascadeAnimator(QObject):
         super().__init__(parent)
         self._group: QParallelAnimationGroup | None = None
         self._staged: list[tuple[QWidget, QGraphicsOpacityEffect, QPoint]] = []
+        self._host: QWidget | None = None
 
     def play(self, widgets: list[QWidget],
              stagger_ms: int = CASCADE_GAP,
              duration_ms: int = CASCADE_MS,
              rise_px: int = CASCADE_RISE):
         self.stop()  # settle any previous run instantly
+        if not widgets:
+            return
+
+        # This animation drives each card's `pos` DIRECTLY, which means it
+        # is briefly fighting the layout that owns those positions. If the
+        # window is resized mid-cascade, the layout re-places the cards but
+        # the running animation keeps driving them toward the targets it
+        # captured BEFORE the resize — cards end up stranded at stale
+        # coordinates, overhanging the grid. Watching the host lets the
+        # cascade bow out the moment the layout changes underneath it.
+        self._host = widgets[0].parentWidget()
+        if self._host is not None:
+            self._host.installEventFilter(self)
 
         group = QParallelAnimationGroup(self)
         for i, w in enumerate(widgets):
@@ -492,8 +506,15 @@ class CascadeAnimator(QObject):
         self._group = group
         group.start()
 
+    def eventFilter(self, obj, event):
+        if (obj is self._host and event.type() == QEvent.Type.Resize
+                and self._group is not None):
+            # the layout just moved everything — abandon the entrance
+            self.stop()
+        return False
+
     def stop(self):
-        """Cancel a running cascade and snap widgets to their final state."""
+        """Cancel a running cascade and settle widgets to their final state."""
         if self._group is not None:
             self._group.stop()
         self._cleanup()
@@ -506,6 +527,20 @@ class CascadeAnimator(QObject):
             except RuntimeError:
                 pass  # widget was destroyed mid-flight (page closed)
         self._staged.clear()
+        if self._host is not None:
+            try:
+                self._host.removeEventFilter(self)
+                # The `target` positions restored above were captured before
+                # the cascade started and may now be stale (a resize is
+                # exactly why we stop early). The LAYOUT is the authority on
+                # where a card belongs, so hand placement back to it rather
+                # than leaving the animation's idea of "final" in place.
+                layout = self._host.layout()
+                if layout is not None:
+                    layout.activate()
+            except RuntimeError:
+                pass
+            self._host = None
         if self._group is not None:
             self._group.deleteLater()
             self._group = None

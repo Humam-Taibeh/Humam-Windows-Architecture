@@ -38,7 +38,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
-    QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea,
+    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -49,18 +49,21 @@ _SRC_DIR = os.path.dirname(_FRONTEND_DIR)
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
+from utils import prefs  # noqa: E402
 from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
-    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, find_action, hub_items,
-    iter_leaf_items, requires_admin,
+    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, accent_for_task,
+    category_operations, find_action, hub_items, iter_leaf_items,
+    requires_admin, search_haystack,
 )
 from frontend.widgets import (  # noqa: E402
     ActivityDrawer, AmbientGlow, AppSelectorDialog, BreathingIcon,
     CommandPalette, ConfirmDialog, DepthCard, DevHubSelectorDialog,
     ElevatePromptDialog, GlassCard, HubDialog, NavButton, NavPill,
-    OfficeWizardDialog, PulseDialog, StartupManagerDialog, TitleBar,
+    OfficeWizardDialog, PulseDialog, RecentOperationsPanel,
+    ResponsiveGridHost, ShortcutSheetDialog, StartupManagerDialog, TitleBar,
     UpdateCenterDialog, refit_dialog,
 )
 
@@ -68,7 +71,12 @@ from frontend.widgets import (  # noqa: E402
 #  APP CONSTANTS
 # ============================================================
 APP_NAME = "PULSE"
-APP_VERSION = "6.1"
+# The app version tracks the UI/design-system generation the
+# codebase actually is (v10). It had been pinned at 6.1 while the
+# design system moved through v7-v10, so the title bar, the sidebar
+# footer and QApplication all reported a version no document,
+# changelog entry or bug report matched.
+APP_VERSION = "10.0"
 APP_CHANNEL = "Beta"   # release channel — rendered as a badge, never in prose
 PS1_FILENAME = "core.ps1"
 DEFAULT_TIMEOUT = 900
@@ -155,6 +163,40 @@ def _system_insights() -> list[tuple[str, str, str]]:
             pass
     insights.append(("💾", ram_value, ram_caption))
     return insights
+
+
+def _focus_neighbour(cards: list, cols: int, current, direction: str) -> bool:
+    """Move keyboard focus to `current`'s neighbour in a `cols`-wide grid.
+
+    Shared by every card grid in the app so arrow traversal behaves
+    identically on the dashboard and on a module page. Operates on the
+    VISIBLE card list, which is what makes traversal stay correct while a
+    filter is narrowing the grid — stepping right from the last match must
+    not land on a hidden card.
+
+    Left/right wrap within a row's bounds by clamping (not wrapping to the
+    next row), matching how Windows list grids behave; up/down move a whole
+    row. Returns False when there is nowhere to go, so the caller can let
+    the key fall through to normal tab handling."""
+    if current not in cards or cols <= 0:
+        return False
+    index = cards.index(current)
+    row, col = divmod(index, cols)
+    if direction == "left":
+        target = index - 1 if col > 0 else index
+    elif direction == "right":
+        target = index + 1 if col < cols - 1 else index
+    elif direction == "up":
+        target = index - cols if row > 0 else index
+    else:  # down
+        target = index + cols
+        if target >= len(cards):
+            # a short final row: land on its last card rather than nothing
+            target = len(cards) - 1 if row < (len(cards) - 1) // cols else index
+    if target == index or not (0 <= target < len(cards)):
+        return False
+    cards[target].setFocus(Qt.FocusReason.OtherFocusReason)
+    return True
 
 
 # ============================================================
@@ -325,11 +367,13 @@ class WelcomePage(QWidget):
         head.addWidget(self._rule, 1)
         root.addLayout(head)
 
-        grid_host = QWidget()
-        grid_host.setStyleSheet("background: transparent;")
+        grid_host = ResponsiveGridHost()
         self._grid = QGridLayout(grid_host)
         self._grid.setContentsMargins(0, 2, 0, 0)
-        self._grid.setSpacing(14)
+        self._grid.setSpacing(TH.SPACE["lg"])
+        # the grid re-columns off its OWN width — see ResponsiveGridHost
+        grid_host.resized.connect(
+            lambda w: self._relayout_actions(self._columns_for(w)))
         for cat_index, task in self.QUICK_ACTIONS:
             item, accent = find_action(cat_index, task)
             if item is None:
@@ -344,24 +388,54 @@ class WelcomePage(QWidget):
                 card_item.pop(meta_key, None)
             locked = requires_admin(task) and not is_admin
             card = GlassCard(card_item, accent, t, locked=locked)
-            # tighter envelope than a category card (default 112/146): a Quick
-            # Action is a compact button with a one-line blurb, so cap it lower
-            # so it reads crisp and airy rather than a tall stretched slab.
-            card.setMinimumHeight(104)
-            card.setMaximumHeight(132)
+            # v10: Quick Actions share the STANDARD card envelope. They used
+            # to be capped tighter (104/132) to read as compact buttons, but
+            # that cap sits below the 119px the v10 card anatomy needs once a
+            # blurb wraps to three lines, so at narrow widths the text was
+            # forced outside the card. Their blurbs are short, so they still
+            # settle near the minimum and read compact — now by content
+            # rather than by a cap that could clip them.
             card.clicked.connect(
                 lambda it=item, c=card: self.action_requested.emit(it, c))
+            card.navigate.connect(
+                lambda direction, c=card: _focus_neighbour(
+                    self._action_cards, self._cols, c, direction))
             self._action_cards.append(card)
         self._relayout_actions(3)
-        root.addWidget(grid_host, 1)
+
+        # v10: the Quick Action grid lives in a scroll area, exactly like a
+        # CategoryPage's card grid. Without one, a short window had nowhere
+        # to put the overflow — Qt resolved the impossible constraint by
+        # violating the cards' own minimum heights, crushing them to as
+        # little as 17px with their content spilling out. Scrolling is the
+        # correct answer to "not enough room"; crushing never is.
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setWidget(grid_host)
+        self._scroll.viewport().setStyleSheet("background: transparent;")
+        root.addWidget(self._scroll, 1)
 
         self.apply_theme(t)
 
+    def action_cards(self) -> list[GlassCard]:
+        """The dashboard's Quick Action cards — the applied-state probe
+        badges these too, so a tweak shown on both the dashboard and its
+        category page reports identically in both places."""
+        return list(self._action_cards)
+
     # -- responsive quick-action grid ---------------------------------
     def _columns_for(self, width: int) -> int:
+        """v10: content-aware, matching CategoryPage._columns_for. The old
+        version divided by a flat ACTION_MIN_W (250) with no regard for what
+        the cards actually need, so once a card's real content minimum
+        exceeded that constant the grid confidently laid out a column count
+        that squeezed cards below their minimum width and clipped them."""
         gap = self._grid.spacing()
-        return max(1, min(self.ACTION_MAX_COLS,
-                          (width + gap) // (self.ACTION_MIN_W + gap)))
+        widest = max((c.minimumSizeHint().width() for c in self._action_cards),
+                     default=self.ACTION_MIN_W)
+        unit = max(self.ACTION_MIN_W, widest)
+        return max(1, min(self.ACTION_MAX_COLS, (width + gap) // (unit + gap)))
 
     def _relayout_actions(self, cols: int):
         if cols == self._cols:
@@ -377,13 +451,8 @@ class WelcomePage(QWidget):
         for i, card in enumerate(self._action_cards):
             self._grid.addWidget(card, i // cols, i % cols)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._relayout_actions(self._columns_for(self.width() - 60))
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._relayout_actions(self._columns_for(self.width() - 60))
+    # Column counts are driven by ResponsiveGridHost.resized (see the grid
+    # construction above), so no resizeEvent/showEvent width guessing here.
 
     def apply_theme(self, t: dict):
         self._logo.apply_theme(t)
@@ -412,6 +481,7 @@ class WelcomePage(QWidget):
 
         self._section.setStyleSheet(TH.label_qss(t, "section"))
         self._rule.setStyleSheet(TH.hub_group_rule_qss(t, t["accent"]))
+        self._scroll.setStyleSheet(TH.scroll_area_qss(t))
         for card in self._action_cards:
             card.apply_theme(t)
 
@@ -435,6 +505,8 @@ class CategoryPage(QWidget):
         super().__init__()
         self.category = category
         self.cards: list[GlassCard] = []
+        self._visible: list[GlassCard] = []
+        self._t = t
         self._cols = 0
 
         lay = QVBoxLayout(self)
@@ -481,6 +553,24 @@ class CategoryPage(QWidget):
         title_col.addWidget(self._tagline)
         head.addLayout(title_col)
         head.addStretch()
+
+        # -- v10 filter rail: the header's right-hand side ---------------
+        # The whole right two-thirds of this row was empty. It now carries
+        # the two things a module page can usefully say about itself: how
+        # to narrow it, and how much is in it. The filter matches titles,
+        # descriptions AND a hub's sub-item titles (see
+        # menu_structure.search_haystack), so searching "office" surfaces
+        # the hub that contains it rather than hiding a real match.
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("Filter…")
+        self._filter.setFixedSize(200, 32)
+        self._filter.setClearButtonEnabled(True)
+        self._filter.textChanged.connect(self._apply_filter)
+        head.addWidget(self._filter, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._count_chip = QLabel()
+        self._count_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(self._count_chip, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(head)
 
         # -- card grid ----------------------------------------
@@ -488,11 +578,12 @@ class CategoryPage(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-        grid_host = QWidget()
-        grid_host.setStyleSheet("background: transparent;")
+        grid_host = ResponsiveGridHost()
         self._grid = QGridLayout(grid_host)
         self._grid.setContentsMargins(2, 4, 12, 4)
-        self._grid.setSpacing(14)
+        self._grid.setSpacing(TH.SPACE["lg"])
+        # the grid re-columns off its OWN width — see ResponsiveGridHost
+        grid_host.resized.connect(lambda w: self._relayout(self._columns_for(w)))
 
         for idx, item in enumerate(category["items"]):
             # v7 bento: the first card of a hub landing page (Software
@@ -504,8 +595,21 @@ class CategoryPage(QWidget):
             card = GlassCard(item, category["accent"], t, featured=featured)
             card.clicked.connect(
                 lambda it=item, c=card: self.task_requested.emit(it, c))
+            card.navigate.connect(
+                lambda direction, c=card: _focus_neighbour(
+                    self._visible, self._cols, c, direction))
             self.cards.append(card)
+        # Everything below re-columns over VISIBLE cards only, so filtering
+        # reflows the grid instead of leaving holes where hidden cards were.
+        self._visible = list(self.cards)
         self._relayout(2)   # safe default; the first resize event corrects it
+
+        # Empty state — a filter that matches nothing must say so; a blank
+        # grid is indistinguishable from a broken page.
+        self._empty = QLabel("No operations match that filter.")
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.hide()
+        self._grid.addWidget(self._empty, self.MAX_COLUMNS + 1, 0, 1, self.MAX_COLUMNS)
 
         self._scroll.setWidget(grid_host)
         self._scroll.viewport().setStyleSheet("background: transparent;")
@@ -530,6 +634,40 @@ class CategoryPage(QWidget):
         fits = (viewport_w + gap) // (unit + gap)
         return max(1, min(self.MAX_COLUMNS, fits))
 
+    # -- filtering -------------------------------------------------
+    def _apply_filter(self, text: str):
+        query = text.strip().lower()
+        self._visible = [
+            card for card in self.cards
+            if not query or query in search_haystack(card.item)
+        ]
+        shown = set(id(c) for c in self._visible)
+        for card in self.cards:
+            card.setVisible(id(card) in shown)
+        self._empty.setVisible(bool(query) and not self._visible)
+        # force a rebuild: the column count may not change, but WHICH cards
+        # occupy which cells certainly has
+        self._cols = 0
+        self._relayout(self._columns_for(self._grid_available_width()))
+        self._sync_count_chip()
+
+    def _grid_available_width(self) -> int:
+        host = self._grid.parentWidget()
+        margins = self._grid.contentsMargins()
+        return host.width() - margins.left() - margins.right() if host else 0
+
+    def _sync_count_chip(self):
+        total = category_operations(self.category)
+        filtering = bool(self._filter.text().strip())
+        if filtering:
+            self._count_chip.setText(f"{len(self._visible)} OF {len(self.cards)}")
+        else:
+            self._count_chip.setText(
+                f"{total} OPERATION{'S' if total != 1 else ''}")
+        self._count_chip.setStyleSheet(TH.count_chip_qss(
+            self._t, TH.resolve_accent(self._t, self.category["accent"]),
+            filtered=filtering))
+
     def _relayout(self, cols: int):
         if cols == self._cols:
             return
@@ -543,37 +681,38 @@ class CategoryPage(QWidget):
         # of the old single trailing spacer row that top-anchored the grid and
         # stranded ~50% of the page as dead middle space (the redesign's #1
         # complaint). Rows past the last occupied one collapse to zero.
-        n_rows = (len(self.cards) + cols - 1) // cols
+        n_rows = (len(self._visible) + cols - 1) // cols
         for row in range(max(self._grid.rowCount(), n_rows) + 1):
             self._grid.setRowStretch(row, 1 if row < n_rows else 0)
-        for i, card in enumerate(self.cards):
+        for i, card in enumerate(self._visible):
             self._grid.addWidget(card, i // cols, i % cols)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._relayout(self._columns_for(self._scroll.viewport().width()))
+    # Column counts are driven by ResponsiveGridHost.resized (see the grid
+    # construction above): the width that chooses the column count IS the
+    # width the cards are laid out in, so the two can never disagree. This
+    # replaces the old resizeEvent/showEvent pair, which measured the page
+    # and the scroll viewport respectively — two different numbers, one of
+    # them lagging a layout pass behind the other.
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        # The very first resizeEvent after construction fires before the
-        # QScrollArea's child viewport has settled into its final width —
-        # that child layout pass lags the parent's by more than one
-        # event-loop tick, so a viewport-width read right after construction
-        # is unreliable and was previously locking the grid into 1 column
-        # forever (nothing resizes the page again after that). CategoryPage's
-        # OWN width is authoritative the instant it is shown (it's what
-        # triggered this very event), so derive the column count from that
-        # instead of the lagging viewport — sidestepping the race entirely.
-        own_w = self.width() - 16 - 8   # page margins (8+8) + scrollbar gutter
-        self._relayout(self._columns_for(own_w))
+    def focus_filter(self):
+        """Ctrl+L / Ctrl+F target — select-all so typing replaces whatever
+        query is already there, matching every browser address bar."""
+        self._filter.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._filter.selectAll()
 
     def apply_theme(self, t: dict):
+        self._t = t
+        accent = TH.resolve_accent(t, self.category["accent"])
+        self._filter.setStyleSheet(TH.filter_input_qss(t, accent))
+        self._empty.setStyleSheet(TH.empty_state_qss(t))
+        self._sync_count_chip()
         self._home.apply_theme(t)
         self._crumb_sep.setStyleSheet(
             f"color: {t['text_faint']}; font-size: 17px; font-weight: 400;"
             "background: transparent; border: none;")
         self._accent_rail.setStyleSheet(
-            f"background: {self.category['accent']}; border: none; border-radius: 2px;")
+            f"background: {TH.resolve_accent(t, self.category['accent'])};"
+            "border: none; border-radius: 2px;")
         self._title.setStyleSheet(TH.label_qss(t, "title"))
         self._tagline.setStyleSheet(TH.label_qss(t, "tagline"))
         self._scroll.setStyleSheet(TH.scroll_area_qss(t))
@@ -605,12 +744,21 @@ class PulseApp(QMainWindow):
         self._thread: QThread | None = None
         self._worker: PowerShellTask | None = None
         self._running_card: GlassCard | None = None
+        self._running_item: dict | None = None
+        self._running_accent = ""
+        self._probe_thread: QThread | None = None
+        self._probe_worker: PowerShellTask | None = None
+        self._tweak_state: dict = {}
         self._nav_buttons: list[NavButton] = []
         self._status_state = "ready"
         self._glass_applied = False
 
-        self.theme = TH.ThemeManager("dark", self)
+        # v10: the chosen theme survives a restart (was hardcoded "dark",
+        # so switching to light had to be redone on every launch).
+        self.theme = TH.ThemeManager(prefs.theme_mode("dark"), self)
         self.theme.changed.connect(self._apply_theme)
+        self.theme.changed.connect(
+            lambda t: prefs.set_theme_mode(t["name"]))
 
         self.cascade = CascadeAnimator(self)
         self.fader = PageFader(self)
@@ -620,27 +768,60 @@ class PulseApp(QMainWindow):
 
         self._build_ui()
         self._apply_theme(self.theme.t)
-        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self.go_home)
-        QShortcut(QKeySequence("Ctrl+K"), self, activated=self._open_command_palette)
+        self._refresh_recent()
+        self._install_shortcuts()
         QTimer.singleShot(300, self._startup_toasts)
+        # first applied-state read, after the window has settled
+        QTimer.singleShot(600, self._refresh_tweak_state)
+
+    # The width the shell's chrome consumes before a single card can be
+    # drawn: sidebar + body margins + body spacing + content padding +
+    # grid margins + scrollbar gutter. Below (this + one MIN_CARD_W) the
+    # grid physically cannot lay out, so it is the app's true floor.
+    _CHROME_W = 250 + 40 + 20 + 48 + 14 + 8
+    # title bar + one card row + the Activity rail + vertical padding
+    _CHROME_H = 50 + 152 + 44 + 60
 
     def _init_geometry(self):
-        """Screen-aware first launch: size to the monitor instead of a
-        hardcoded 1180×740 (which overflowed 1366×768 laptops and small
-        high-DPI displays), centered in the available work area. The
-        minimum size is likewise clamped so the window can never be
-        forced larger than the screen it lives on."""
+        """Screen-aware first launch, centered in the available work area.
+
+        v10: the minimum size is now DERIVED from what the layout actually
+        needs (_CHROME_W + one minimum-width card) rather than being a
+        hardcoded 980x620 that was then clamped down by the screen size.
+        The old `min(980, avail.width() - 48)` could hand back a minimum
+        BELOW the layout's real floor on a small display, which let the
+        user drag the window down to a size where cards were squeezed past
+        their minimum and clipped off the right edge — the layout looked
+        broken but nothing was actually wrong except the constraint."""
         desired_w, desired_h = 1180, 760
+        floor_w = self._CHROME_W + CategoryPage.MIN_CARD_W
+        floor_h = self._CHROME_H
+        # the comfortable minimum, never below the hard layout floor
+        min_w, min_h = max(floor_w, 980), max(floor_h, 620)
+
         screen = QApplication.primaryScreen()
         if screen is None:
+            self.setMinimumSize(min_w, min_h)
             self.resize(desired_w, desired_h)
-            self.setMinimumSize(980, 620)
             return
         avail = screen.availableGeometry()
-        w = min(desired_w, avail.width() - 48)
-        h = min(desired_h, avail.height() - 48)
-        self.setMinimumSize(min(980, avail.width() - 48),
-                            min(620, avail.height() - 48))
+        # On a display too small for the comfortable minimum, shrink toward
+        # the hard floor rather than below it — a window that cannot lay
+        # itself out is worse than one that slightly overhangs the work area.
+        min_w = max(floor_w, min(min_w, avail.width() - 48))
+        min_h = max(floor_h, min(min_h, avail.height() - 48))
+        self.setMinimumSize(min_w, min_h)
+
+        # A remembered geometry wins, but only if Qt can still honour it —
+        # restoreGeometry() returns False when the saved screen is gone, in
+        # which case we fall through to the centred default rather than
+        # placing the window off-screen.
+        saved = prefs.window_geometry()
+        if saved is not None and self.restoreGeometry(saved):
+            return
+
+        w = max(min_w, min(desired_w, avail.width() - 48))
+        h = max(min_h, min(desired_h, avail.height() - 48))
         self.resize(w, h)
         self.move(avail.center().x() - w // 2, avail.center().y() - h // 2)
 
@@ -693,6 +874,17 @@ class PulseApp(QMainWindow):
             btn.clicked.connect(lambda checked=False, idx=i: self.open_category(idx))
             self._nav_buttons.append(btn)
             side.addWidget(btn)
+
+        # -- Recent Operations (v10) ---------------------------
+        # Fills what used to be ~360px of empty rail below the nav with
+        # one-click re-runs of what the user actually did last. Sits
+        # directly under the modules (still in the "navigate/act" zone),
+        # with the stretch AFTER it so the elevation CTA stays anchored to
+        # the bottom. Hides itself entirely when there's no history.
+        side.addSpacing(TH.SPACE["xl"])
+        self._recent = RecentOperationsPanel(t)
+        self._recent.rerun_requested.connect(self._rerun_recent)
+        side.addWidget(self._recent)
         side.addStretch()
 
         # -- sidebar footer: elevation · identity (v8.1) --------
@@ -761,7 +953,8 @@ class PulseApp(QMainWindow):
         # reclaiming ~140px of canvas whenever the app is idle. The rest of
         # the task pipeline still reaches console/state_pill/stop_btn/shimmer/
         # status_dot/status_text as attributes, via the aliases below.
-        self.activity = ActivityDrawer(t, on_stop=self._cancel_running_task)
+        self.activity = ActivityDrawer(t, on_stop=self._cancel_running_task,
+                                       pinned=prefs.drawer_pinned())
         content.addWidget(self.activity)
         self.console = self.activity.console
         self.state_pill = self.activity.state_pill
@@ -772,6 +965,15 @@ class PulseApp(QMainWindow):
 
         body.addWidget(self._content, 1)
         self.toasts = ToastManager(self._shell, t)
+        # The Activity drawer owns the bottom-right corner and grows ~186px
+        # when a task starts; registering it keeps the toast stack riding
+        # above the live console instead of landing on top of it (v10).
+        self.toasts.set_bottom_obstacle(self.activity)
+        # the drawer's copy/export/clear actions report through the
+        # app's own toast stack rather than owning notification UI
+        self.activity.set_notifier(
+            lambda kind, message: self.toasts.show(kind, message, 3500))
+        self.activity.height_changed.connect(self.toasts.reposition)
 
     # ============================================================
     #  LIVE THEME PIPELINE
@@ -794,6 +996,7 @@ class PulseApp(QMainWindow):
         for page in self.pages:
             page.apply_theme(t)
         self.activity.apply_theme(t)
+        self._recent.apply_theme(t)
         self.toasts.apply_theme(t)
         self._set_status(self._status_state, self.status_text.text())
 
@@ -860,6 +1063,136 @@ class PulseApp(QMainWindow):
     def _select_nav(self, index: int | None):
         for i, btn in enumerate(self._nav_buttons):
             btn.set_selected(i == index)
+
+    # ============================================================
+    #  APPLIED-STATE PROBE (read-only, background)
+    # ============================================================
+    def _refresh_tweak_state(self):
+        """Ask the backend which readable tweaks are currently in effect and
+        badge the matching cards.
+
+        Runs on its OWN thread, entirely outside the single-task pipeline:
+        it is read-only (see backend 11-StateProbe.ps1), so it must never
+        occupy the "one task at a time" slot, block a real operation, or
+        show up in the live console. Deliberately NOT cached to disk — the
+        user can change any of these settings outside Pulse, so the honest
+        answer is always the one the system gives right now.
+        """
+        if not self.ps1_path or self._probe_thread is not None:
+            return
+        thread = QThread(self)
+        worker = PowerShellTask(self.ps1_path, "GetTweakState", timeout=90)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_tweak_state)
+        # A probe failure is genuinely unimportant: cards simply stay
+        # un-badged. It must never toast or change the status line.
+        for signal in (worker.finished, worker.failed, worker.cancelled):
+            signal.connect(thread.quit)
+        thread.finished.connect(self._on_probe_thread_finished)
+        self._probe_thread = thread
+        self._probe_worker = worker
+        thread.start()
+
+    def _on_tweak_state(self, result: TaskResult):
+        state = result.data if isinstance(result.data, dict) else None
+        if not state:
+            return
+        self._tweak_state = state
+        for page in self.pages:
+            for card in page.cards:
+                card.set_applied(state.get(card.item.get("task")))
+        for card in self.welcome.action_cards():
+            card.set_applied(state.get(card.item.get("task")))
+
+    def _on_probe_thread_finished(self):
+        if self._probe_worker is not None:
+            self._probe_worker.deleteLater()
+            self._probe_worker = None
+        if self._probe_thread is not None:
+            self._probe_thread.deleteLater()
+            self._probe_thread = None
+
+    # ============================================================
+    #  RECENT OPERATIONS (sidebar panel, persisted across sessions)
+    # ============================================================
+    def _refresh_recent(self):
+        self._recent.set_entries(prefs.recent_operations())
+
+    def _rerun_recent(self, task: str):
+        """Re-run a remembered operation. Resolved back to its LIVE catalog
+        item rather than replayed from the stored copy, so a re-run always
+        picks up the current definition (timeout, confirm flag, selector) —
+        and an operation the catalog no longer defines fails loudly here
+        instead of being dispatched to a task the backend has dropped."""
+        for item, _breadcrumb in iter_leaf_items():
+            if item.get("task") == task:
+                self.request_task(item, None)
+                return
+        self.toasts.show(
+            "info", "That operation is no longer available in this version.", 4000)
+
+    def _record_recent(self, outcome: str):
+        """Called once a task settles. The card's own module accent and
+        glyph ride along so the sidebar row is colour-coded to the module
+        the operation came from."""
+        item = self._running_item
+        if item is None:
+            return
+        prefs.push_recent_operation(
+            task=item.get("task", ""),
+            title=item.get("title", ""),
+            glyph=item.get("glyph", ""),
+            accent=self._running_accent,
+            outcome=outcome)
+        self._refresh_recent()
+
+    # ============================================================
+    #  KEYBOARD LAYER (v10)
+    # ============================================================
+    # Before v10 the app had exactly two shortcuts (Escape, Ctrl+K) and the
+    # card grid could not be reached from the keyboard at all. The table
+    # below is the single source of truth for both the bindings and the
+    # help sheet, so a shortcut can never exist without being documented.
+    SHORTCUTS = [
+        ("Ctrl+K",        "Command palette"),
+        ("Ctrl+L",        "Filter this module"),
+        ("Ctrl+H",        "Go to the dashboard"),
+        ("Ctrl+1 … 6",    "Jump to a module"),
+        ("Ctrl+\\",       "Show / hide live output"),
+        ("↑ ↓ ← →",       "Move between cards"),
+        ("Enter / Space", "Run the focused card"),
+        ("Esc",           "Back to the dashboard"),
+        ("F1  or  ?",     "This shortcut sheet"),
+    ]
+
+    def _install_shortcuts(self):
+        def bind(sequence, slot):
+            QShortcut(QKeySequence(sequence), self, activated=slot)
+
+        bind(Qt.Key.Key_Escape, self.go_home)
+        bind("Ctrl+K", self._open_command_palette)
+        bind("Ctrl+H", self.go_home)
+        bind("Ctrl+L", self._focus_page_filter)
+        bind("Ctrl+F", self._focus_page_filter)   # the other muscle memory
+        bind("Ctrl+\\", self.activity.toggle_pinned)
+        bind("F1", self._open_shortcut_sheet)
+        bind("?", self._open_shortcut_sheet)
+        for i in range(len(CATEGORIES)):
+            bind(f"Ctrl+{i + 1}", lambda idx=i: self.open_category(idx))
+
+    def _focus_page_filter(self):
+        """Ctrl+L on a module page focuses its filter; on the dashboard,
+        where there is no filter, it falls back to the command palette so
+        the key never does nothing."""
+        page = self.stack.currentWidget()
+        if isinstance(page, CategoryPage):
+            page.focus_filter()
+        else:
+            self._open_command_palette()
+
+    def _open_shortcut_sheet(self):
+        self._exec_dialog(ShortcutSheetDialog(self, self.theme.t, self.SHORTCUTS))
 
     # ============================================================
     #  COMMAND PALETTE (Ctrl+K)
@@ -1016,6 +1349,9 @@ class PulseApp(QMainWindow):
                      office_paths: tuple[str, str] | None = None,
                      local_installer: tuple[str, str] | None = None):
         self._running_card = card
+        # remembered for the Recent Operations trail once this settles
+        self._running_item = item
+        self._running_accent = accent_for_task(item.get("task"))
         if card is not None:
             card.set_running(True)
         self.activity.set_running(True)   # expand the drawer for live output
@@ -1100,6 +1436,13 @@ class PulseApp(QMainWindow):
         self._finish_common()
 
     def _finish_common(self, flash: str | None = None):
+        # Only a real verdict is worth remembering — a cancelled run passes
+        # flash=None and is deliberately left out of the trail.
+        if flash:
+            self._record_recent(flash)
+        self._running_item = None
+        # a task may have just changed one of the probed settings
+        QTimer.singleShot(400, self._refresh_tweak_state)
         if self._running_card is not None:
             self._running_card.set_running(False)
             if flash:
@@ -1306,6 +1649,8 @@ class PulseApp(QMainWindow):
         process-tree kill a moment to land before the QThread gets torn
         down - otherwise winget/DISM/sfc children spawned by core.ps1 are
         left running headless after the GUI disappears."""
+        prefs.set_window_geometry(self.saveGeometry())
+        prefs.set_drawer_pinned(self.activity.is_pinned())
         if self._thread is not None and self._thread.isRunning():
             if self._worker is not None:
                 self._worker.cancel()

@@ -11,7 +11,7 @@
 [![PowerShell](https://img.shields.io/badge/powershell-5.1%2B-5391FE?logo=powershell&logoColor=white)](#-requirements)
 [![GUI](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/app-v6.1-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/app-v10.0-blueviolet)](CHANGELOG.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 *Built for power users, IT technicians, and developers who need a repeatable, safe, and portable way to configure a fresh Windows install — from a single launcher.*
