@@ -1531,6 +1531,57 @@ def apply_blur_behind(hwnd: int, use_acrylic: bool = False) -> bool:
         return False
 
 
+def enable_native_sizing_frame(hwnd: int) -> bool:
+    """Give a frameless window a REAL Win32 sizing frame (WS_THICKFRAME).
+
+    Answering WM_NCHITTEST with HTLEFT/HTBOTTOMRIGHT/... is necessary but
+    NOT sufficient to resize a window: DefWindowProc refuses to enter the
+    sizing loop, and refuses to swap in the resize cursors, unless the
+    window actually owns a sizing border. Qt's FramelessWindowHint builds
+    a bare WS_POPUP without one, so every edge and corner hit-test was
+    being answered correctly and then ignored by Windows — the window
+    simply could not be resized by dragging.
+
+    WS_CAPTION comes along for the ride because it is what makes DWM give
+    the window its native drop shadow, snap animations and minimise/
+    restore transitions. Neither style draws anything, because
+    PulseApp.nativeEvent answers WM_NCCALCSIZE by keeping the client area
+    edge-to-edge — the frame exists for the OS, not for the eye.
+    """
+    if sys.platform != "win32" or not hwnd:
+        return False
+    try:
+        GWL_STYLE = -16
+        WS_CAPTION = 0x00C00000
+        WS_THICKFRAME = 0x00040000
+        user32 = ctypes.windll.user32
+        style = user32.GetWindowLongW(ctypes.c_void_p(int(hwnd)), GWL_STYLE)
+        user32.SetWindowLongW(ctypes.c_void_p(int(hwnd)), GWL_STYLE,
+                              style | WS_THICKFRAME | WS_CAPTION)
+        # SWP_FRAMECHANGED forces the WM_NCCALCSIZE that re-reads the style.
+        SWP = 0x0001 | 0x0002 | 0x0004 | 0x0020   # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
+        user32.SetWindowPos(ctypes.c_void_p(int(hwnd)), None, 0, 0, 0, 0, SWP)
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+def resize_border_thickness() -> tuple[int, int]:
+    """The (x, y) frame Windows adds around a maximized WS_THICKFRAME
+    window, in physical pixels — what WM_NCCALCSIZE must subtract so a
+    maximized window's content stops at the work area instead of bleeding
+    off every edge of the monitor."""
+    if sys.platform != "win32":
+        return (0, 0)
+    try:
+        gsm = ctypes.windll.user32.GetSystemMetrics
+        SM_CXSIZEFRAME, SM_CYSIZEFRAME, SM_CXPADDEDBORDER = 32, 33, 92
+        pad = gsm(SM_CXPADDEDBORDER)
+        return (gsm(SM_CXSIZEFRAME) + pad, gsm(SM_CYSIZEFRAME) + pad)
+    except (OSError, AttributeError):
+        return (0, 0)
+
+
 def apply_native_rounding(hwnd: int, rounded: bool = True) -> bool:
     """Ask DWM to clip the window to rounded corners (Windows 11+), or to
     explicitly NOT round them (`rounded=False`).

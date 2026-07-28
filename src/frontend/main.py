@@ -720,12 +720,26 @@ class CategoryPage(QWidget):
             card.apply_theme(t)
 
 
+class _NCCALCSIZE_PARAMS(ctypes.Structure):
+    """WM_NCCALCSIZE's lParam payload. rgrc[0] is the proposed new client
+    rect (in, then out) — writing it back unchanged is what collapses the
+    non-client frame to nothing. See PulseApp.nativeEvent."""
+    _fields_ = [("rgrc", ctypes.wintypes.RECT * 3),
+                ("lppos", ctypes.c_void_p)]
+
+
 # ============================================================
 #  MAIN WINDOW
 # ============================================================
 class PulseApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        # Must be the very first assignment: Qt can deliver events (notably
+        # WindowStateChange, from restoreGeometry below) while __init__ is
+        # still running, and the handlers guard on this flag.
+        self._ui_ready = False
+        # True only between WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE — see nativeEvent.
+        self._in_size_move = False
         self.setWindowTitle("Pulse")
         # Min/Max hints keep the frameless window a first-class citizen to
         # the OS: taskbar minimize animation and Win+Up/Down work natively.
@@ -767,6 +781,10 @@ class PulseApp(QMainWindow):
         self.is_admin = self._check_admin()
 
         self._build_ui()
+        self._ui_ready = True
+        # Catch up on any window state restored before the widgets existed
+        # (a geometry saved while maximized comes back maximized here).
+        self._sync_window_state()
         self._apply_theme(self.theme.t)
         self._refresh_recent()
         self._install_shortcuts()
@@ -1156,7 +1174,7 @@ class PulseApp(QMainWindow):
     # help sheet, so a shortcut can never exist without being documented.
     SHORTCUTS = [
         ("Ctrl+K",        "Command palette"),
-        ("Ctrl+L",        "Filter this module"),
+        ("Ctrl+L  or  Ctrl+F", "Filter this module"),
         ("Ctrl+H",        "Go to the dashboard"),
         ("Ctrl+1 … 6",    "Jump to a module"),
         ("Ctrl+\\",       "Show / hide live output"),
@@ -1598,6 +1616,11 @@ class PulseApp(QMainWindow):
             self._glass_applied = True
             hwnd = int(self.winId())
             TH.apply_blur_behind(hwnd)      # real DWM blur behind the shell
+            # A real sizing frame, so the edge/corner hit-tests answered in
+            # nativeEvent are actually acted on by Windows (see
+            # theme.enable_native_sizing_frame). WM_NCCALCSIZE below keeps
+            # the client area edge-to-edge, so nothing is drawn for it.
+            TH.enable_native_sizing_frame(hwnd)
             TH.apply_native_rounding(hwnd, rounded=not self.isMaximized())
 
     def resizeEvent(self, event):
@@ -1608,38 +1631,61 @@ class PulseApp(QMainWindow):
         if isinstance(active, PulseDialog):
             refit_dialog(active)
 
+    def _sync_window_state(self):
+        """Bring every state-dependent visual in line with the window's
+        CURRENT normal/maximized/minimized state.
+
+        Split out of changeEvent because it must also run once after the
+        UI exists: `_init_geometry()` restores a saved geometry during
+        __init__, and if that geometry was saved while maximized, Qt
+        emits WindowStateChange *before* `_build_ui()` has created
+        `_glow`/`_shell`/`_body`. That event is dropped (see changeEvent's
+        guard), so the restored maximized window would otherwise come up
+        wearing the floating look — rounded shell, floating margins,
+        DWM-rounded corners."""
+        # Pause the living-background loop while minimized (hideEvent does
+        # NOT fire on minimize, so the ~28fps timer would otherwise keep
+        # running behind an invisible window), and while a drag is in
+        # flight — Aero-snapping with the mouse changes the window state
+        # *inside* the move/size loop, and resuming there would undo the
+        # drag suspension. WM_EXITSIZEMOVE owns the resume in that case.
+        if self.isMinimized() or self._in_size_move:
+            self._glow.suspend()
+        else:
+            self._glow.resume()
+        # Maximized = edge-to-edge: the shell drops its floating radius
+        # and border (see shell_qss) so corners sit flush with the
+        # monitor, exactly like a native maximized Win11 window.
+        # (`flush`, not `maximized`: QWidget's built-in read-only
+        # `maximized` property would swallow the write.)
+        flush = self.isMaximized()
+        self._shell.setProperty("flush", flush)
+        self._shell.style().unpolish(self._shell)
+        self._shell.style().polish(self._shell)
+        self._glow.set_radius(0 if flush else 24)
+        # Removing the border/radius alone just relocates the dead
+        # space to the body margins instead of the shell edge — they
+        # must collapse too, or "flush" still looks like a floating
+        # window with a big empty frame around it.
+        self._body.setContentsMargins(*(_FLUSH_MARGINS if flush else _FLOAT_MARGINS))
+        # DWM must stop rounding too: on a per-pixel-alpha window the
+        # corner pixels DWM shaves off become CLICK-THROUGH holes into
+        # whatever sits behind the app — square corners while
+        # maximized make every edge pixel opaque and click-owning,
+        # exactly like a native maximized window.
+        if self._glass_applied:
+            TH.apply_native_rounding(int(self.winId()), rounded=not flush)
+
     def changeEvent(self, event):
         super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange:
-            # Pause the living-background loop while minimized (hideEvent does
-            # NOT fire on minimize, so the ~28fps timer would otherwise keep
-            # running behind an invisible window). Resumes on restore.
-            if self.isMinimized():
-                self._glow.suspend()
-            else:
-                self._glow.resume()
-            # Maximized = edge-to-edge: the shell drops its floating radius
-            # and border (see shell_qss) so corners sit flush with the
-            # monitor, exactly like a native maximized Win11 window.
-            # (`flush`, not `maximized`: QWidget's built-in read-only
-            # `maximized` property would swallow the write.)
-            flush = self.isMaximized()
-            self._shell.setProperty("flush", flush)
-            self._shell.style().unpolish(self._shell)
-            self._shell.style().polish(self._shell)
-            self._glow.set_radius(0 if flush else 24)
-            # Removing the border/radius alone just relocates the dead
-            # space to the body margins instead of the shell edge — they
-            # must collapse too, or "flush" still looks like a floating
-            # window with a big empty frame around it.
-            self._body.setContentsMargins(*(_FLUSH_MARGINS if flush else _FLOAT_MARGINS))
-            # DWM must stop rounding too: on a per-pixel-alpha window the
-            # corner pixels DWM shaves off become CLICK-THROUGH holes into
-            # whatever sits behind the app — square corners while
-            # maximized make every edge pixel opaque and click-owning,
-            # exactly like a native maximized window.
-            if self._glass_applied:
-                TH.apply_native_rounding(int(self.winId()), rounded=not flush)
+        # State changes can land before the UI exists — restoreGeometry()
+        # inside _init_geometry() re-applies a saved maximized state while
+        # __init__ is still running. Touching _glow/_shell/_body here used
+        # to raise AttributeError and take the whole app down on launch
+        # (i.e. "closed while maximized" = never starts again). __init__
+        # calls _sync_window_state() once the widgets exist.
+        if event.type() == QEvent.Type.WindowStateChange and self._ui_ready:
+            self._sync_window_state()
 
     def closeEvent(self, event):
         """Guard against orphaning the backend process tree: if a
@@ -1665,9 +1711,14 @@ class PulseApp(QMainWindow):
     _HT_CAPTION = {"min": 8, "max": 9, "close": 20}
     _HTMAXBUTTON = 9
     _WM_NCHITTEST = 0x0084
+    _WM_NCCALCSIZE = 0x0083
     _WM_NCLBUTTONDOWN = 0x00A1
     _WM_NCLBUTTONUP = 0x00A2
     _WM_NCMOUSELEAVE = 0x02A2
+    # Windows brackets every OS-driven move/resize (title-bar drag, edge
+    # drag, Aero Snap) with this pair.
+    _WM_ENTERSIZEMOVE = 0x0231
+    _WM_EXITSIZEMOVE = 0x0232
 
     def _caption_hit(self, rect, gx: int, gy: int) -> str | None:
         """Which caption button owns the (physical-pixel, screen-space)
@@ -1748,6 +1799,32 @@ class PulseApp(QMainWindow):
                 return super().nativeEvent(eventType, message)
             msg = ctypes.wintypes.MSG.from_address(int(message))
 
+            if msg.message == self._WM_NCCALCSIZE and msg.wParam:
+                # The window owns a real WS_THICKFRAME/WS_CAPTION frame so
+                # Windows will run the resize loop for it — but that frame
+                # must never be DRAWN or it would eat a border-and-caption
+                # strip out of our own chrome. Returning the proposed
+                # window rect unchanged makes the client area cover the
+                # entire window, which is the whole custom-frame trick.
+                params = _NCCALCSIZE_PARAMS.from_address(msg.lParam)
+                rect = params.rgrc[0]
+                # IsZoomed(), not Qt's isMaximized(): this message is part
+                # of the maximize transition itself, so Qt's window state
+                # has not been updated yet and would report the OLD state
+                # — leaving the maximized window oversized by the frame on
+                # every edge. The OS always knows.
+                if ctypes.windll.user32.IsZoomed(msg.hWnd):
+                    # A maximized WS_THICKFRAME window is deliberately
+                    # oversized by the frame on every side; without this
+                    # inset the content would hang off all four edges of
+                    # the monitor (and over the taskbar).
+                    bx, by = TH.resize_border_thickness()
+                    rect.left += bx
+                    rect.top += by
+                    rect.right -= bx
+                    rect.bottom -= by
+                return True, 0
+
             if msg.message == self._WM_NCHITTEST:
                 x = ctypes.c_short(msg.lParam & 0xFFFF).value
                 y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
@@ -1826,6 +1903,24 @@ class PulseApp(QMainWindow):
 
             elif msg.message == self._WM_NCMOUSELEAVE:
                 titlebar.set_nc_hover(None)
+
+            elif msg.message == self._WM_ENTERSIZEMOVE:
+                # The ambient background is a ~28fps full-window repaint.
+                # While Windows runs its modal move/size loop that repaint
+                # competes with the loop on the SAME thread, so the window
+                # visibly lags the cursor: measured p95 latency per move
+                # step 20.45ms against a 5.56ms display frame. The drift is
+                # decorative and nobody can perceive it mid-drag — parking
+                # it for the duration is free smoothness. Not consumed:
+                # DefWindowProc still has to run the loop.
+                self._in_size_move = True
+                if self._ui_ready:
+                    self._glow.suspend()
+
+            elif msg.message == self._WM_EXITSIZEMOVE:
+                self._in_size_move = False
+                if self._ui_ready and not self.isMinimized():
+                    self._glow.resume()
 
         return super().nativeEvent(eventType, message)
 
