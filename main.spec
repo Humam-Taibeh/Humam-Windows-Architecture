@@ -12,6 +12,13 @@ a = Analysis(
         ('src/backend/modules', 'src/backend/modules'),
         # window/taskbar icon, loaded at runtime via _locate_icon()
         ('assets/pulse.ico', 'assets'),
+        # Shipped playbooks (v10.3). Resolved at runtime by
+        # frontend.playbooks.playbook_dirs(), which checks _MEIPASS first;
+        # without this the Automation module loads an empty list in the
+        # frozen build and the feature silently looks broken. A technician
+        # can still drop extra .json files next to the exe — that
+        # directory is searched ahead of this one.
+        ('playbooks', 'playbooks'),
     ],
     hiddenimports=[
         'utils.helpers',
@@ -19,6 +26,8 @@ a = Analysis(
         'frontend.animations',
         'frontend.menu_structure',
         'frontend.widgets',
+        'frontend.playbooks',
+        'frontend.health_report',
     ],
     hookspath=[],
     hooksconfig={},

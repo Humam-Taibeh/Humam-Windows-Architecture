@@ -58,6 +58,13 @@ class TaskResult:
     # cramming a table into the human-readable message. None for every
     # older/simpler task that never emits one.
     data: object | None = None
+    # Verdict metrics (v10.3): every task emits one ##PULSE##META|<json>
+    # (Write-GuiMeta) carrying task name, duration, dry-run/elevation flags
+    # and succeeded/failed/skipped counts. MEASUREMENTS ONLY — `success`
+    # above still comes from the SUCCESS|/ERROR| verdict line and is the
+    # only thing that decides whether a task passed. None when talking to a
+    # pre-10.3 backend.
+    meta: dict | None = None
 
 
 # Verdict sentinel (v6.1): the backend prefixes its final contract line with
@@ -67,6 +74,18 @@ class TaskResult:
 VERDICT_SENTINEL = "##PULSE##"
 # Structured-data line prefix (v6.3) - see TaskResult.data above.
 VERDICT_DATA_PREFIX = VERDICT_SENTINEL + "DATA|"
+# Verdict metrics prefix (v10.3) - see TaskResult.meta above.
+VERDICT_META_PREFIX = VERDICT_SENTINEL + "META|"
+# Sentinel lines that are machine payloads rather than the verdict. The
+# backwards verdict scan and the live console both skip these; adding a
+# new payload channel means adding it here, or the newest one becomes
+# whatever the GUI mistakes for a verdict.
+VERDICT_PAYLOAD_PREFIXES = (VERDICT_DATA_PREFIX, VERDICT_META_PREFIX)
+
+# Fallback per-step timeout for a playbook step whose catalog item has no
+# explicit one. Generous: a playbook runs unattended, so a step that is
+# merely slow must not be killed and reported as a failure.
+DEFAULT_PLAYBOOK_TIMEOUT = 1800
 
 
 # ============================================================
@@ -486,11 +505,12 @@ class PowerShellTask(QObject):
                     lines[-1] = text
                 else:
                     lines.append(text)
-                if text and not text.startswith(VERDICT_DATA_PREFIX):
+                if text and not text.startswith(VERDICT_PAYLOAD_PREFIXES):
                     # The console shows the human-readable verdict, not the
                     # machine sentinel; `lines` keeps the raw text for parsing.
-                    # DATA payload lines are structured JSON for the caller,
-                    # not console output - they never reach the live console.
+                    # DATA/META payload lines are structured JSON for the
+                    # caller, not console output - they never reach the live
+                    # console.
                     shown = (text[len(VERDICT_SENTINEL):]
                              if text.startswith(VERDICT_SENTINEL) else text)
                     self.output.emit(shown, replace)
@@ -539,7 +559,8 @@ class PowerShellTask(QObject):
             # the sentinel are parsed via the strict legacy fallback.
             last_line = next(
                 (ln[len(VERDICT_SENTINEL):] for ln in reversed(lines)
-                 if ln.startswith(VERDICT_SENTINEL) and not ln.startswith(VERDICT_DATA_PREFIX)),
+                 if ln.startswith(VERDICT_SENTINEL)
+                 and not ln.startswith(VERDICT_PAYLOAD_PREFIXES)),
                 None)
             if last_line is None:
                 last_line = next(
@@ -561,17 +582,33 @@ class PowerShellTask(QObject):
                 except ValueError:
                     data = None
 
+            # Verdict metrics (v10.3). Same defensive posture as `data`:
+            # malformed or absent metrics leave meta as None and never
+            # affect the verdict — an older backend simply emits no line.
+            meta = None
+            raw_meta = next(
+                (ln[len(VERDICT_META_PREFIX):] for ln in reversed(lines)
+                 if ln.startswith(VERDICT_META_PREFIX)),
+                None)
+            if raw_meta is not None:
+                try:
+                    parsed = json.loads(raw_meta)
+                    meta = parsed if isinstance(parsed, dict) else None
+                except ValueError:
+                    meta = None
+
             if last_line.startswith("SUCCESS"):
                 msg = last_line.split("|", 1)[1].strip() if "|" in last_line else "Task completed."
-                self.finished.emit(TaskResult(True, msg, data))
+                self.finished.emit(TaskResult(True, msg, data, meta))
             elif last_line.startswith("ERROR"):
                 msg = last_line.split("|", 1)[1].strip() if "|" in last_line else "Task failed."
-                self.finished.emit(TaskResult(False, msg, data))
+                self.finished.emit(TaskResult(False, msg, data, meta))
             else:
                 # Backend didn't follow the SUCCESS|/ERROR| contract. Don't dump the
                 # raw console output into the "silent executor" UI - just report a
                 # short, safe fallback message.
-                self.finished.emit(TaskResult(False, "Script finished without a recognized status line."))
+                self.finished.emit(TaskResult(
+                    False, "Script finished without a recognized status line.", None, meta))
 
         except FileNotFoundError:
             self.failed.emit("powershell.exe was not found on this system.")

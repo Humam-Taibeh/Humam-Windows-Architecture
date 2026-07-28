@@ -370,6 +370,11 @@ _DARK = {
         "privacy":      "#ec6f96",
         "information":  "#6598ff",
         "safety":       "#42cd82",
+        # v10.3 — Automation (playbooks, health report). Violet is the one
+        # hue the original six left unclaimed, so the module reads as new
+        # rather than as a relative of an existing one. 6.15:1 here, inside
+        # the 5.55-9.02 band the other dark accents occupy.
+        "automation":   "#b18cff",
     },
 
     # status — GitHub-dark grade: unmistakable but never neon
@@ -471,6 +476,11 @@ _LIGHT = {
         "privacy":      "#e11c59",
         "information":  "#2069ff",
         "safety":       "#328357",
+        # v10.3 — Automation. Solved to 4.27:1, deliberately matching the
+        # 4.25-4.29 band the other light accents share: on paper these read
+        # as a set only if they carry the same visual weight, so hitting the
+        # peer ratio matters more than maximising contrast.
+        "automation":   "#7064d8",
     },
 
     # status — GitHub-light grade

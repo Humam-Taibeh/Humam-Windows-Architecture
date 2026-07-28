@@ -1,0 +1,33 @@
+{
+  "id": "gamer-rig",
+  "name": "Gamer Rig Setup",
+  "icon": "🎮",
+  "description": "Latency, power and input tuned for play, with the launchers installed last.",
+  "steps": [
+    {
+      "task": "CreateRestorePoint",
+      "note": "Always first — everything after this is undoable."
+    },
+    {
+      "task": "GameMode",
+      "note": "Game Mode on, background recording off."
+    },
+    {
+      "task": "DisableMouseAccel",
+      "note": "Raw pointer input, no acceleration curve."
+    },
+    {
+      "task": "UltimatePowerPlan",
+      "note": "Unlocks the hidden high-performance scheme."
+    },
+    {
+      "task": "NetworkOptimization",
+      "note": "Flushes DNS and resets the network stack."
+    },
+    {
+      "task": "InstallGamingApps",
+      "note": "Launchers plus the matching GPU suite.",
+      "optional": true
+    }
+  ]
+}

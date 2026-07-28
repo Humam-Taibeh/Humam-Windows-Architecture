@@ -1,0 +1,29 @@
+{
+  "id": "privacy-hardening",
+  "name": "Privacy Hardening",
+  "icon": "🛡️",
+  "description": "Strips telemetry, advertising ID, activity history and preinstalled bloat.",
+  "steps": [
+    {
+      "task": "CreateRestorePoint",
+      "note": "Always first — everything after this is undoable."
+    },
+    {
+      "task": "DisableTelemetry",
+      "note": "Policy value plus the DiagTrack service."
+    },
+    {
+      "task": "DisableAdvertisingID",
+      "note": "Stops the per-user ad identifier."
+    },
+    {
+      "task": "DisableActivityHistory",
+      "note": "No local or uploaded activity feed."
+    },
+    {
+      "task": "RemoveBloatware",
+      "note": "Removes the preinstalled app catalog.",
+      "optional": true
+    }
+  ]
+}

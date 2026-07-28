@@ -266,6 +266,36 @@ function Write-GuiData {
 }
 
 # ============================================================
+#  GUI STRUCTURED VERDICT METRICS (v10.3)
+#  A THIRD channel, deliberately separate from ##PULSE##DATA|.
+#
+#  WHY NOT REUSE DATA: the frontend takes the LAST DATA line it sees, and
+#  DATA already belongs to the task — ScanForUpdates returns its version
+#  audit through it, StartupReport its startup inventory, GetTweakState its
+#  applied-state map. Emitting a metrics envelope on the same channel after
+#  the task's own payload would shadow it and silently break the Update
+#  Center and the Startup Manager.
+#
+#  WHAT IT IS NOT: this is not a second opinion on success. The
+#  ##PULSE##SUCCESS|/ERROR| verdict line remains the single source of
+#  truth for whether a task passed — two competing outcome fields would
+#  eventually disagree, and the one the GUI trusts must never be in doubt.
+#  META carries measurements only: which task, how long, how much it did.
+# ============================================================
+function Write-GuiMeta {
+    <# Emits one ##PULSE##META|<json> line of measurements about the task
+       that just ran. Never throws: a metrics line that broke a task would
+       be worse than no metrics at all. #>
+    param([Parameter(Mandatory = $true)][hashtable]$Meta)
+    try {
+        $Json = [PSCustomObject]$Meta | ConvertTo-Json -Depth 6 -Compress
+        Write-Output "##PULSE##META|$Json"
+    } catch {
+        Write-Log "Write-GuiMeta failed (non-fatal): $($_.Exception.Message)"
+    }
+}
+
+# ============================================================
 #  INTERACTIVE PROMPT PRIMITIVES (NonInteractive-guarded)
 # ============================================================
 function Ask-User {

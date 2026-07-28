@@ -1,0 +1,38 @@
+{
+  "id": "post-install-clean",
+  "name": "Post-Install Clean",
+  "icon": "🧹",
+  "description": "The first-hour pass on a fresh Windows install: verify, declutter, reclaim.",
+  "steps": [
+    {
+      "task": "CreateRestorePoint",
+      "note": "Always first — everything after this is undoable."
+    },
+    {
+      "task": "VerifyEnvironment",
+      "note": "Confirms winget and the toolchain are usable."
+    },
+    {
+      "task": "DarkMode",
+      "note": "Dark theme across Windows and apps."
+    },
+    {
+      "task": "MinimalistTaskbar",
+      "note": "Left-aligned, widget-free taskbar (Windows 11 only)."
+    },
+    {
+      "task": "RemoveWindowsOld",
+      "note": "Reclaims the previous-installation folder.",
+      "optional": true
+    },
+    {
+      "task": "CleanCache",
+      "note": "Clears temp and update caches.",
+      "optional": true
+    },
+    {
+      "task": "DriveSpaceReport",
+      "note": "Reports what the pass reclaimed."
+    }
+  ]
+}

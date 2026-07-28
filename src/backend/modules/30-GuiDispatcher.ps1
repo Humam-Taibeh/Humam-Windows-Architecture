@@ -132,6 +132,20 @@ function Get-TweakByKey {
 # --------------------------------------------------------
 function Invoke-GuiTask {
     param([string]$TaskName)
+
+    # v10.3 metrics envelope. Captured HERE rather than inside
+    # Complete-GuiTask so every exit path is measured — the admin-blocked
+    # early return, the hand-rolled verdicts (InstallLocalFile,
+    # RestoreServices, RestoreEdge...), the `default` unknown-task case and
+    # the exception safety net all produce a META line, not just the ~24
+    # cases that happen to route through Complete-GuiTask.
+    $metaStart = Get-Date
+    $metaBase = @{
+        successes = $Script:SessionSuccessCount
+        failures  = $Script:SessionFailCount
+        skips     = $Script:SessionSkipCount
+    }
+
     try {
         if (($Script:AdminRequiredTasks -contains $TaskName) -and -not $Script:IsAdminSession) {
             Write-Log "GUI-TASK BLOCKED: '$TaskName' requires Administrator, but this session is not elevated."
@@ -227,6 +241,18 @@ function Invoke-GuiTask {
                 # keyed by GUI task name.
                 Write-GuiData -Data (Get-PulseTweakState)
                 Write-Output "##PULSE##SUCCESS|State probe complete."
+                break
+            }
+            "HealthReport" {
+                # Read-only health + configuration-drift snapshot
+                # (12-HealthReport.ps1), emitted as one DATA document the
+                # GUI renders and exports. Like GetTweakState this mutates
+                # nothing, but unlike it this is user-initiated, so it DOES
+                # log — the user asked for a report and may later want to
+                # know when it was taken.
+                Write-Log "GUI-TASK: assembling health report."
+                Write-GuiData -Data (Get-PulseHealthReport)
+                Write-Output "##PULSE##SUCCESS|Health report generated."
                 break
             }
             "StartupReport" {
@@ -598,5 +624,22 @@ function Invoke-GuiTask {
         # contract line - silence is the one failure mode we never allow.
         Write-Log "GUI-TASK EXCEPTION in '$TaskName': $($_.Exception.Message)"
         Write-Output "##PULSE##ERROR|$($_.Exception.Message)"
+    } finally {
+        # Metrics, emitted AFTER the verdict. Order matters: the frontend
+        # scans backwards for the newest ##PULSE## line that is not a
+        # DATA/META payload, so a META line trailing the verdict is
+        # invisible to that scan and cannot shadow it.
+        Write-GuiMeta -Meta @{
+            task       = $TaskName
+            dryRun     = [bool]$Script:DryRun
+            elevated   = [bool]$Script:IsAdminSession
+            startedAt  = $metaStart.ToString("o")
+            durationMs = [int]((Get-Date) - $metaStart).TotalMilliseconds
+            counts     = @{
+                succeeded = $Script:SessionSuccessCount - $metaBase.successes
+                failed    = $Script:SessionFailCount - $metaBase.failures
+                skipped   = $Script:SessionSkipCount - $metaBase.skips
+            }
+        }
     }
 }

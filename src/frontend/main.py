@@ -65,11 +65,13 @@ from frontend.widgets import (  # noqa: E402
     ActivityDrawer, AmbientGlow, AppSelectorDialog, BreathingIcon,
     CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
     DevHubSelectorDialog,
-    ElevatePromptDialog, GlassCard, HubDialog, NavButton, NavPill,
-    OfficeWizardDialog, PulseDialog, RecentOperationsPanel,
+    ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog, NavButton,
+    NavPill, OfficeWizardDialog, PlaybookDialog, PulseDialog,
+    RecentOperationsPanel,
     ResponsiveGridHost, ShortcutSheetDialog, StartupManagerDialog, TitleBar,
     UpdateCenterDialog, refit_dialog,
 )
+from frontend.playbooks import PlaybookRunner, load_playbooks  # noqa: E402
 
 # ============================================================
 #  APP CONSTANTS
@@ -775,6 +777,10 @@ class PulseApp(QMainWindow):
         self._running_item: dict | None = None
         self._running_accent = ""
         self._run_started_at: float | None = None
+        # Playbook orchestration (v10.3). Held so a second playbook — or a
+        # single task — cannot start on top of a run already in flight.
+        self._playbook_runner = None
+        self._playbook_dialog = None
         self._probe_thread: QThread | None = None
         self._probe_worker: PowerShellTask | None = None
         self._tweak_state: dict = {}
@@ -1221,6 +1227,116 @@ class PulseApp(QMainWindow):
             outcome=outcome)
         self._refresh_recent()
 
+    def _open_health_report(self):
+        """Read-only, so it deliberately does NOT take the shell's task
+        slot — a report can be pulled while nothing else is happening or
+        alongside an idle window, and it never mutates anything."""
+        if not self.ps1_path:
+            self.toasts.show("error", f"{PS1_FILENAME} not found — engine unavailable.", 5000)
+            return
+        self._exec_dialog(HealthReportDialog(self, self.ps1_path, self.theme.t))
+
+    # ============================================================
+    #  PLAYBOOKS (v10.3)
+    # ============================================================
+    def _open_playbooks(self):
+        """Browse -> preview/run -> watch, all in one dialog.
+
+        The runner drives the SAME dialog that was used to pick the
+        playbook (enter_run_mode), so nothing re-layouts under the cursor
+        at the moment the run begins.
+        """
+        if not self.ps1_path:
+            self.toasts.show("error", f"{PS1_FILENAME} not found — engine unavailable.", 5000)
+            return
+        if self._task_is_running() or self._playbook_runner is not None:
+            self.toasts.show("info", "Something is already running — please wait.", 3000)
+            return
+
+        playbooks, errors = load_playbooks()
+        dialog = PlaybookDialog(self, playbooks, errors, self.theme.t, self.is_admin)
+        if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
+            return
+        if dialog.chosen is None:
+            return
+        self._start_playbook(dialog.chosen, dialog.dry_run)
+
+    def _start_playbook(self, playbook, dry_run: bool):
+        """Run `playbook` in a fresh dialog left in run mode.
+
+        A real (non-preview) run of an admin-gated playbook is gated up
+        front rather than allowed to fail on step 1: every shipped
+        playbook opens with Create Restore Point, so an unelevated session
+        would halt immediately having done nothing. Preview is exempt —
+        simulating what WOULD need elevation is exactly the question
+        preview answers.
+        """
+        if not dry_run and playbook.needs_admin and not self.is_admin:
+            item = {"icon": playbook.icon, "title": playbook.name,
+                    "desc": f"This playbook changes machine-wide settings, so "
+                            f"Pulse needs to run elevated. Preview still works "
+                            f"without elevation."}
+            if self._exec_dialog(
+                    ElevatePromptDialog(self, item, self.theme.t)) == QDialog.DialogCode.Accepted:
+                self._relaunch_as_admin()
+            return
+
+        dialog = PlaybookDialog(self, [playbook], [], self.theme.t, self.is_admin)
+        runner = PlaybookRunner(self.ps1_path, playbook, dry_run=dry_run, parent=self)
+        self._playbook_runner = runner
+        self._playbook_dialog = dialog
+
+        dialog.enter_run_mode(dry_run)
+        dialog.stop_requested.connect(runner.cancel)
+        runner.step_started.connect(
+            lambda i: dialog.mark_step(i, "running", "running…"))
+        runner.step_output.connect(self.console.put_line)
+        runner.step_finished.connect(
+            lambda i, res: dialog.mark_step(i, res.outcome, res.message))
+        runner.finished.connect(
+            lambda run: self._on_playbook_finished(run, dialog))
+
+        self.activity.set_running(True)
+        self.console.clear_console()
+        self.state_pill.set_state("running")
+        self._set_status("busy", f"Playbook: {playbook.name} …")
+        QTimer.singleShot(0, runner.start)
+        dialog.exec()
+
+    def _on_playbook_finished(self, run, dialog):
+        self._playbook_runner = None
+        self._playbook_dialog = None
+
+        prefix = "[DRY-RUN] " if run.dry_run else ""
+        seconds = run.duration_ms / 1000.0
+        if run.cancelled:
+            summary = f"{prefix}Stopped after {run.succeeded} of {len(run.playbook)} steps."
+            kind, flash = "warn", None
+        elif run.halted_on is not None:
+            step = run.playbook.steps[run.halted_on]
+            summary = (f"{prefix}Halted at step {run.halted_on + 1} "
+                       f"({step.title}). {run.succeeded} step(s) completed.")
+            kind, flash = "error", "err"
+        else:
+            summary = (f"{prefix}{run.succeeded} of {len(run.playbook)} steps "
+                       f"completed in {seconds:.0f}s.")
+            if run.failed:
+                summary += f" {run.failed} optional step(s) failed."
+            kind, flash = ("warn" if run.failed else "ok"), "ok"
+
+        dialog.set_status(summary, kind)
+        dialog.enter_done_mode()
+        self.toasts.show(
+            {"ok": "success", "warn": "warn", "error": "error"}[kind], summary, 7000)
+        self._set_status("ok" if kind != "error" else "err", "System Ready")
+        self.state_pill.set_state("ok" if kind != "error" else "err")
+        self.activity.set_running(False)
+        # A playbook changes several probed settings at once.
+        QTimer.singleShot(400, self._refresh_tweak_state)
+        self._refresh_task_history()
+        if flash:
+            self._refresh_recent()
+
     # ============================================================
     #  KEYBOARD LAYER (v10)
     # ============================================================
@@ -1232,7 +1348,7 @@ class PulseApp(QMainWindow):
         ("Ctrl+K",        "Command palette"),
         ("Ctrl+L  or  Ctrl+F", "Filter this module"),
         ("Ctrl+H",        "Go to the dashboard"),
-        ("Ctrl+1 … 6",    "Jump to a module"),
+        ("Ctrl+1 … 7",    "Jump to a module"),
         ("Ctrl+\\",       "Show / hide live output"),
         ("↑ ↓ ← →",       "Move between cards"),
         ("Enter / Space", "Run the focused card"),
@@ -1550,6 +1666,15 @@ class PulseApp(QMainWindow):
     #  LOCAL ACTIONS (no PowerShell process)
     # ============================================================
     def _run_local_action(self, task: str):
+        # Handled-in-app actions come first: these open a Pulse surface
+        # rather than a file, so they never reach the path resolution below.
+        if task == "@playbooks":
+            self._open_playbooks()
+            return
+        if task == "@health_report":
+            self._open_health_report()
+            return
+
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
         localappdata = os.environ.get(
             "LOCALAPPDATA",

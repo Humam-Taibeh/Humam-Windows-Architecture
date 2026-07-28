@@ -521,6 +521,32 @@ CATEGORIES = [
              "glyph": "folder", "task": "@open_onedrive_backup"},
         ],
     },
+    # --------------------------------------------------------
+    #  7. AUTOMATION  (v10.3)
+    #
+    #  Both entries are GUI-LOCAL ("@") on purpose. A playbook is an
+    #  ordered list of tasks the dispatcher already has cases for, and the
+    #  health report is assembled by the GUI from probes that already
+    #  exist — neither adds a backend case, which is why neither appears
+    #  in 30-GuiDispatcher.ps1 and why test_contract's reachability check
+    #  still balances.
+    # --------------------------------------------------------
+    {
+        "id": "automation",
+        "icon": "📘",
+        "glyph": "boot",
+        "title": "Automation",
+        "tagline": "Repeatable playbooks and a system health report",
+        "accent": "automation",
+        "items": [
+            {"icon": "📘", "title": "Playbooks",
+             "desc": "Run a saved sequence of tasks — preview it first with a dry run.",
+             "glyph": "boot", "task": "@playbooks"},
+            {"icon": "🩺", "title": "Health & Drift Report",
+             "desc": "Snapshot applied tweaks, drives and startup load; export HTML or JSON.",
+             "glyph": "chart", "task": "@health_report"},
+        ],
+    },
 ]
 
 def hub_items(hub: dict) -> list[dict]:

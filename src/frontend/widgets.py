@@ -1844,6 +1844,546 @@ class ConfirmDialog(PulseDialog):
         _present_dialog(self)
 
 
+class PlaybookStepRow(QFrame):
+    """One step inside PlaybookDialog, with a live status lamp.
+
+    The lamp is text, not colour alone: "colour = state" fails for the
+    ~8% of men with a red/green deficiency, and this list is the only
+    place the user learns which step of an unattended run went wrong.
+    """
+
+    LAMPS = {
+        "pending":   ("○", "text_faint"),
+        "running":   ("◐", "accent"),
+        "ok":        ("✓", "ok"),
+        "error":     ("✕", "err"),
+        "skipped":   ("–", "text_faint"),
+        "cancelled": ("■", "warn"),
+    }
+
+    def __init__(self, index: int, step, t: dict, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._t = t
+        self._state = "pending"
+        self.setObjectName("playbookStep")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 7, 10, 7)
+        lay.setSpacing(10)
+
+        self._lamp = QLabel()
+        self._lamp.setFixedWidth(16)
+        self._lamp.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._lamp, 0, Qt.AlignmentFlag.AlignTop)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(1)
+        self._title = QLabel(f"{index + 1}.  {step.title}")
+        text_col.addWidget(self._title)
+        self._detail = QLabel(step.note or step.task)
+        self._detail.setWordWrap(True)
+        text_col.addWidget(self._detail)
+        lay.addLayout(text_col, 1)
+
+        self._tag = QLabel("optional" if step.optional else "")
+        self._tag.setVisible(bool(step.optional))
+        lay.addWidget(self._tag, 0, Qt.AlignmentFlag.AlignTop)
+
+        self.apply_theme(t)
+
+    def apply_theme(self, t: dict):
+        self._t = t
+        self.setStyleSheet(
+            f"#playbookStep {{ background: transparent; border: none; "
+            f"border-bottom: 1px solid {t['panel_line']}; }}")
+        self._title.setStyleSheet(TH.label_qss(t, "card"))
+        self._detail.setStyleSheet(TH.label_qss(t, "caption"))
+        self._tag.setStyleSheet(TH.card_meta_pill_qss(t))
+        self.set_state(self._state, self._detail.text())
+
+    def set_state(self, state: str, detail: str | None = None):
+        self._state = state
+        glyph, token = self.LAMPS.get(state, self.LAMPS["pending"])
+        self._lamp.setText(glyph)
+        self._lamp.setStyleSheet(
+            f"color: {self._t[token]}; font-size: 13px; font-weight: 700;"
+            "background: transparent; border: none;")
+        if detail is not None:
+            self._detail.setText(detail)
+
+
+class PlaybookDialog(PulseDialog):
+    """Browse, preview and run declarative playbooks (v10.3).
+
+    ONE dialog with two modes rather than a chooser plus a progress
+    window. A playbook run is not a fire-and-forget action — the user
+    wants to watch which step is executing and read what happened
+    afterwards — so the step list they picked from becomes the step list
+    they watch, in place. Nothing moves under the cursor at the moment the
+    run starts, which is exactly when it would be most disorienting.
+
+    PREVIEW IS THE DEFAULT-ADJACENT ACTION. Every step runs through the
+    engine's -WhatIf path, so "Preview" answers "what would this do to my
+    machine" with zero mutations. It is offered first and styled as the
+    safe button; Run carries the accent.
+    """
+
+    #: Emitted when the user presses Stop during a live run.
+    stop_requested = Signal()
+
+    def __init__(self, parent: QWidget, playbooks: list, errors: list[str],
+                 t: dict, is_admin: bool = True):
+        super().__init__(parent)
+        self._t = t
+        self._playbooks = playbooks
+        self._is_admin = is_admin
+        self._rows: list[PlaybookStepRow] = []
+        self._current = playbooks[0] if playbooks else None
+
+        #: Set when the user asks to run; read by the caller.
+        self.chosen: object | None = None
+        self.dry_run = False
+
+        accent = TH.resolve_accent(t, "automation")
+        self._accent = accent
+        panel = _dialog_chrome(self, t, accent, responsive=True)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(12)
+
+        head = QLabel("📘  Playbooks")
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
+        lay.addWidget(head)
+
+        blurb = QLabel(
+            "Ordered task sequences that run through the normal engine. "
+            "Preview simulates every step with -WhatIf and changes nothing.")
+        blurb.setWordWrap(True)
+        blurb.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(blurb)
+
+        if errors:
+            # A malformed playbook is reported, never silently dropped —
+            # a technician who mistyped a task name must find out now.
+            warn = QLabel("⚠️  " + "  ·  ".join(errors[:3]))
+            warn.setWordWrap(True)
+            warn.setStyleSheet(
+                f"color: {t['warn']}; font-size: 11px; background: transparent;"
+                "border: none;")
+            lay.addWidget(warn)
+
+        if not playbooks:
+            empty = QLabel(
+                "No playbooks found. Drop a .json file into the "
+                "'playbooks' folder next to Pulse to add one.")
+            empty.setWordWrap(True)
+            empty.setStyleSheet(TH.label_qss(t, "body"))
+            lay.addWidget(empty)
+            lay.addStretch()
+            self._build_buttons(lay, t, runnable=False)
+            return
+
+        # -- playbook picker: a row of pills ---------------------------
+        picker = QHBoxLayout()
+        picker.setSpacing(8)
+        self._pills: list[QPushButton] = []
+        for playbook in playbooks:
+            pill = QPushButton(f"{playbook.icon}  {playbook.name}")
+            pill.setCursor(Qt.CursorShape.PointingHandCursor)
+            pill.setCheckable(True)
+            pill.clicked.connect(
+                lambda _checked, p=playbook: self._select(p))
+            self._pills.append(pill)
+            picker.addWidget(pill)
+        picker.addStretch()
+        lay.addLayout(picker)
+
+        self._summary = QLabel()
+        self._summary.setWordWrap(True)
+        lay.addWidget(self._summary)
+
+        # -- step list -------------------------------------------------
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(TH.scroll_area_qss(t))
+        self._host = QWidget()
+        self._host.setStyleSheet("background: transparent;")
+        self._host_lay = QVBoxLayout(self._host)
+        self._host_lay.setContentsMargins(0, 0, 6, 0)
+        self._host_lay.setSpacing(0)
+        self._host_lay.addStretch()
+        self._scroll.setWidget(self._host)
+        lay.addWidget(self._scroll, 1)
+
+        self._status = QLabel()
+        self._status.setWordWrap(True)
+        lay.addWidget(self._status)
+        self.set_status("")
+
+        self._build_buttons(lay, t, runnable=True)
+        self._select(self._current)
+
+    # -- construction helpers ---------------------------------
+    def _build_buttons(self, lay: QVBoxLayout, t: dict, runnable: bool):
+        row = QHBoxLayout()
+        row.addStretch()
+
+        self._close_btn = QPushButton("Close")
+        self._close_btn.setFixedSize(96, 36)
+        self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close_btn.setStyleSheet(TH.dialog_cancel_qss(t))
+        self._close_btn.clicked.connect(self.reject)
+        row.addWidget(self._close_btn)
+
+        self._preview_btn = QPushButton("Preview")
+        self._preview_btn.setFixedSize(112, 36)
+        self._preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._preview_btn.setStyleSheet(TH.dialog_cancel_qss(t))
+        self._preview_btn.setToolTip(
+            "Run every step with -WhatIf: reports what would happen and "
+            "changes nothing.")
+        self._preview_btn.clicked.connect(lambda: self._launch(dry_run=True))
+        self._preview_btn.setVisible(runnable)
+        row.addWidget(self._preview_btn)
+
+        self._run_btn = QPushButton("Run Playbook")
+        self._run_btn.setFixedSize(132, 36)
+        self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._run_btn.setStyleSheet(TH.dialog_go_qss(t, self._accent))
+        self._run_btn.clicked.connect(lambda: self._launch(dry_run=False))
+        self._run_btn.setVisible(runnable)
+        row.addWidget(self._run_btn)
+
+        lay.addLayout(row)
+
+    def _select(self, playbook):
+        self._current = playbook
+        t = self._t
+        for pill, candidate in zip(self._pills, self._playbooks):
+            active = candidate is playbook
+            pill.setChecked(active)
+            pill.setStyleSheet(
+                TH.dialog_go_qss(t, self._accent) if active
+                else TH.dialog_cancel_qss(t))
+
+        admin_note = ""
+        if playbook.needs_admin and not self._is_admin:
+            admin_note = ("  ·  ⚠️ needs Administrator — some steps will be "
+                          "refused in this session")
+        self._summary.setText(
+            f"{playbook.description}\n{len(playbook)} steps{admin_note}")
+        self._summary.setStyleSheet(TH.label_qss(t, "body"))
+
+        for row in self._rows:
+            row.setParent(None)
+            row.deleteLater()
+        self._rows = []
+        for index, step in enumerate(playbook.steps):
+            row = PlaybookStepRow(index, step, t)
+            self._rows.append(row)
+            self._host_lay.insertWidget(self._host_lay.count() - 1, row)
+        self._status.setText("")
+
+    def _launch(self, dry_run: bool):
+        self.chosen = self._current
+        self.dry_run = dry_run
+        self.accept()
+
+    # -- live run API (driven by PlaybookRunner) --------------
+    def enter_run_mode(self, dry_run: bool):
+        """Switch the browse UI into a progress view in place."""
+        for pill in self._pills:
+            pill.setEnabled(False)
+        self._preview_btn.setEnabled(False)
+        self._run_btn.setText("Stop")
+        self._run_btn.setStyleSheet(TH.dialog_go_qss(self._t, self._t["err"]))
+        try:
+            self._run_btn.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._run_btn.clicked.connect(self.stop_requested.emit)
+        self._close_btn.setEnabled(False)
+        prefix = "Previewing" if dry_run else "Running"
+        self.set_status(f"{prefix} {self._current.name}…")
+
+    def mark_step(self, index: int, state: str, detail: str | None = None):
+        if 0 <= index < len(self._rows):
+            self._rows[index].set_state(state, detail)
+
+    def set_status(self, text: str, kind: str = "info"):
+        colour = {"ok": self._t["ok"], "error": self._t["err"],
+                  "warn": self._t["warn"]}.get(kind, self._t["text_muted"])
+        self._status.setText(text)
+        self._status.setStyleSheet(
+            f"color: {colour}; font-size: 11px; font-weight: 600;"
+            "background: transparent; border: none;")
+        # Hidden while empty: the dialog's panel QSS gives a bare QLabel a
+        # frame, so an empty status line painted as a stray input box
+        # sitting above the buttons.
+        self._status.setVisible(bool(text))
+
+    def enter_done_mode(self):
+        self._close_btn.setEnabled(True)
+        self._run_btn.setText("Close")
+        self._run_btn.setStyleSheet(TH.dialog_go_qss(self._t, self._accent))
+        try:
+            self._run_btn.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._run_btn.clicked.connect(self.reject)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+
+class HealthReportDialog(PulseDialog):
+    """The Health & Drift Report (v10.3): run the probe, read it, export it.
+
+    Runs its own PowerShellTask rather than borrowing the main window's,
+    for the same reason StartupManagerDialog and UpdateCenterDialog do —
+    it is a self-contained panel that never hands anything back, so
+    entangling it with the shell's single-task pipeline would let opening
+    a read-only report block a real operation.
+
+    Export writes a self-contained HTML file (client deliverable) or the
+    raw JSON (diffable between two runs). Both come from
+    frontend.health_report, which is pure and tested separately.
+    """
+
+    def __init__(self, parent: QWidget, ps1_path: str, t: dict):
+        super().__init__(parent)
+        self._t = t
+        self._ps1 = ps1_path
+        self._report: dict | None = None
+        self._thread: QThread | None = None
+        self._worker: PowerShellTask | None = None
+
+        accent = TH.resolve_accent(t, "automation")
+        self._accent = accent
+        panel = _dialog_chrome(self, t, accent, responsive=True)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(12)
+
+        head = QLabel("🩺  Health & Drift Report")
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
+        lay.addWidget(head)
+
+        self._status = QLabel("Reading system state…")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(self._status)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(TH.scroll_area_qss(t))
+        self._host = QWidget()
+        self._host.setStyleSheet("background: transparent;")
+        self._host_lay = QVBoxLayout(self._host)
+        self._host_lay.setContentsMargins(0, 0, 6, 0)
+        self._host_lay.setSpacing(6)
+        self._host_lay.addStretch()
+        self._scroll.setWidget(self._host)
+        lay.addWidget(self._scroll, 1)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_cancel_qss(t))
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
+
+        self._json_btn = QPushButton("Export JSON")
+        self._json_btn.setFixedSize(122, 36)
+        self._json_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._json_btn.setStyleSheet(TH.dialog_cancel_qss(t))
+        self._json_btn.setEnabled(False)
+        self._json_btn.clicked.connect(lambda: self._export("json"))
+        row.addWidget(self._json_btn)
+
+        self._html_btn = QPushButton("Export HTML")
+        self._html_btn.setFixedSize(128, 36)
+        self._html_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._html_btn.setStyleSheet(TH.dialog_go_qss(t, accent))
+        self._html_btn.setEnabled(False)
+        self._html_btn.clicked.connect(lambda: self._export("html"))
+        row.addWidget(self._html_btn)
+        lay.addLayout(row)
+
+        QTimer.singleShot(0, self._start)
+
+    # -- data -------------------------------------------------
+    def _start(self):
+        if not self._ps1:
+            self._status.setText("Engine unavailable — core.ps1 was not found.")
+            return
+        thread = QThread(self)
+        worker = PowerShellTask(self._ps1, "HealthReport", timeout=180)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_report)
+        worker.failed.connect(self._on_failed)
+        for signal in (worker.finished, worker.failed, worker.cancelled):
+            signal.connect(thread.quit)
+        thread.finished.connect(self._cleanup)
+        self._thread, self._worker = thread, worker
+        thread.start()
+
+    def _on_report(self, result: TaskResult):
+        if not result.success or not isinstance(result.data, dict):
+            self._on_failed(result.message or "The report could not be read.")
+            return
+        self._report = result.data
+        self._render(result.data)
+        self._json_btn.setEnabled(True)
+        self._html_btn.setEnabled(True)
+
+    def _on_failed(self, message: str):
+        self._status.setText(f"Could not generate the report: {message}")
+
+    def _cleanup(self):
+        if self._worker is not None:
+            self._worker.deleteLater()
+            self._worker = None
+        if self._thread is not None:
+            self._thread.deleteLater()
+            self._thread = None
+
+    # -- rendering --------------------------------------------
+    def _row(self, label: str, value: str, tone: str = "") -> QWidget:
+        t = self._t
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent;")
+        line = QHBoxLayout(holder)
+        line.setContentsMargins(0, 2, 0, 2)
+        line.setSpacing(10)
+        left = QLabel(label)
+        left.setStyleSheet(TH.label_qss(t, "caption"))
+        left.setMinimumWidth(210)
+        line.addWidget(left, 0)
+        right = QLabel(value)
+        right.setWordWrap(True)
+        colour = {"ok": t["ok"], "err": t["err"], "warn": t["warn"]}.get(
+            tone, t["text"])
+        right.setStyleSheet(
+            f"color: {colour}; font-size: 12px; font-weight: 600;"
+            "background: transparent; border: none;")
+        line.addWidget(right, 1)
+        return holder
+
+    def _note(self, text: str, tone: str = "") -> QLabel:
+        """A FULL-WIDTH line. Findings are sentences, not label/value pairs
+        — running them through _row left every one of them indented past a
+        210px empty column."""
+        t = self._t
+        label = QLabel(text)
+        label.setWordWrap(True)
+        colour = {"ok": t["ok"], "err": t["err"], "warn": t["warn"]}.get(
+            tone, t["text"])
+        label.setStyleSheet(
+            f"color: {colour}; font-size: 12px; font-weight: 600;"
+            "background: transparent; border: none;")
+        return label
+
+    def _heading(self, text: str) -> QLabel:
+        label = QLabel(text.upper())
+        label.setStyleSheet(
+            f"color: {self._accent}; font-size: 10px; font-weight: 800;"
+            "letter-spacing: 1.2px; background: transparent; border: none;"
+            "margin-top: 8px;")
+        return label
+
+    def _render(self, report: dict):
+        from frontend.health_report import TWEAK_LABELS, findings, tweak_rows
+
+        summary = report.get("tweakSummary") or {}
+        self._status.setText(
+            f"{report.get('hostname', 'this machine')} · "
+            f"{summary.get('applied', 0)} applied · "
+            f"{summary.get('notApplied', 0)} not applied · "
+            f"{summary.get('unknown', 0)} unknown")
+
+        found = findings(report)
+        self._add(self._heading("Findings"))
+        if found:
+            for line in found:
+                self._add(self._note(f"•  {line}", "warn"))
+        else:
+            self._add(self._note("•  Nothing needing attention.", "ok"))
+
+        system = report.get("system") or {}
+        if system:
+            self._add(self._heading("System"))
+            self._add(self._row("Operating system",
+                                f"{system.get('os')} (build {system.get('build')})"))
+            self._add(self._row("Processor", str(system.get("cpu"))))
+            self._add(self._row(
+                "Memory",
+                f"{system.get('freeRAMGB')} GB free of {system.get('totalRAMGB')} GB"))
+            self._add(self._row("Power plan", str(system.get("powerPlan"))))
+
+        drives = report.get("drives") or []
+        if drives:
+            self._add(self._heading("Storage"))
+            for drive in drives:
+                percent = drive.get("percentFree", 100)
+                tone = "err" if isinstance(percent, (int, float)) and percent < 10 else ""
+                self._add(self._row(
+                    f"Drive {drive.get('name')}",
+                    f"{drive.get('freeGB')} GB free of {drive.get('totalGB')} GB "
+                    f"({percent}%)", tone))
+
+        self._add(self._heading("Configuration drift"))
+        for label, state, _task in tweak_rows(report):
+            tone = {"applied": "ok", "not-applied": "err"}.get(state, "")
+            shown = {"applied": "Applied", "not-applied": "Not applied",
+                     "unknown": "Unknown"}[state]
+            self._add(self._row(label, shown, tone))
+
+    def _add(self, widget: QWidget):
+        self._host_lay.insertWidget(self._host_lay.count() - 1, widget)
+
+    # -- export -----------------------------------------------
+    def _export(self, kind: str):
+        from frontend.health_report import to_html, to_json
+
+        if not self._report:
+            return
+        stamp = time.strftime("%Y%m%d_%H%M")
+        default = os.path.join(
+            os.path.join(os.path.expanduser("~"), "Desktop"),
+            f"Pulse_HealthReport_{stamp}.{kind}")
+        filters = {"html": "HTML report (*.html)", "json": "JSON data (*.json)"}
+        path, _chosen = QFileDialog.getSaveFileName(
+            self, f"Export {kind.upper()} report", default, filters[kind])
+        if not path:
+            return
+        try:
+            payload = to_html(self._report) if kind == "html" else to_json(self._report)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+        except OSError as exc:
+            self._status.setText(f"Could not write the file: {exc}")
+            return
+        self._status.setText(f"Exported to {path}")
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+    def reject(self):
+        if self._worker is not None:
+            self._worker.cancel()
+        super().reject()
+
+
 class CloseConfirmDialog(PulseDialog):
     """Shown when the window is closed while a task is still running (v10.2).
 

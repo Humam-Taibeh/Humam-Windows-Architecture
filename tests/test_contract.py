@@ -23,6 +23,13 @@ _PROBE = os.path.join(_ROOT, "src/backend/modules/11-StateProbe.ps1")
 _PROGRAMMATIC = {
     "GetTweakState", "ScanForUpdates", "InstallLocalFile",
     "InstallOfficeODTAuto", "StartupEnableItem", "StartupDisableItem",
+    # v10.3: the Automation module's two cards are GUI-LOCAL ("@playbooks",
+    # "@health_report") because neither is a backend action in its own
+    # right — a playbook replays tasks that already have cases, and the
+    # report is opened by a dialog. HealthReport is the one backend case
+    # behind them, invoked by widgets.HealthReportDialog rather than by a
+    # card, which is exactly what this allow-list is for.
+    "HealthReport",
 }
 
 

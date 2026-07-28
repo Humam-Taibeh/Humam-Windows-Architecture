@@ -149,31 +149,37 @@ being zeroed. Latent today because every current call site passes a default.
 - [ ] **Console polish** — colorized SUCCESS / ERROR / `[DRY-RUN]` lines, and
   auto-scroll that pauses while the user is scrolled up.
 
-## Phase 4 · Orchestration
+## Phase 4 · Orchestration — **shipped v10.3**
 
 *Goal: from a tool you remember to use, to a system that keeps machines
 healthy — repeatable, reportable, schedulable.*
 
-- [ ] **Structured verdict payloads.** Extend the sentinel with a JSON body
-  (counts, durations, per-item results). The mechanism already exists and is
-  proven: `##PULSE##DATA|{…}` is how `GetTweakState` returns the probe map.
-  Generalising it is what makes the two items below reportable rather than
-  merely runnable — **this is the enabling step, and should land first.**
-- [ ] **Playbooks** — declarative machine baselines: an ordered JSON list of task
-  IDs plus app selections, run as a queue through the existing dispatcher
-  contract with per-step verdicts and an end-of-run summary. `-WhatIf` gives a
-  full playbook preview for free. The flagship feature for technicians: "new
-  machine → apply `workstation-standard.pulse` → walk away."
-- [ ] **Health & drift report** — sweep the probe across the tweak catalog to
-  detect tweaks silently reverted by Windows Update; combine with drive space,
-  startup creep, restore-point status and missing drivers into a Health card and
-  an exportable **HTML session report** (a client deliverable for IT work).
+- [x] **Structured verdict payloads.** Every task now emits one
+  `##PULSE##META|{…}` line carrying task name, duration, dry-run/elevation
+  flags and succeeded/failed/skipped counts, parsed into `TaskResult.meta`.
+  Emitted from `Invoke-GuiTask`'s `finally`, so every exit path is measured —
+  not just the cases routing through `Complete-GuiTask`. **A third channel
+  rather than a reuse of `DATA`:** the frontend takes the *last* `DATA` line,
+  so a metrics envelope sharing that channel would have shadowed the Update
+  Center's version audit. `META` carries no outcome field — the
+  `SUCCESS|`/`ERROR|` verdict stays the single source of truth. *(v10.3)*
+- [x] **Playbooks** — declarative machine baselines as JSON, validated against
+  the live catalog at load time and run one step at a time through the ordinary
+  dispatcher. Ships with Gamer Rig Setup, Privacy Hardening and Post-Install
+  Clean. Preview runs every step under `-WhatIf`. A failed *required* step
+  halts the run; steps marked `optional` record the failure and continue.
+  *(v10.3)*
+- [x] **Health & drift report** — read-only snapshot (`12-HealthReport.ps1`) of
+  applied-tweak drift, drives, restore-point status, startup load and system
+  facts, exportable as a self-contained HTML deliverable or diffable JSON.
+  Drift reuses the probe verbatim, so the report and the cards' `APPLIED`
+  chips can never disagree. *(v10.3)*
 - [ ] **Scheduled unattended maintenance** — recurring engine runs via Windows
   Task Scheduler, surfaced on next launch: "Since you last opened Pulse: 2 runs,
-  1 warning."
+  1 warning." The metrics envelope above is what makes such a summary possible.
 - [ ] **Persistent runspace** — one long-lived PowerShell host fed queued tasks,
-  eliminating the per-task module-load cost a 20-step playbook would otherwise
-  pay 20 times.
+  eliminating the per-task module-load cost a playbook pays once per step.
+  Measured at ~400ms per step on the current design.
 
 ---
 
