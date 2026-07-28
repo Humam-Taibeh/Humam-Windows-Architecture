@@ -74,7 +74,11 @@ class PulseDialog(QDialog):
         self.setModal(True)
         self.panel: "DepthCard | None" = None
         self._scrim_color = QColor(5, 7, 10, 195)
-        self._scrim_radius = 22
+        # Square by default, matching the opaque square shell it covers.
+        # This is the value the FIRST paint uses — refit_dialog re-asserts
+        # it, but a rounded default would flash two lit wedges of shell at
+        # the bottom corners on the frame before that lands.
+        self._scrim_radius = 0
 
     def _set_scrim(self, t: dict, radius: int):
         self._scrim_color = QColor(*t["scrim"])

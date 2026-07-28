@@ -13,7 +13,8 @@ Public surface:
     tokens("dark")      raw token dict for a mode
     alpha("#00d4ff",x)  hex -> rgba() with opacity
     *_qss(t, ...)       QSS factory functions, each takes a token dict
-    apply_blur_behind() real DWM blur behind the window (Windows, ctypes only)
+    apply_native_rounding() / enable_native_sizing_frame()
+                        DWM corner + Win32 frame integration (Windows, ctypes only)
 
 Rules:
     - QSS is built ONCE per theme switch and applied per widget class.
@@ -132,7 +133,10 @@ RADIUS = {
     "plaque":  12,   # icon wells, nav entries, list rows
     "card":    16,   # GlassCard, action surfaces
     "panel":   20,   # sidebar, content frame, dialog panels
-    "shell":   24,   # the window itself
+    # No "shell" entry: the window's own corners are rounded by DWM
+    # (apply_native_rounding), not by QSS. A radius painted here would only
+    # carve wedges out of the opaque shell and expose the bare window
+    # palette behind them.
 }
 
 
@@ -1499,43 +1503,16 @@ def label_qss(t: dict, role: str) -> str:
             f"background: transparent; border: none; {extra}")
 
 
-# ============================================================
-#  REAL GLASS — DWM blur behind the window (Windows 10/11)
-# ============================================================
-def apply_blur_behind(hwnd: int, use_acrylic: bool = False) -> bool:
-    """Enable native DWM blur behind a top-level window via
-    SetWindowCompositionAttribute. Pure ctypes — no dependencies.
-
-    use_acrylic=False (default) uses classic blur-behind, which stays
-    smooth while dragging; acrylic looks richer but Windows throttles it
-    during window moves (known DWM lag), so it is opt-in.
-    Returns False (harmlessly) on any unsupported system.
-    """
-    if sys.platform != "win32" or not hwnd:
-        return False
-    try:
-        class ACCENT_POLICY(ctypes.Structure):
-            _fields_ = [("AccentState", ctypes.c_uint),
-                        ("AccentFlags", ctypes.c_uint),
-                        ("GradientColor", ctypes.c_uint),
-                        ("AnimationId", ctypes.c_uint)]
-
-        class WINCOMPATTRDATA(ctypes.Structure):
-            _fields_ = [("Attribute", ctypes.c_int),
-                        ("Data", ctypes.POINTER(ACCENT_POLICY)),
-                        ("SizeOfData", ctypes.c_size_t)]
-
-        accent = ACCENT_POLICY()
-        if use_acrylic:
-            accent.AccentState = 4                 # ACCENT_ENABLE_ACRYLICBLURBEHIND
-            accent.GradientColor = 0x99000000      # AABBGGRR tint
-        else:
-            accent.AccentState = 3                 # ACCENT_ENABLE_BLURBEHIND
-        data = WINCOMPATTRDATA(19, ctypes.pointer(accent), ctypes.sizeof(accent))
-        set_attr = ctypes.windll.user32.SetWindowCompositionAttribute
-        return bool(set_attr(ctypes.c_void_p(int(hwnd)), ctypes.byref(data)))
-    except (OSError, AttributeError):
-        return False
+# NOTE: apply_blur_behind() (SetWindowCompositionAttribute /
+# ACCENT_ENABLE_BLURBEHIND) was removed here. DWM blur-behind is only
+# visible through a per-pixel-alpha window, so it required the
+# WA_TranslucentBackground / WS_EX_LAYERED composition path that caused
+# the window-level rendering glitches (blurred dark box on launch,
+# invisible sections, tearing while dragging and resizing). The shell now
+# paints an opaque gradient over every pixel and DWM owns the corners.
+# If a "glass" backdrop is wanted again, use DWMWA_SYSTEMBACKDROP_TYPE
+# (Mica / Acrylic, Windows 11 22H2+) — it is composited by DWM on the GPU
+# and needs no layered window.
 
 
 def enable_native_sizing_frame(hwnd: int) -> bool:
