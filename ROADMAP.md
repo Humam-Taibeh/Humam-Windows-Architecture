@@ -82,25 +82,40 @@ reduce coverage to a quarter of the suite and still report green.
 
 ---
 
-## Phase 1 · Engine resilience
+## Phase 1 · Engine resilience — **shipped v10.2**
 
 *Goal: an engine that cannot leak processes, and backend code that is tested
 rather than merely linted.*
 
-- [ ] **Job Object kill guarantee.** `src/utils/helpers.py` still stops tasks with
-  `taskkill /T /F` on the PID. That misses the reparenting gap: a detached
-  grandchild (an msiexec hand-off, winget's elevation broker) can outlive the
-  tree and hold the stdout pipe open. Assign the PowerShell child to a Windows
-  Job Object with `KILL_ON_JOB_CLOSE` at spawn via ctypes; keep `taskkill` as
-  the fallback path. *Carried from v6.5 — still the largest correctness gap.*
-- [ ] **Pester coverage for the backup/restore subsystem.** 5,687 lines of
-  PowerShell are currently guarded only by a parse check, PSScriptAnalyzer, and
-  the static contract tests in `tests/test_contract.py` — nothing executes a
-  backend code path and asserts on its behaviour. Start where it matters most:
-  the code users depend on when something has already gone wrong
-  (`02-Safety.ps1`, tweak backup/restore round-trips).
-- [ ] **Confirm-on-close while a task is running.** Closing the window mid-run
-  currently just kills it. *Carried from v6.5.*
+- [x] **Job Object kill guarantee.** The PowerShell child is assigned to a
+  Windows Job Object (`KILL_ON_JOB_CLOSE`) at spawn via ctypes, with
+  `taskkill /T /F` kept as the fallback for machines where the job cannot be
+  created. `tests/test_process_job.py` demonstrates the old defect directly:
+  an orphaned grandchild survives `taskkill /T /F` and is killed by the job.
+  **The success path disarms kill-on-close first** — several tasks end by
+  launching something for the user (`cleanmgr.exe`, a restarted
+  `explorer.exe`), and closing an armed job would destroy them. *(v10.2)*
+- [x] **Pester coverage for the backup/restore subsystem.** 19 tests over
+  `Backup`/`Restore-OriginalRegValue` and `Backup-ServiceState`, pinning
+  first-write-wins, the `__NOTSET__` sentinel, `-WhatIf` inertness and the
+  failure-reporting contract. Redirected to a throwaway hive so the user's
+  real rollback data is never touched. Found and fixed a latent defect in
+  `Restore-OriginalRegValue` (see below). *(v10.2)*
+- [x] **Confirm-on-close while a task is running.** `CloseConfirmDialog` names
+  the running task; the safe choice is the default so a reflexive Enter or
+  Escape cannot end a long install. *(v10.2)*
+
+### Fixed along the way
+
+**`Restore-OriginalRegValue` could never report failure.** `$DefaultIfMissing`
+is declared `[string]`, and PowerShell coerces an unsupplied `[string]`
+parameter's `$null` default to the **empty string** — so the guard
+`if ($null -eq $Value) { return $false }` was unreachable. A caller that
+passed no default for a value with no snapshot fell through to `Set-RegValue`,
+wrote `""` (stored as `0` in a DWord target), and returned `$true`.
+`Reset-AllTweaksToDefaults` gates its green "reverted" line on that return
+value, so the user would have been told a setting was restored while it was
+being zeroed. Latent today because every current call site passes a default.
 
 ## Phase 2 · Release engineering
 

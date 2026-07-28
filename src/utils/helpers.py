@@ -25,6 +25,7 @@ ago and had zero call sites left.)
 from __future__ import annotations
 
 import codecs
+import ctypes
 import json
 import subprocess
 import sys
@@ -66,6 +67,185 @@ class TaskResult:
 VERDICT_SENTINEL = "##PULSE##"
 # Structured-data line prefix (v6.3) - see TaskResult.data above.
 VERDICT_DATA_PREFIX = VERDICT_SENTINEL + "DATA|"
+
+
+# ============================================================
+#  WINDOWS JOB OBJECT  (v10.2 — the kill guarantee)
+# ============================================================
+# WHY THIS EXISTS
+#   Stopping a task used to mean `taskkill /T /F` on powershell.exe's PID.
+#   /T walks the parent-child tree at the moment it runs, which misses the
+#   processes that matter most: winget hands work to an elevation broker,
+#   MSI packages hand off to the machine-wide msiexec service, and both are
+#   REPARENTED away from our tree. The orphan then survives the kill and
+#   keeps the inherited stdout pipe open, so the read loop never sees EOF
+#   and the task hangs until its watchdog fires.
+#
+#   A Job Object is the kernel's own answer: membership is inherited by
+#   every descendant and cannot be escaped by reparenting, so terminating
+#   the job kills the whole set atomically, whatever it re-parented to.
+#
+# THE DANGEROUS PART, AND WHY THE KILL FLAG IS CLEARED ON SUCCESS
+#   JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE kills every member the instant the
+#   last handle closes. That is exactly right for a crash or a cancel, and
+#   catastrophic on a normal finish — because several tasks END by
+#   launching something the user is meant to keep using:
+#       CleanCache          -> cleanmgr.exe, "follow its on-screen prompts"
+#       ClassicContextMenu  -> Start-Process explorer  (the desktop shell!)
+#       StartupReport       -> taskmgr.exe
+#       several catalogs    -> the user's browser / the Store
+#   Killing the job on a successful run would close Disk Cleanup the
+#   moment it appeared and take the user's Explorer session with it.
+#
+#   So the flag is CLEARED before the handle is closed on the success path
+#   (detach()), and TerminateJobObject is called only when the user
+#   cancelled, the watchdog fired, or the reader died. The safety net stays
+#   armed for every abnormal exit, including the GUI being killed outright:
+#   the OS closes our handles, and the leftover tree dies with them.
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+if sys.platform == "win32":
+    from ctypes import wintypes
+
+    _ULONG_PTR = ctypes.c_size_t      # wintypes has no ULONG_PTR
+
+    class _IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+            ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", _ULONG_PTR),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", _IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+
+class ProcessJob:
+    """A Windows Job Object holding one task's process tree.
+
+    Every method is best-effort and silent: this is a belt-and-braces
+    layer over taskkill, so a machine where job objects are unavailable
+    (an old build, a policy-restricted container, a non-Windows dev box)
+    must degrade to exactly the previous behaviour rather than failing a
+    task the user asked for. `available` reports whether it armed.
+    """
+
+    def __init__(self):
+        self._handle = None
+        self._killed = False
+        if sys.platform != "win32":
+            return
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.CreateJobObjectW(None, None)
+            if not handle:
+                return
+            info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            ok = kernel32.SetInformationJobObject(
+                handle, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(info), ctypes.sizeof(info))
+            if not ok:
+                kernel32.CloseHandle(handle)
+                return
+            self._kernel32 = kernel32
+            self._handle = handle
+        except (OSError, AttributeError):
+            self._handle = None
+
+    @property
+    def available(self) -> bool:
+        return self._handle is not None
+
+    def assign(self, process: subprocess.Popen) -> bool:
+        """Put `process` — and therefore every descendant it goes on to
+        create — into the job.
+
+        RACE, ACCEPTED AND BOUNDED: the child is assigned just after
+        CreateProcess rather than being started suspended and resumed,
+        because subprocess.Popen exposes no thread handle to resume. A
+        descendant created in that window would escape the job. The window
+        is the time powershell.exe needs to initialise its runtime and
+        parse the command — orders of magnitude before it could spawn
+        winget or msiexec — and taskkill still covers anything that did
+        escape. Starting the process suspended would need a reimplemented
+        Popen, which is a far larger correctness risk than the microseconds
+        it would close.
+        """
+        if not self.available or process is None:
+            return False
+        try:
+            # Popen._handle is the already-open process handle with full
+            # access. Using it avoids an OpenProcess(pid) round trip and,
+            # more importantly, the PID-reuse race that comes with one.
+            raw = getattr(process, "_handle", None)
+            if raw is None:
+                return False
+            return bool(self._kernel32.AssignProcessToJobObject(
+                self._handle, int(raw)))
+        except (OSError, AttributeError, ValueError):
+            return False
+
+    def terminate(self):
+        """Kill every process in the job, now. Survives reparenting, which
+        is the entire reason this class exists."""
+        if not self.available:
+            return
+        try:
+            self._kernel32.TerminateJobObject(self._handle, 1)
+            self._killed = True
+        except OSError:
+            pass
+
+    def detach(self):
+        """Disarm kill-on-close, so closing the handle leaves survivors
+        alone. Called on the SUCCESS path only — see the module comment
+        above for the tasks whose whole purpose is to leave a window open.
+        """
+        if not self.available:
+            return
+        try:
+            info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = 0
+            self._kernel32.SetInformationJobObject(
+                self._handle, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(info), ctypes.sizeof(info))
+        except OSError:
+            pass
+
+    def close(self):
+        if not self.available:
+            return
+        try:
+            self._kernel32.CloseHandle(self._handle)
+        except OSError:
+            pass
+        finally:
+            self._handle = None
 
 
 # ============================================================
@@ -113,16 +293,32 @@ class PowerShellTask(QObject):
         self._process: subprocess.Popen | None = None
         self._proc_lock = threading.Lock()
         self._cancel_evt = threading.Event()
+        # Job Object holding this task's whole process tree (v10.2). Shares
+        # _proc_lock with _process: cancel() reads both from the GUI thread
+        # while run() writes them on the worker thread.
+        self._job: ProcessJob | None = None
 
     @staticmethod
     def _ps_quote(value: str) -> str:
         """Escape a value for a single-quoted PowerShell string literal."""
         return value.replace("'", "''")
 
-    @staticmethod
-    def _kill_process_tree(process: subprocess.Popen):
-        """Terminate powershell.exe AND its children (winget, sfc, DISM...).
-        A bare process.kill() would orphan the actual worker processes."""
+    def _kill_process_tree(self, process: subprocess.Popen):
+        """Terminate powershell.exe AND everything it spawned.
+
+        Two mechanisms, deliberately both:
+          1. the Job Object, which catches descendants that reparented away
+             from us (winget's elevation broker, msiexec) and would
+             otherwise survive step 2 while holding the stdout pipe open;
+          2. taskkill /T /F, kept as the fallback for any machine where the
+             job could not be created or the process could not be assigned.
+        Neither is sufficient alone: the job can be unavailable, and
+        taskkill cannot see past reparenting.
+        """
+        with self._proc_lock:
+            job = self._job
+        if job is not None:
+            job.terminate()
         try:
             if sys.platform == "win32":
                 subprocess.run(
@@ -246,13 +442,20 @@ class PowerShellTask(QObject):
                     subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
                 )
 
+            # Arm the job BEFORE spawning, so assignment is the very next
+            # thing that happens to the child (see ProcessJob.assign for the
+            # bounded race this leaves).
+            job = ProcessJob()
+
             process = subprocess.Popen(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
                 **popen_kwargs,
             )
+            job.assign(process)
 
             with self._proc_lock:
                 self._process = process
+                self._job = job
             # cancel() may have fired between Popen and the store above -
             # honor it now, or the kill would race the first pipe read.
             if self._cancel_evt.is_set():
@@ -309,6 +512,15 @@ class PowerShellTask(QObject):
 
             process.wait()
             timeout_timer.cancel()
+
+            # The task ended under its own power. Disarm kill-on-close NOW,
+            # before the finally block releases the handle, so anything the
+            # task deliberately left running for the user survives —
+            # cleanmgr.exe, a restarted explorer.exe, a browser tab. Cancel
+            # and timeout deliberately skip this: there the whole point is
+            # that everything dies.
+            if not self._cancel_evt.is_set() and not timed_out.is_set():
+                job.detach()
 
             # Terminal verdict - exactly one signal per task, in priority
             # order: user cancel > watchdog timeout > backend contract line.
@@ -372,6 +584,15 @@ class PowerShellTask(QObject):
             # PowerShell (and its winget/sfc children) running headless.
             if process is not None and process.poll() is None:
                 self._kill_process_tree(process)
+            # Release the job handle. Still armed on every abnormal exit, so
+            # anything that outlived the kill above (a reparented msiexec)
+            # dies here; disarmed on the success path by the detach() call
+            # after process.wait().
+            with self._proc_lock:
+                job = self._job
+                self._job = None
+            if job is not None:
+                job.close()
 
 
 # ============================================================

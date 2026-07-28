@@ -63,7 +63,8 @@ from frontend.menu_structure import (  # noqa: E402
 )
 from frontend.widgets import (  # noqa: E402
     ActivityDrawer, AmbientGlow, AppSelectorDialog, BreathingIcon,
-    CommandPalette, ConfirmDialog, DepthCard, DevHubSelectorDialog,
+    CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
+    DevHubSelectorDialog,
     ElevatePromptDialog, GlassCard, HubDialog, NavButton, NavPill,
     OfficeWizardDialog, PulseDialog, RecentOperationsPanel,
     ResponsiveGridHost, ShortcutSheetDialog, StartupManagerDialog, TitleBar,
@@ -1760,6 +1761,9 @@ class PulseApp(QMainWindow):
         if event.type() == QEvent.Type.WindowStateChange and self._ui_ready:
             self._sync_window_state()
 
+    def _task_is_running(self) -> bool:
+        return self._thread is not None and self._thread.isRunning()
+
     def closeEvent(self, event):
         """Guard against orphaning the backend process tree: if a
         PowerShellTask is still running when the window closes (the X
@@ -1767,10 +1771,29 @@ class PulseApp(QMainWindow):
         end up here via Qt's normal close path), cancel it and give the
         process-tree kill a moment to land before the QThread gets torn
         down - otherwise winget/DISM/sfc children spawned by core.ps1 are
-        left running headless after the GUI disappears."""
+        left running headless after the GUI disappears.
+
+        v10.2: that cancellation is no longer silent. A half-applied MSI
+        install or a half-finished Edge purge is a worse state than either
+        outcome the user was choosing between, so closing mid-task asks
+        first (widgets.CloseConfirmDialog). Declining ignores the event and
+        the window stays open with the task untouched.
+
+        Geometry is saved only once the close is going ahead — writing it
+        before the prompt would persist the geometry of a window the user
+        then chose NOT to close, which is harmless today but wrong the
+        moment anything else keys off that write.
+        """
+        if self._task_is_running():
+            title = (self._running_item or {}).get("title", "")
+            if self._exec_dialog(
+                    CloseConfirmDialog(self, self.theme.t, title)) != QDialog.DialogCode.Accepted:
+                event.ignore()
+                return
+
         prefs.set_window_geometry(self.saveGeometry())
         prefs.set_drawer_pinned(self.activity.is_pinned())
-        if self._thread is not None and self._thread.isRunning():
+        if self._task_is_running():
             if self._worker is not None:
                 self._worker.cancel()
             self._thread.wait(3000)

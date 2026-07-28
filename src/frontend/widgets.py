@@ -1844,6 +1844,83 @@ class ConfirmDialog(PulseDialog):
         _present_dialog(self)
 
 
+class CloseConfirmDialog(PulseDialog):
+    """Shown when the window is closed while a task is still running (v10.2).
+
+    Closing used to cancel the task silently, which is the wrong default
+    for this app: the running operation may be halfway through an MSI
+    install, a driver export or an Edge purge, and "stopped halfway" is a
+    materially worse state than either finished or never started. The
+    close is now a question rather than an assumption.
+
+    Deliberately NOT a generic ConfirmDialog: the buttons here are not
+    Cancel/Proceed. Both options do something irreversible-ish, so each is
+    named for its OUTCOME ("Keep Running" / "Stop & Close") — a user
+    hitting Alt+F4 by accident must be able to tell the two apart without
+    parsing the sentence above them. The safe choice is the default and
+    the destructive one carries the error accent.
+    """
+
+    def __init__(self, parent: QWidget, t: dict, task_title: str = ""):
+        super().__init__(parent)
+        accent = t["warn"]
+        panel = _dialog_chrome(self, t, accent, width=460)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(10)
+
+        head = QLabel("⚠️  A task is still running")
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
+        lay.addWidget(head)
+
+        running = task_title.strip() or "An operation"
+        body = QLabel(
+            f"<b>{running}</b> hasn't finished yet. Closing Pulse now stops "
+            "it partway through — the change it was making may be left half "
+            "applied, and you'll need to run it again.")
+        body.setWordWrap(True)
+        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(body)
+
+        lay.addSpacing(8)
+        row = QHBoxLayout()
+        row.addStretch()
+
+        # The safe option is the default: Enter and Escape both keep the
+        # task alive, so no reflexive keypress can end a long install.
+        keep = QPushButton("Keep Running")
+        keep.setFixedSize(128, 36)
+        keep.setCursor(Qt.CursorShape.PointingHandCursor)
+        keep.setStyleSheet(TH.dialog_cancel_qss(t))
+        keep.setDefault(True)
+        keep.setAutoDefault(True)
+        keep.clicked.connect(self.reject)
+        row.addWidget(keep)
+
+        # "&&" is not a typo: Qt reads a single & in button text as a
+        # mnemonic marker, so "Stop & Close" renders as "Stop _Close" with
+        # the C underlined, which looks like a broken label. The doubled
+        # ampersand is the escape that paints a literal "&".
+        stop = QPushButton("Stop && Close")
+        stop.setFixedSize(128, 36)
+        stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop.setStyleSheet(TH.dialog_go_qss(t, t["err"]))
+        stop.setAutoDefault(False)
+        stop.clicked.connect(self.accept)
+        row.addWidget(stop)
+        lay.addLayout(row)
+
+        self._keep_btn = keep
+        self._stop_btn = stop
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+        self._keep_btn.setFocus()
+
+
 # ============================================================
 #  ELEVATE PROMPT — inline "this needs Administrator" gate
 # ============================================================

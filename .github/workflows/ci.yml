@@ -5,11 +5,12 @@
 #  had: the GUI tests send live Win32 messages and the backend calls DWM,
 #  the registry and winget.
 #
-#  Three gates, deliberately ordered cheapest-first so an obvious break
+#  Four gates, deliberately ordered cheapest-first so an obvious break
 #  reports in seconds instead of after a full Qt install:
 #     1. powershell-parse  — every .ps1 tokenizes            (~10s)
 #     2. powershell-lint   — PSScriptAnalyzer, zero findings (~40s)
-#     3. python-tests      — the pytest regression suite     (~3m)
+#     3. powershell-tests  — Pester, backup/restore engine   (~1m)
+#     4. python-tests      — the pytest regression suite     (~3m)
 #
 name: CI
 
@@ -97,7 +98,47 @@ jobs:
           Write-Output "PSScriptAnalyzer: clean."
 
   # ============================================================
-  #  3. The pytest regression suite
+  #  3. Pester — the backup/restore engine actually executes
+  # ============================================================
+  powershell-tests:
+    name: Pester (backend)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: powershell
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -MinimumVersion 5.5.0 -Scope CurrentUser `
+            -Force -SkipPublisherCheck
+
+      # These tests do real registry I/O, deliberately: mocking the registry
+      # would test the mock, and the invariants here (first-write-wins, the
+      # __NOTSET__ sentinel) are exactly the ones that only bite against a
+      # real hive. Everything is confined to HKCU:\Software\PulsePesterTests
+      # and removed in AfterAll; nothing needs elevation.
+      - name: Run Pester
+        shell: powershell
+        run: |
+          Import-Module Pester -MinimumVersion 5.0 -Force
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'tests\backend'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = 'pester.xml'
+          Invoke-Pester -Configuration $config
+
+      - name: Upload Pester results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results
+          path: pester.xml
+
+  # ============================================================
+  #  4. The pytest regression suite
   # ============================================================
   python-tests:
     name: pytest (windows-latest)

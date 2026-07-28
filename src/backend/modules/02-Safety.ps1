@@ -144,8 +144,20 @@ function Restore-OriginalRegValue {
             return $true
         }
 
+        # NOTE the emptiness check rather than a $null one. $DefaultIfMissing
+        # is declared [string], and PowerShell coerces an unsupplied [string]
+        # parameter's $null default to the EMPTY STRING - so `$null -eq
+        # $Value` could never be true. A caller that passed no default for a
+        # value with no snapshot therefore fell through to Set-RegValue and
+        # wrote "" (which a DWord target stores as 0), then returned $true.
+        # Reset-AllTweaksToDefaults gates its green "reverted" line on that
+        # return value, so the user would have been told a setting was
+        # restored while it was actually being zeroed. Every current call
+        # site passes a default, which is why this stayed latent.
+        # $Stored is checked separately so a genuinely snapshotted empty
+        # string is still restored as an empty string.
         $Value = if ($null -ne $Stored) { $Stored } else { $DefaultIfMissing }
-        if ($null -eq $Value) { return $false }
+        if ($null -eq $Stored -and [string]::IsNullOrEmpty($DefaultIfMissing)) { return $false }
 
         Set-RegValue -Path $Path -Name $Name -Value $Value -Type $Type
         return $true
