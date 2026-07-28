@@ -16,6 +16,7 @@ import pytest
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MENU = os.path.join(_ROOT, "src/frontend/menu_structure.py")
 _DISPATCHER = os.path.join(_ROOT, "src/backend/modules/30-GuiDispatcher.ps1")
+_PROBE = os.path.join(_ROOT, "src/backend/modules/11-StateProbe.ps1")
 
 # Backend tasks the GUI invokes programmatically rather than from a card:
 # state probes, wizard steps and the interactive panels' row actions.
@@ -79,6 +80,112 @@ def test_programmatic_tasks_are_actually_referenced():
     blob = "\n".join(sources)
     unreferenced = sorted(t for t in _PROGRAMMATIC if f'"{t}"' not in blob)
     assert not unreferenced, f"allow-listed but never invoked: {unreferenced}"
+
+
+def _probe_source() -> str:
+    return open(_PROBE, encoding="utf-8-sig").read()
+
+
+def _probe_keys() -> set[str]:
+    """The task names 11-StateProbe.ps1 reports state for, read off the
+    `$state["Name"]` assignments that build its return map."""
+    return set(re.findall(r'\$state\["([A-Za-z0-9_]+)"\]\s*=', _probe_source()))
+
+
+class TestStateProbe:
+    """The probe's map is keyed by GUI TASK NAME so the frontend can look a
+    card up with no translation table (11-StateProbe.ps1's own words). That
+    only holds while the keys really are task names — a typo'd or renamed
+    key doesn't raise anywhere, it just silently stops badging a card,
+    which is invisible in exactly the way a missing badge always is."""
+
+    def test_the_keys_were_actually_parsed(self):
+        """Guard the regex: an empty set would make every check below pass
+        for the wrong reason."""
+        assert len(_probe_keys()) >= 15
+
+    def test_every_probe_key_is_a_real_gui_task(self):
+        gui = {t for t in _gui_tasks() if not t.startswith("@")}
+        orphans = sorted(_probe_keys() - gui)
+        assert not orphans, (
+            f"probe reports state for non-existent task(s): {orphans} — "
+            "either the task was renamed and the probe key was not, or the "
+            "key is a typo that will never match a card")
+
+    def test_every_probe_key_has_a_dispatcher_case(self):
+        """A probe key naming a task the backend cannot run is incoherent
+        even if a card happens to exist for it."""
+        missing = sorted(_probe_keys() - _dispatcher_cases())
+        assert not missing, f"probe keys with no dispatcher case: {missing}"
+
+    def test_probe_covers_the_tasks_it_claims(self):
+        """Pins the v10.1 coverage so a later refactor cannot quietly drop
+        a probe. NetworkOptimization is deliberately NOT here: it flushes
+        DNS and resets the Winsock/IP stack, which leaves no durable
+        readable marker, so probing it could only ever be a guess."""
+        expected = {
+            "DarkMode", "DisableMouseAccel", "MinimalistTaskbar",
+            "ClassicContextMenu", "GameMode", "DisableAdvertisingID",
+            "DisableActivityHistory", "DisableTelemetry",
+            "DisableHibernation", "EnableHibernation", "UltimatePowerPlan",
+            "RemoveEdge", "RemoveOneDrive", "RemoveWindowsOld",
+            "RemoveBloatware", "ApplyAllPrivacy",
+        }
+        assert expected <= _probe_keys(), (
+            f"probe coverage regressed, missing: {sorted(expected - _probe_keys())}")
+
+    def test_network_optimization_is_not_probed(self):
+        """Its own guard, because the tempting thing to do is invent one.
+        A card that claims 'Applied' for a transient stack reset would be
+        actively misleading — worse than no badge at all."""
+        assert "NetworkOptimization" not in _probe_keys(), (
+            "NetworkOptimization has no durable readable state (ipconfig "
+            "/flushdns, netsh winsock reset, netsh int ip reset). Any probe "
+            "for it is a guess presented as a fact.")
+
+    def test_state_probe_is_read_only(self):
+        """The module's HARD contract: it runs on launch and after every
+        task, so a mutating probe would silently re-apply tweaks behind
+        the user's back. Static scan for the mutation primitives — cheap,
+        and it fails at review time rather than on a user's machine.
+
+        Also referenced from 11-StateProbe.ps1's own comment block as the
+        thing pinning its reuse of 06-Tweaks.ps1's presence helpers.
+        """
+        source = _probe_source()
+        # Strip comments: the module DESCRIBES what it must not do.
+        code = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#"))
+        code = re.sub(r"<#.*?#>", "", code, flags=re.S)
+
+        forbidden = [
+            "Set-ItemProperty", "New-ItemProperty", "Remove-ItemProperty",
+            "New-Item", "Remove-Item", "Set-Item",
+            "Set-Service", "Stop-Service", "Start-Service",
+            "Stop-Process", "Remove-AppxPackage",
+            "Checkpoint-Computer", "New-SystemRestorePoint",
+            "Set-Content", "Out-File", "reg add", "reg delete",
+        ]
+        found = sorted({c for c in forbidden if c.lower() in code.lower()})
+        assert not found, (
+            f"11-StateProbe.ps1 contains mutating call(s): {found}. This "
+            "module is invoked on launch and after every task — a write "
+            "here re-applies tweaks behind the user's back.")
+
+    def test_reused_presence_helpers_still_exist(self):
+        """The probe deliberately reuses 06-Tweaks.ps1's helpers instead of
+        duplicating detection logic. If either is renamed, the probe's
+        try/catch turns the failure into a silent 'unknown' rather than an
+        error — so nothing would report the breakage but this."""
+        tweaks = open(os.path.join(_ROOT, "src/backend/modules/06-Tweaks.ps1"),
+                      encoding="utf-8-sig").read()
+        for helper in ("Test-MicrosoftEdgeInstalled", "Test-OneDriveInstalled"):
+            if helper in _probe_source():
+                assert f"function {helper}" in tweaks, (
+                    f"11-StateProbe.ps1 calls {helper}, which no longer "
+                    "exists in 06-Tweaks.ps1 — the probe will silently "
+                    "report 'unknown' forever")
 
 
 def test_local_actions_are_marked_with_an_at_sign():

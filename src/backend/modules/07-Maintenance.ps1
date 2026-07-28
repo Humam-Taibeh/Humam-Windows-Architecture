@@ -143,7 +143,10 @@ function Clear-SystemCaches {
 # ============================================================
 function Show-DriveSpaceReport {
     Write-SectionHeader "Drive Space Report"
-    $Drives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Used -ne $null -and $_.Free -ne $null }
+    # $null on the LEFT: PowerShell's comparison operators filter arrays
+    # element-wise when the left operand is a collection, so the reversed
+    # form is the only one that reliably means "is this value null?".
+    $Drives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $null -ne $_.Used -and $null -ne $_.Free }
     foreach ($Drive in $Drives) {
         $TotalGB   = [math]::Round(($Drive.Used + $Drive.Free) / 1GB, 1)
         $FreeGB    = [math]::Round($Drive.Free / 1GB, 1)

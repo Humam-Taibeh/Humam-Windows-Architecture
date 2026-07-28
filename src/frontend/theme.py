@@ -719,6 +719,19 @@ def applied_chip_qss(t: dict) -> str:
     """
 
 
+def card_history_pill_qss(t: dict) -> str:
+    """The 'Ran 3d ago · ~2m' caption on a card that has been run before
+    (v10.1). Quieter than both the meta pill and the APPLIED chip — it is
+    background information, and must not compete with the applied-state
+    signal sitting beside it. Borderless and untinted for that reason:
+    weight comes from text colour alone."""
+    return f"""
+        color: {t['text_faint']}; font-size: 10px; font-weight: 600;
+        background: transparent; border: none;
+        padding: 2px 2px; letter-spacing: 0.2px;
+    """
+
+
 def card_chevron_qss(t: dict, accent: str) -> str:
     """The trailing '›' drill-in affordance on a hub/action card. Muted at
     rest; the card's own hover glow does the lighting, so this stays a quiet

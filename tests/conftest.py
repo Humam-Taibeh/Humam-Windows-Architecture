@@ -43,9 +43,35 @@ WINDOWS_ONLY = pytest.mark.skipif(
     sys.platform != "win32", reason="Win32 window integration is Windows-only")
 
 
+def is_headless() -> bool:
+    """True when Qt is on the offscreen platform plugin, which has no real
+    HWND: no non-client area, no DWM, no live Win32 messages."""
+    return os.environ.get("QT_QPA_PLATFORM", "") == "offscreen"
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "native: needs a real (non-offscreen) top-level window")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Enforce what the `native` marker has always CLAIMED.
+
+    The marker and the offscreen check both existed, but nothing ever
+    joined them: under QT_QPA_PLATFORM=offscreen the 21 native tests ran
+    anyway and failed en masse, because an offscreen window has no
+    non-client area to hit-test and no DWM to query. pytest.ini and
+    requirements-dev.txt documented them as "skipped headless", so the
+    suite's own contract was false — and any CI runner without a desktop
+    session would have reported a red build for an entirely healthy tree.
+    """
+    if not is_headless():
+        return
+    skip = pytest.mark.skip(
+        reason="needs a real top-level window; QT_QPA_PLATFORM=offscreen")
+    for item in items:
+        if "native" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -67,8 +93,8 @@ def qapp():
 
 
 @pytest.fixture(scope="session")
-def _headless() -> bool:
-    return os.environ.get("QT_QPA_PLATFORM", "") == "offscreen"
+def headless() -> bool:
+    return is_headless()
 
 
 def _make_window(normalize: bool = True):

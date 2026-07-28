@@ -27,6 +27,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 
 if sys.platform == "win32":
     import ctypes.wintypes  # MSG / RECT for native window hit-testing
@@ -772,6 +773,7 @@ class PulseApp(QMainWindow):
         self._running_card: GlassCard | None = None
         self._running_item: dict | None = None
         self._running_accent = ""
+        self._run_started_at: float | None = None
         self._probe_thread: QThread | None = None
         self._probe_worker: PowerShellTask | None = None
         self._tweak_state: dict = {}
@@ -799,6 +801,7 @@ class PulseApp(QMainWindow):
         self._sync_window_state()
         self._apply_theme(self.theme.t)
         self._refresh_recent()
+        self._refresh_task_history()
         self._install_shortcuts()
         QTimer.singleShot(300, self._startup_toasts)
         # first applied-state read, after the window has settled
@@ -1171,6 +1174,37 @@ class PulseApp(QMainWindow):
         self.toasts.show(
             "info", "That operation is no longer available in this version.", 4000)
 
+    # ============================================================
+    #  PER-TASK RUN HISTORY (v10.1) — "Ran 3d ago · ~2m" on the card
+    # ============================================================
+    def _refresh_task_history(self):
+        """Push the stored history onto every card. Mirrors the shape of
+        _on_tweak_state deliberately: both answer "what do we know about
+        this card?" and both must reach the dashboard's action cards as
+        well as the category pages."""
+        history = prefs.task_history()
+        for page in self.pages:
+            for card in page.cards:
+                card.set_history(history.get(card.item.get("task")))
+        for card in self.welcome.action_cards():
+            card.set_history(history.get(card.item.get("task")))
+
+    def _record_task_history(self, outcome: str):
+        """Fold the run that just settled into its task's history.
+
+        Timed from _start_task rather than from the worker, so the figure
+        is the WALL CLOCK the user actually waited — including the module
+        load and process spawn that a backend-side timer would miss. That
+        is the number a "typically ~2m" hint has to describe to be useful.
+        """
+        item = self._running_item
+        if item is None or self._run_started_at is None:
+            return
+        elapsed_ms = (time.monotonic() - self._run_started_at) * 1000.0
+        self._run_started_at = None
+        prefs.record_task_run(item.get("task", ""), elapsed_ms, outcome)
+        self._refresh_task_history()
+
     def _record_recent(self, outcome: str):
         """Called once a task settles. The card's own module accent and
         glyph ride along so the sidebar row is colour-coded to the module
@@ -1391,6 +1425,10 @@ class PulseApp(QMainWindow):
         # remembered for the Recent Operations trail once this settles
         self._running_item = item
         self._running_accent = accent_for_task(item.get("task"))
+        # monotonic, not time.time(): this measures an ELAPSED interval, and
+        # a wall clock can jump backwards mid-run (NTP correction, DST) and
+        # bank a negative or wildly inflated duration into the average.
+        self._run_started_at = time.monotonic()
         if card is not None:
             card.set_running(True)
         self.activity.set_running(True)   # expand the drawer for live output
@@ -1476,9 +1514,13 @@ class PulseApp(QMainWindow):
 
     def _finish_common(self, flash: str | None = None):
         # Only a real verdict is worth remembering — a cancelled run passes
-        # flash=None and is deliberately left out of the trail.
+        # flash=None and is deliberately left out of the trail, and out of
+        # the duration history: a stopped task is a partial measurement
+        # that would drag every "typically ~Ns" estimate downward.
         if flash:
             self._record_recent(flash)
+            self._record_task_history(flash)
+        self._run_started_at = None
         self._running_item = None
         # a task may have just changed one of the probed settings
         QTimer.singleShot(400, self._refresh_tweak_state)

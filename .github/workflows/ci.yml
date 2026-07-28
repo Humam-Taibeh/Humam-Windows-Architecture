@@ -1,0 +1,151 @@
+#  Pulse — continuous integration
+#
+#  Pulse is a Windows-only application driving a Windows-only engine, so
+#  every job here runs on windows-latest. There is no Linux fallback to be
+#  had: the GUI tests send live Win32 messages and the backend calls DWM,
+#  the registry and winget.
+#
+#  Three gates, deliberately ordered cheapest-first so an obvious break
+#  reports in seconds instead of after a full Qt install:
+#     1. powershell-parse  — every .ps1 tokenizes            (~10s)
+#     2. powershell-lint   — PSScriptAnalyzer, zero findings (~40s)
+#     3. python-tests      — the pytest regression suite     (~3m)
+#
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# A new push to the same branch makes an in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================
+  #  1. Every PowerShell file parses
+  # ============================================================
+  powershell-parse:
+    name: PowerShell parse check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tokenize every .ps1
+        shell: powershell
+        run: |
+          $files = Get-ChildItem -Path "src\backend" -Filter *.ps1 -Recurse
+          if ($files.Count -eq 0) {
+            Write-Error "No .ps1 files found — the backend path is wrong."
+            exit 1
+          }
+          $failed = 0
+          foreach ($f in $files) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              $f.FullName, [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed++
+              Write-Output "::error file=$($f.FullName)::$($errors.Count) parse error(s)"
+              foreach ($e in $errors) {
+                Write-Output "  L$($e.Extent.StartLineNumber): $($e.Message)"
+              }
+            }
+          }
+          Write-Output "Parsed $($files.Count) file(s); $failed failed."
+          if ($failed -gt 0) { exit 1 }
+
+  # ============================================================
+  #  2. PSScriptAnalyzer — zero findings against the tuned rule set
+  # ============================================================
+  powershell-lint:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: powershell
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force
+
+      # The rule set is tuned in PSScriptAnalyzerSettings.psd1, where every
+      # exclusion carries a written architectural rationale. Because that
+      # file brings the tree to a genuine ZERO, the gate can be absolute —
+      # any new finding is a real regression, not baseline noise.
+      - name: Analyze
+        shell: powershell
+        run: |
+          $findings = Invoke-ScriptAnalyzer -Path "src\backend" -Recurse `
+            -Settings ".\PSScriptAnalyzerSettings.psd1"
+          if ($findings) {
+            foreach ($f in $findings) {
+              $level = if ($f.Severity -eq 'Error') { 'error' } else { 'warning' }
+              Write-Output "::$level file=$($f.ScriptPath),line=$($f.Line)::$($f.RuleName): $($f.Message)"
+            }
+            Write-Output "PSScriptAnalyzer reported $($findings.Count) finding(s)."
+            exit 1
+          }
+          Write-Output "PSScriptAnalyzer: clean."
+
+  # ============================================================
+  #  3. The pytest regression suite
+  # ============================================================
+  python-tests:
+    name: pytest (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
+
+      # NOTE: QT_QPA_PLATFORM is deliberately NOT set to offscreen.
+      # 57 of the 80 tests are marked `native` — they hit-test the
+      # non-client area, query DWM and pump real Win32 messages, none of
+      # which exist on the offscreen platform plugin. GitHub's
+      # windows-latest runners provide a real window station, so the full
+      # suite runs here. conftest.pytest_collection_modifyitems skips the
+      # native set automatically if this ever lands somewhere headless, so
+      # a desktop-less runner degrades to 23 green tests instead of 21 red
+      # ones — but that would be a silent loss of coverage, hence the
+      # explicit floor asserted in the step below.
+      - name: Run tests
+        run: python -m pytest tests -v --junitxml=junit.xml
+
+      # Guard against the degradation described above: if the runner ever
+      # loses its desktop session, the suite would still be "green" while
+      # silently testing a quarter of what it should. Fail loudly instead.
+      - name: Assert the native tests actually ran
+        shell: powershell
+        run: |
+          [xml]$results = Get-Content junit.xml
+          $suite = $results.testsuites.testsuite
+          $total = [int]$suite.tests
+          $skipped = [int]$suite.skipped
+          $ran = $total - $skipped
+          Write-Output "collected=$total ran=$ran skipped=$skipped"
+          if ($ran -lt 75) {
+            Write-Error "Only $ran test(s) executed — expected the full native suite (>=75). The runner is probably headless."
+            exit 1
+          }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-results
+          path: junit.xml

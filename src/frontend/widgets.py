@@ -17,6 +17,7 @@ import math
 import os
 import random
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -32,8 +33,8 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-    QPlainTextEdit, QPushButton, QScrollArea, QSizeGrip, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QPlainTextEdit, QPushButton, QScrollArea, QSizeGrip, QSizePolicy,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from frontend.animations import (
@@ -566,6 +567,93 @@ class NavButton(QPushButton):
 # ============================================================
 #  GLASS CARD — one operation, painted glow, live re-skin
 # ============================================================
+def format_relative_age(timestamp: float, now: float | None = None) -> str:
+    """A short, honest "how long ago" for a card caption.
+
+    Deliberately COARSE and rounded down: "3 days ago" is what someone
+    wants to know, and a precise "2 days 21 hours ago" reads as noise on a
+    card. Rounding down also keeps the label from ever overstating how
+    recent a run was, which is the direction that would mislead.
+    """
+    if not timestamp:
+        return ""
+    now = time.time() if now is None else now
+    seconds = now - timestamp
+    if seconds < 0:
+        # Clock moved backwards (DST, NTP correction, a restored profile).
+        # "Just now" is the only claim still defensible.
+        return "just now"
+    if seconds < 90:
+        return "just now"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{int(minutes)}m ago"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{int(hours)}h ago"
+    days = hours / 24
+    if days < 7:
+        return f"{int(days)}d ago"
+    weeks = days / 7
+    if weeks < 5:
+        return f"{int(weeks)}w ago"
+    months = days / 30
+    if months < 12:
+        return f"{int(months)}mo ago"
+    return f"{int(days / 365)}y ago"
+
+
+def format_duration(milliseconds: float) -> str:
+    """Compact duration for the "typically ~Ns" hint."""
+    if milliseconds <= 0:
+        return ""
+    seconds = milliseconds / 1000.0
+    if seconds < 60:
+        return f"{max(1, int(round(seconds)))}s"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{int(round(minutes))}m"
+    hours = minutes / 60
+    if hours < 10:
+        # One decimal only where it carries information (1.5h, not 1.0h).
+        text = f"{hours:.1f}".rstrip("0").rstrip(".")
+        return f"{text}h"
+    return f"{int(round(hours))}h"
+
+
+def format_history_caption(entry: dict | None) -> tuple[str, str]:
+    """(pill text, tooltip) for a task's run history — ("", "") when there
+    is nothing truthful to say.
+
+    The duration half is withheld until a task has run more than once: a
+    single sample is not a "typical" duration, and presenting it as one
+    would be a confident-sounding guess drawn from one data point.
+    """
+    if not entry:
+        return "", ""
+    age = format_relative_age(entry.get("last_ts", 0.0))
+    if not age:
+        return "", ""
+
+    runs = int(entry.get("runs", 0))
+    duration = format_duration(entry.get("avg_ms", 0.0)) if runs > 1 else ""
+    # Terse by design. "Ran 3 days ago" reads better in isolation but this
+    # sits in a card footer beside the APPLIED chip, and every character
+    # here is width the responsive grid has to find (see ElidedCaption).
+    # The full sentence lives in the tooltip.
+    text = age + (f" · ~{duration}" if duration else "")
+
+    detail = [f"Last run {age}"]
+    last_ms = entry.get("last_ms", 0.0)
+    if last_ms:
+        detail.append(f"took {format_duration(last_ms)}")
+    if runs > 1:
+        detail.append(f"{runs} runs recorded, averaging {duration}")
+    if entry.get("outcome") == "err":
+        detail.append("the last run reported an error")
+    return text, " · ".join(detail)
+
+
 def _derive_card_meta(item: dict) -> list[str]:
     """The count/hint pills a card shows in its v7 meta footer — derived
     from the item's own shape so the footer stays truthful without any
@@ -626,6 +714,85 @@ class ResponsiveGridHost(QWidget):
         margins = layout.contentsMargins() if layout is not None else None
         chrome = (margins.left() + margins.right()) if margins else 0
         self.resized.emit(self.width() - chrome)
+
+
+class ElidedCaption(QLabel):
+    """A single-line caption that NEVER widens its parent.
+
+    ClampedLabel solves the vertical version of this problem; this is the
+    horizontal one, and it exists because of a regression measured while
+    adding the v10.1 run-history pill: dropping a plain QLabel into the
+    card footer took GlassCard.minimumSizeHint() from 184px to 337px once
+    both it and the APPLIED chip were visible.
+
+    That is the v9.1 density bug returning by another door. The footer was
+    deliberately built so a card's minimum is the MAX of its rows and not
+    their SUM — a plain QLabel breaks that, because QHBoxLayout adds every
+    child's minimum width together, and the widest caption ("1y ago ·
+    ~1.5h") therefore becomes a floor the responsive grid must honour on
+    every card forever.
+
+    Two mechanisms keep it honest:
+      * a MINIMUM width of zero, so the layout is never obliged to find
+        room for the text and the card's floor is unaffected, while the
+        size policy stays Preferred so the caption is still granted its
+        natural width whenever the row has room, and
+      * elision to whatever width it actually receives, so a squeezed
+        caption degrades to "1y ago…" rather than being clipped mid-glyph.
+
+    The size policy is deliberately NOT Ignored. Ignored discards the
+    sizeHint outright, which — next to the footer's trailing stretch —
+    collapsed the caption to zero width and painted nothing at all, while
+    still reporting isVisible() as True. That shipped past unit tests
+    asserting on visibility and text; only a screenshot showed the cards
+    were blank. test_history_pill_is_actually_painted now pins the width.
+
+    The untruncated text always remains in the tooltip.
+    """
+
+    #: Never demand more than this, however long the caption gets.
+    MAX_WIDTH = 120
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Preferred,
+                           QSizePolicy.Policy.Fixed)
+
+    def setFullText(self, text: str):
+        self._full = text
+        self._apply_elision()
+
+    def fullText(self) -> str:
+        return self._full
+
+    def sizeHint(self):            # noqa: N802 - Qt casing
+        hint = super().sizeHint()
+        hint.setWidth(min(hint.width(), self.MAX_WIDTH))
+        return hint
+
+    def minimumSizeHint(self):     # noqa: N802 - Qt casing
+        """The whole point: a caption is decoration and may collapse to
+        nothing rather than force a card wider."""
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt casing
+        super().resizeEvent(event)
+        self._apply_elision()
+
+    def _apply_elision(self):
+        if not self._full:
+            super().setText("")
+            return
+        available = self.width()
+        if available <= 0:
+            super().setText(self._full)
+            return
+        super().setText(
+            self.fontMetrics().elidedText(
+                self._full, Qt.TextElideMode.ElideRight, available))
 
 
 class ClampedLabel(QLabel):
@@ -946,6 +1113,12 @@ class GlassCard(QFrame):
         self._meta_pills: list[QLabel] = []
         self._applied_chip = QLabel("APPLIED")
         self._applied_chip.hide()
+        # v10.1 run history ("Ran 3d ago · ~2m"). Starts hidden and stays
+        # hidden until this task has actually been run, so a fresh install
+        # looks exactly as it did before rather than showing a row of
+        # empty placeholders.
+        self._history_pill = ElidedCaption()
+        self._history_pill.hide()
         foot = QHBoxLayout()
         foot.setSpacing(TH.SPACE["sm"])
         for text in self._meta_texts:
@@ -953,6 +1126,7 @@ class GlassCard(QFrame):
             self._meta_pills.append(pill)
             foot.addWidget(pill)
         foot.addWidget(self._applied_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+        foot.addWidget(self._history_pill, 0, Qt.AlignmentFlag.AlignVCenter)
         foot.addStretch()
         if self._badge is not None:
             foot.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -981,6 +1155,7 @@ class GlassCard(QFrame):
             tint = plaque_accent if (self._featured and i == 0) else ""
             pill.setStyleSheet(TH.card_meta_pill_qss(t, tint))
         self._applied_chip.setStyleSheet(TH.applied_chip_qss(t))
+        self._history_pill.setStyleSheet(TH.card_history_pill_qss(t))
         self._glow.set_accent(plaque_accent)
         # painted-material state, read in paintEvent
         self._bevel = TH.bevel_alphas(t)
@@ -1004,6 +1179,19 @@ class GlassCard(QFrame):
         self._applied_chip.setVisible(show)
         self._applied_chip.setToolTip(
             "This setting is currently active on your system." if show else "")
+
+    def set_history(self, entry: dict | None):
+        """Show this task's last-run caption, or nothing at all.
+
+        Same honesty rule as set_applied(): with no record, the card says
+        nothing rather than guessing or showing a "never run" placeholder
+        — a card the user ran outside Pulse, or before this feature
+        existed, genuinely has no history for us to report.
+        """
+        text, tooltip = format_history_caption(entry)
+        self._history_pill.setFullText(text)
+        self._history_pill.setToolTip(tooltip)
+        self._history_pill.setVisible(bool(text))
 
     def minimumSizeHint(self):     # noqa: N802 - Qt casing
         """The card's real floor: whatever its content needs, but never
