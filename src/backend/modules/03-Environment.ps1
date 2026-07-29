@@ -59,7 +59,12 @@ function Invoke-WingetBootstrap {
         return $false
     }
 
-    $bundleName = $asset.name
+    # Split-Path -Leaf: $asset.name is a remote-supplied string, and the
+    # -like mask above still admits separators ("Microsoft.DesktopAppInstaller_
+    # ..\..\x_8wekyb3d8bbwe.msixbundle" matches it), so joining it raw would
+    # let the response choose a write location outside $tempDir. Taking only
+    # the leaf makes the destination structurally ours.
+    $bundleName = Split-Path -Path $asset.name -Leaf
     $bundleUrl  = $asset.browser_download_url
     $bundleDest = Join-Path $tempDir $bundleName
 

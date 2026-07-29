@@ -13,6 +13,22 @@
 #>
 
 # ============================================================
+#  LITERAL-NAME HELPER
+# ============================================================
+function ConvertTo-LiteralPropertyName {
+    <# Escapes a registry VALUE NAME so the *-ItemProperty cmdlets match it
+       literally.
+
+       Remove-ItemProperty -Name accepts wildcards and has no -LiteralName
+       counterpart the way -Path has -LiteralPath. Startup value names come
+       from whatever an installer wrote, so a perfectly ordinary entry named
+       "Acme Update [x64]" or "Sync*" would match — and DELETE — its
+       siblings in the same Run key. Escaping is the only available fix. #>
+    param([Parameter(Mandatory = $true)][string]$Name)
+    return [System.Management.Automation.WildcardPattern]::Escape($Name)
+}
+
+# ============================================================
 #  STARTUP ITEM DISCOVERY
 # ============================================================
 function Get-StartupRunKeyItems {
@@ -258,13 +274,17 @@ function Disable-StartupItem {
                 New-Item -Path $Script:StartupDisabledRegPath -Force | Out-Null
             }
             Set-ItemProperty -Path $Script:StartupDisabledRegPath -Name $Item.Name -Value $Item.Command -Force
-            Remove-ItemProperty -Path $Item.RegPath -Name $Item.Name -ErrorAction Stop
+            Remove-ItemProperty -Path $Item.RegPath `
+                -Name (ConvertTo-LiteralPropertyName $Item.Name) -ErrorAction Stop
             Write-Success "Disabled startup entry '$($Item.Name)' (backed up for re-enable)."
         } else {
             if (-not (Test-Path $Script:StartupBackupFolder)) {
                 New-Item -Path $Script:StartupBackupFolder -ItemType Directory -Force | Out-Null
             }
-            Move-Item -Path $Item.Command -Destination $Script:StartupBackupFolder -Force -ErrorAction Stop
+            # -LiteralPath: a shortcut called "Game [2].lnk" is an ordinary
+            # filename, but -Path would read the brackets as a character class
+            # and move nothing.
+            Move-Item -LiteralPath $Item.Command -Destination $Script:StartupBackupFolder -Force -ErrorAction Stop
             Write-Success "Disabled startup shortcut '$($Item.Name)' (moved to backup folder)."
         }
     } catch {
@@ -281,11 +301,12 @@ function Enable-StartupItem {
                 New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Force | Out-Null
             }
             Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name $Item.Name -Value $Item.Command -Force
-            Remove-ItemProperty -Path $Script:StartupDisabledRegPath -Name $Item.Name -ErrorAction Stop
+            Remove-ItemProperty -Path $Script:StartupDisabledRegPath `
+                -Name (ConvertTo-LiteralPropertyName $Item.Name) -ErrorAction Stop
             Write-Success "Re-enabled startup entry '$($Item.Name)'."
         } else {
             $Dest = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
-            Move-Item -Path $Item.Command -Destination $Dest -Force -ErrorAction Stop
+            Move-Item -LiteralPath $Item.Command -Destination $Dest -Force -ErrorAction Stop
             Write-Success "Re-enabled startup shortcut '$($Item.Name)'."
         }
     } catch {

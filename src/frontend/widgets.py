@@ -1943,6 +1943,9 @@ class PlaybookDialog(PulseDialog):
         #: Set when the user asks to run; read by the caller.
         self.chosen: object | None = None
         self.dry_run = False
+        #: True between enter_run_mode and enter_done_mode. While set, the
+        #: dialog refuses to be dismissed — see reject().
+        self._run_locked = False
 
         accent = TH.resolve_accent(t, "automation")
         self._accent = accent
@@ -2094,6 +2097,7 @@ class PlaybookDialog(PulseDialog):
     # -- live run API (driven by PlaybookRunner) --------------
     def enter_run_mode(self, dry_run: bool):
         """Switch the browse UI into a progress view in place."""
+        self._run_locked = True
         for pill in self._pills:
             pill.setEnabled(False)
         self._preview_btn.setEnabled(False)
@@ -2124,7 +2128,39 @@ class PlaybookDialog(PulseDialog):
         # sitting above the buttons.
         self._status.setVisible(bool(text))
 
+    def reject(self):
+        """Refuse dismissal while a run is live.
+
+        Disabling the Close BUTTON was never enough: PulseDialog also
+        dismisses on Escape (QDialog's default) and on a click anywhere on
+        the scrim, and the app's native caption-close path rejects every
+        open dialog before closing the window. Any of those detached the
+        dialog from a PlaybookRunner that kept going — so a sequence of
+        machine-wide changes carried on with its progress view gone and no
+        way to reach the Stop button.
+
+        The run is stoppable, not un-abandonable: Stop is right there, and
+        the window's own close guard now sees the playbook too.
+        """
+        if self._run_locked:
+            self.set_status(
+                "This playbook is still running — press Stop to end it, "
+                "or let it finish.", "warn")
+            return
+        super().reject()
+
+    def force_close(self):
+        """Dismiss regardless of the run lock.
+
+        The one legitimate override: the app itself is shutting down and
+        has already cancelled the runner, so this dialog's exec() loop has
+        to unwind or it would outlive the window it is parented to.
+        """
+        self._run_locked = False
+        super().reject()
+
     def enter_done_mode(self):
+        self._run_locked = False
         self._close_btn.setEnabled(True)
         self._run_btn.setText("Close")
         self._run_btn.setStyleSheet(TH.dialog_go_qss(self._t, self._accent))
@@ -5478,7 +5514,8 @@ class StartupManagerDialog(PulseDialog):
 
         task_name = "StartupEnableItem" if want_enabled else "StartupDisableItem"
         thread = QThread(self)
-        worker = PowerShellTask(self._ps1_path, task_name, timeout=60, app_ids=[item_id])
+        worker = PowerShellTask(self._ps1_path, task_name, timeout=60,
+                                startup_item_id=item_id)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_toggle_finished)

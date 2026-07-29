@@ -473,7 +473,12 @@ function Invoke-GuiOfficeODTInstall {
     Write-Warn "Starting Office installation - DO NOT close the setup window or open other apps until it finishes."
     try {
         $Argument = '/configure ' + [char]34 + $ConfigPath + [char]34
-        $Proc = Start-Process -FilePath $SetupPath -ArgumentList $Argument -Wait -NoNewWindow -PassThru
+        # setup.exe resolves its own source files relative to the working
+        # directory, so it must run from the ODT folder rather than from
+        # whatever directory Pulse happened to be started in.
+        $Proc = Start-Process -FilePath $SetupPath -ArgumentList $Argument `
+            -WorkingDirectory (Split-Path -Path $SetupPath -Parent) `
+            -Wait -NoNewWindow -PassThru
         if ($Proc.ExitCode -eq 0) {
             Write-Success "Office installation command completed."
             return $true

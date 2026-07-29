@@ -273,11 +273,11 @@ function Invoke-GuiTask {
                 break
             }
             "StartupDisableItem" {
-                if ($Script:SelectedAppIds.Count -eq 0) {
+                if ([string]::IsNullOrWhiteSpace($StartupItemId)) {
                     Write-Output "##PULSE##ERROR|No startup item was specified."
                     break
                 }
-                $Target = Resolve-StartupItemByEncodedId -EncodedId $Script:SelectedAppIds[0]
+                $Target = Resolve-StartupItemByEncodedId -EncodedId $StartupItemId
                 if (-not $Target) {
                     Write-Output "##PULSE##ERROR|That startup item could not be found — the list may be stale. Rescan and try again."
                     break
@@ -292,11 +292,11 @@ function Invoke-GuiTask {
                 break
             }
             "StartupEnableItem" {
-                if ($Script:SelectedAppIds.Count -eq 0) {
+                if ([string]::IsNullOrWhiteSpace($StartupItemId)) {
                     Write-Output "##PULSE##ERROR|No startup item was specified."
                     break
                 }
-                $Target = Resolve-StartupItemByEncodedId -EncodedId $Script:SelectedAppIds[0]
+                $Target = Resolve-StartupItemByEncodedId -EncodedId $StartupItemId
                 if (-not $Target) {
                     Write-Output "##PULSE##ERROR|That startup item could not be found — the list may be stale. Rescan and try again."
                     break

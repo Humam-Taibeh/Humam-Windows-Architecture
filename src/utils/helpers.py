@@ -27,6 +27,7 @@ from __future__ import annotations
 import codecs
 import ctypes
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -86,6 +87,93 @@ VERDICT_PAYLOAD_PREFIXES = (VERDICT_DATA_PREFIX, VERDICT_META_PREFIX)
 # explicit one. Generous: a playbook runs unattended, so a step that is
 # merely slow must not be killed and reported as a failure.
 DEFAULT_PLAYBOOK_TIMEOUT = 1800
+
+
+# ============================================================
+#  TRUSTED SYSTEM EXECUTABLES  (v10.3 — anti-binary-planting)
+# ============================================================
+# CreateProcess and ShellExecute both search the CURRENT DIRECTORY before
+# most of PATH. The GUI inherits its working directory from wherever the
+# user launched it — very often the Downloads folder — so spawning
+# "powershell" or "taskkill" by bare name means a file of that name sitting
+# next to a downloaded installer wins the lookup, and runs with whatever
+# rights Pulse has. That is the entire attack: no exploit, just a filename.
+#
+# Two defences, both needed:
+#   1. every system tool this module launches is resolved to its absolute
+#      path under %SystemRoot%\System32 (below), so the search never runs;
+#   2. the child's working directory is pinned to SAFE_CWD, so the tools
+#      the BACKEND launches by bare name (winget, choco — see
+#      04-SoftwareEngine.ps1) inherit a directory an unprivileged attacker
+#      cannot write to instead of the user's download folder.
+def _system_root() -> str:
+    return os.environ.get("SystemRoot") or r"C:\Windows"
+
+
+def _system_exe(name: str) -> str:
+    """Absolute path to a System32 tool, or the bare name off-Windows.
+
+    Falls back to the bare name if the resolved path is missing rather
+    than failing the task: a machine with a relocated System32 is exotic,
+    and refusing to run at all would be a worse outcome than the search
+    path we are hardening against.
+    """
+    if sys.platform != "win32":
+        return name
+    candidate = os.path.join(_system_root(), "System32", name)
+    return candidate if os.path.exists(candidate) else name
+
+
+#: powershell.exe lives under System32\WindowsPowerShell\v1.0, not System32.
+def _powershell_exe() -> str:
+    if sys.platform != "win32":
+        return "powershell"
+    candidate = os.path.join(_system_root(), "System32", "WindowsPowerShell",
+                             "v1.0", "powershell.exe")
+    return candidate if os.path.exists(candidate) else "powershell"
+
+
+#: Working directory for every spawned backend process. Admin-writable
+#: only, so nothing an attacker can drop is on the implicit search path.
+SAFE_CWD = _system_root() if sys.platform == "win32" else None
+
+
+class UnsafeArgument(ValueError):
+    """A value that cannot be passed to the backend as an argument.
+
+    Raised rather than sanitised: every case below means the caller built
+    something the GUI has no legitimate way to produce, so quietly
+    rewriting it would hide a bug and dispatch a task the user did not
+    ask for.
+    """
+
+
+def validate_backend_arg(label: str, value: str) -> str:
+    """Gate one value on its way to `powershell -File`.
+
+    Argument passing is already structural (argv, never a parsed command
+    string — see PowerShellTask.run), so this is NOT quoting: it is the
+    small set of things argv itself cannot express unambiguously.
+
+      - a NUL or a newline truncates or splits the argument inside the
+        Win32 command-line encoding every child re-parses;
+      - a value starting with '-' binds as the NEXT PARAMETER NAME rather
+        than as this parameter's value, so `-Task -WhatIf` would silently
+        run a dry run of nothing instead of the task the user clicked.
+
+    None of these can be produced by a file picker or the task catalog, so
+    reaching here means something upstream is wrong and the user is better
+    served by a clear message than by a misbound command line.
+    """
+    if "\x00" in value or "\r" in value or "\n" in value:
+        raise UnsafeArgument(
+            f"{label} contains a line break or null character and cannot be "
+            "passed to the engine.")
+    if value.startswith("-"):
+        raise UnsafeArgument(
+            f"{label} starts with '-', which PowerShell would read as a "
+            f"parameter name rather than a value: {value!r}")
+    return value
 
 
 # ============================================================
@@ -289,12 +377,20 @@ class PowerShellTask(QObject):
     def __init__(self, ps1_path: str, task_name: str, timeout: int = 120,
                  app_ids: list[str] | None = None, dry_run: bool = False,
                  office_setup: str | None = None, office_config: str | None = None,
-                 local_installer_path: str | None = None):
+                 local_installer_path: str | None = None,
+                 startup_item_id: str | None = None):
         super().__init__()
         self.ps1_path = ps1_path
         self.task_name = task_name
         self.timeout = timeout
         self.app_ids = app_ids or []
+        # Startup Manager items travel on their OWN parameter, never through
+        # -AppIds (v10.3). An -AppIds value is a comma-separated LIST, and a
+        # startup id is "Type|||RegPath|||Name" where Name is an arbitrary
+        # registry value name — one containing a comma (e.g. "Acme, Inc.
+        # Updater") was split into fragments that matched no item, so the
+        # entry simply could not be disabled and the GUI blamed a stale list.
+        self.startup_item_id = startup_item_id
         # Resolved by the Office ODT wizard (widgets.OfficeWizardDialog)
         # before this worker is ever constructed — both set, or both None.
         self.office_setup = office_setup
@@ -317,10 +413,60 @@ class PowerShellTask(QObject):
         # while run() writes them on the worker thread.
         self._job: ProcessJob | None = None
 
-    @staticmethod
-    def _ps_quote(value: str) -> str:
-        """Escape a value for a single-quoted PowerShell string literal."""
-        return value.replace("'", "''")
+    def _build_argv(self) -> list[str]:
+        """The exact argv for this task — no shell, no command string.
+
+        WHY -File AND NOT -Command (v10.3, replacing the escaped-string
+        builder this method grew out of)
+            The old path pasted every value into a single-quoted PowerShell
+            literal inside a -Command string, escaping ' as ''. That is the
+            correct escape for ONE of the five characters PowerShell's
+            tokenizer accepts as a single-quote delimiter: it also honours
+            the typographic quotes U+2018 U+2019 U+201A U+201B. A path
+            containing a curly apostrophe — which is what Word, macOS and
+            most download pages produce, so `Adobe’s Reader.exe` is an
+            ordinary filename, not a crafted one — therefore CLOSED the
+            literal early. Benignly that produced a parse error the GUI
+            reported as "Script finished without a recognized status line";
+            deliberately it appended arbitrary PowerShell, running with
+            whatever rights Pulse had, elevation included.
+
+            No escape table fixes this class of bug, because the bug is
+            that a command string is re-parsed at all. -File takes the
+            script and its parameters as argv entries that PowerShell binds
+            directly, so a value is never tokenized and quoting stops being
+            a thing that can be got wrong. validate_backend_arg covers the
+            two things argv genuinely cannot express (see its docstring).
+
+            The dropped "[Console]::OutputEncoding = UTF8;" prefix is not a
+            loss: core.ps1 sets exactly that itself, before it loads a
+            single module (see its own comment), so the pipe was always
+            being configured twice.
+        """
+        argv = [
+            _powershell_exe(), "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", validate_backend_arg("The engine path", self.ps1_path),
+            "-Task", validate_backend_arg("The task name", self.task_name),
+        ]
+        if self.app_ids:
+            ids_csv = ",".join(self.app_ids)
+            argv += ["-AppIds", validate_backend_arg("The app selection", ids_csv)]
+        if self.startup_item_id:
+            argv += ["-StartupItemId",
+                     validate_backend_arg("The startup item", self.startup_item_id)]
+        if self.office_setup and self.office_config:
+            argv += [
+                "-OfficeSetupPath",
+                validate_backend_arg("The Office setup path", self.office_setup),
+                "-OfficeConfigPath",
+                validate_backend_arg("The Office configuration path", self.office_config),
+            ]
+        if self.local_installer_path:
+            argv += ["-LocalInstallerPath",
+                     validate_backend_arg("The installer path", self.local_installer_path)]
+        if self.dry_run:
+            argv.append("-WhatIf")
+        return argv
 
     def _kill_process_tree(self, process: subprocess.Popen):
         """Terminate powershell.exe AND everything it spawned.
@@ -341,8 +487,9 @@ class PowerShellTask(QObject):
         try:
             if sys.platform == "win32":
                 subprocess.run(
-                    ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                    [_system_exe("taskkill.exe"), "/T", "/F", "/PID", str(process.pid)],
                     capture_output=True,
+                    cwd=SAFE_CWD,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
             if process.poll() is None:
@@ -424,21 +571,7 @@ class PowerShellTask(QObject):
         timeout_timer = None
         timed_out = threading.Event()
         try:
-            # Force UTF-8 on the pipe: PowerShell 5.1 otherwise emits the OEM
-            # code page for redirected stdout, which mangles the backend's
-            # unicode glyphs (✓ ✗ — ·) and can abort the read loop entirely.
-            cmd = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-                   f"& '{self._ps_quote(self.ps1_path)}' -Task '{self._ps_quote(self.task_name)}'")
-            if self.app_ids:
-                ids_csv = ",".join(self.app_ids)
-                cmd += f" -AppIds '{self._ps_quote(ids_csv)}'"
-            if self.office_setup and self.office_config:
-                cmd += (f" -OfficeSetupPath '{self._ps_quote(self.office_setup)}'"
-                        f" -OfficeConfigPath '{self._ps_quote(self.office_config)}'")
-            if self.local_installer_path:
-                cmd += f" -LocalInstallerPath '{self._ps_quote(self.local_installer_path)}'"
-            if self.dry_run:
-                cmd += " -WhatIf"
+            argv = self._build_argv()
 
             # Binary pipe + incremental UTF-8 decoder (below): chunk-level
             # reads deliver carriage-return progress the instant it is
@@ -448,6 +581,12 @@ class PowerShellTask(QObject):
             popen_kwargs = dict(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                # Pinned, never inherited: the backend launches winget and
+                # choco by bare name, and those lookups search the working
+                # directory first. Inheriting the GUI's — typically whatever
+                # folder the user launched Pulse from — let a file dropped
+                # beside a download win that lookup. See SAFE_CWD above.
+                cwd=SAFE_CWD,
             )
 
             # STARTUPINFO / CREATE_NO_WINDOW only exist on Windows. Guard so the
@@ -466,10 +605,7 @@ class PowerShellTask(QObject):
             # bounded race this leaves).
             job = ProcessJob()
 
-            process = subprocess.Popen(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
-                **popen_kwargs,
-            )
+            process = subprocess.Popen(argv, **popen_kwargs)
             job.assign(process)
 
             with self._proc_lock:
@@ -610,6 +746,11 @@ class PowerShellTask(QObject):
                 self.finished.emit(TaskResult(
                     False, "Script finished without a recognized status line.", None, meta))
 
+        except UnsafeArgument as exc:
+            # Refused before spawning anything — the message names the value
+            # so the user can see which pick was rejected, rather than
+            # getting a task that silently did the wrong thing.
+            self.failed.emit(str(exc))
         except FileNotFoundError:
             self.failed.emit("powershell.exe was not found on this system.")
         except Exception as exc:  # noqa: BLE001 - surfaced to the user, never swallowed

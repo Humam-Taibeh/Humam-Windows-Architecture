@@ -253,3 +253,19 @@ def test_command_palette_entries_are_runnable(qapp):
     assert entries
     assert all(item.get("task") for item, _ in entries)
     assert all(crumb for _, crumb in entries)
+
+
+def test_frontend_and_backend_report_the_same_version():
+    """Both constants carry a "keep in lockstep" comment and both drifted
+    anyway — main.py and core.ps1 sat at 10.0 through the 10.1, 10.2 and
+    10.3 releases, so the title bar, the sidebar footer and QApplication
+    all reported a version no changelog entry matched. A comment is not a
+    constraint; this is."""
+    from frontend.main import APP_VERSION
+
+    core = open(os.path.join(_ROOT, "src/backend/core.ps1"),
+                encoding="utf-8-sig").read()
+    match = re.search(r'\$Script:ScriptVersion\s*=\s*"([^"]+)"', core)
+    assert match, "ScriptVersion was renamed — update this test with it"
+    assert match.group(1) == APP_VERSION, (
+        f"core.ps1 says {match.group(1)}, main.py says {APP_VERSION}")

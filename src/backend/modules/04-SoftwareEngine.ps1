@@ -429,10 +429,17 @@ function Invoke-GuiLocalInstall {
     Write-Info "Running installer: $FilePath"
     try {
         $Ext = [System.IO.Path]::GetExtension($FilePath).ToLowerInvariant()
+        # -WorkingDirectory: the installer's OWN folder, which is what
+        # double-clicking it gives and what a bundled setup expects when it
+        # looks for its payload alongside itself. Without it the child
+        # inherits Pulse's working directory instead, which is neither the
+        # installer's folder nor anything the installer knows about.
+        $WorkDir = Split-Path -Path $FilePath -Parent
         if ($Ext -eq ".msi") {
-            $Proc = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", ('"' + $FilePath + '"')) -Wait -PassThru
+            $Proc = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", ('"' + $FilePath + '"')) `
+                -WorkingDirectory $WorkDir -Wait -PassThru
         } else {
-            $Proc = Start-Process -FilePath $FilePath -Wait -PassThru
+            $Proc = Start-Process -FilePath $FilePath -WorkingDirectory $WorkDir -Wait -PassThru
         }
         if ($Proc.ExitCode -eq 0 -or $Proc.ExitCode -eq 3010) {
             Write-Success "Installer finished (exit code $($Proc.ExitCode))."

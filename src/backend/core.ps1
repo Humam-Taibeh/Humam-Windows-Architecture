@@ -36,6 +36,10 @@
                                     final ##PULSE##SUCCESS|... or
                                     ##PULSE##ERROR|... verdict line
       core.ps1 -Task <n> -AppIds a,b   narrows a bulk deploy to ticked apps
+      core.ps1 -Task StartupDisableItem -StartupItemId <id>
+                                     toggles ONE startup entry (its own
+                                     parameter, not -AppIds - the id may
+                                     legitimately contain commas)
       core.ps1 -Task InstallOfficeODT -OfficeSetupPath <p> -OfficeConfigPath <p>
                                      runs the Office Deployment Tool wizard's
                                      resolved setup.exe / configuration.xml
@@ -69,6 +73,13 @@
 param(
     [string]$Task,
     [string]$AppIds,
+    # ONE startup item, verbatim. Deliberately not folded into $AppIds:
+    # that parameter is a COMMA-SEPARATED LIST, and a startup id is
+    # "Type|||RegPath|||Name" carrying an arbitrary registry value name.
+    # Any name containing a comma ("Acme, Inc. Updater") was split into
+    # fragments that matched nothing, so the item could not be toggled at
+    # all and the GUI reported a stale list instead of the real cause.
+    [string]$StartupItemId,
     [string]$OfficeSetupPath,
     [string]$OfficeConfigPath,
     [string]$LocalInstallerPath,
@@ -116,7 +127,7 @@ if (-not $Task) {
 }
 $ErrorActionPreference = "Stop"
 
-$Script:ScriptVersion = "10.0"   # keep in lockstep with APP_VERSION (src/frontend/main.py)
+$Script:ScriptVersion = "10.3"   # keep in lockstep with APP_VERSION (src/frontend/main.py)
 
 # When invoked with -Task (i.e. from the GUI), there is no console attached
 # for Read-Host to block on. Ask-User, Invoke-WithRetry, Smart-Deploy and

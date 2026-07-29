@@ -77,12 +77,14 @@ from frontend.playbooks import PlaybookRunner, load_playbooks  # noqa: E402
 #  APP CONSTANTS
 # ============================================================
 APP_NAME = "PULSE"
-# The app version tracks the UI/design-system generation the
-# codebase actually is (v10). It had been pinned at 6.1 while the
-# design system moved through v7-v10, so the title bar, the sidebar
-# footer and QApplication all reported a version no document,
-# changelog entry or bug report matched.
-APP_VERSION = "10.0"
+# The app version tracks the UI/design-system generation the codebase
+# actually is. It had been pinned at 6.1 while the design system moved
+# through v7-v10, then at 10.0 through the 10.1/10.2/10.3 releases — so
+# the title bar, the sidebar footer and QApplication all reported a
+# version no document, changelog entry or bug report matched.
+# KEEP IN LOCKSTEP with $Script:ScriptVersion in src/backend/core.ps1;
+# tests/test_contract.py fails the build if the two drift again.
+APP_VERSION = "10.3"
 APP_CHANNEL = "Beta"   # release channel — rendered as a badge, never in prose
 PS1_FILENAME = "core.ps1"
 DEFAULT_TIMEOUT = 900
@@ -1249,7 +1251,7 @@ class PulseApp(QMainWindow):
         if not self.ps1_path:
             self.toasts.show("error", f"{PS1_FILENAME} not found — engine unavailable.", 5000)
             return
-        if self._task_is_running() or self._playbook_runner is not None:
+        if self._busy():
             self.toasts.show("info", "Something is already running — please wait.", 3000)
             return
 
@@ -1307,6 +1309,17 @@ class PulseApp(QMainWindow):
         self._playbook_runner = None
         self._playbook_dialog = None
 
+        # The run can settle AFTER the window began closing (closeEvent
+        # cancels the runner, and the cancellation arrives here a moment
+        # later), by which point Qt may already have destroyed the dialog
+        # and the shell's widgets. Reporting into a torn-down UI is not
+        # worth an exception on the way out.
+        try:
+            self._report_playbook_result(run, dialog)
+        except RuntimeError:
+            pass
+
+    def _report_playbook_result(self, run, dialog):
         prefix = "[DRY-RUN] " if run.dry_run else ""
         seconds = run.duration_ms / 1000.0
         if run.cancelled:
@@ -1451,8 +1464,8 @@ class PulseApp(QMainWindow):
             if self._exec_dialog(dialog) == QDialog.DialogCode.Accepted:
                 self._relaunch_as_admin()
             return
-        if self._thread is not None and self._thread.isRunning():
-            self.toasts.show("info", "A task is already running — please wait.", 3000)
+        if self._busy():
+            self.toasts.show("info", "Something is already running — please wait.", 3000)
             return
         if not self.ps1_path:
             self.toasts.show("error", f"{PS1_FILENAME} not found — engine unavailable.", 5000)
@@ -1753,9 +1766,13 @@ class PulseApp(QMainWindow):
         the still-running unelevated app instead of no app at all."""
         if sys.stdout is not None:
             print("[Pulse] _relaunch_as_admin: elevation requested.")
-        if self._worker is not None:
+        if self._busy():
+            # Relaunching quits this process, which kills whatever the
+            # engine is doing — including, before v10.3, a playbook this
+            # check could not see.
             self.toasts.show(
-                "info", "Wait for the current task to finish before restarting elevated.", 4000)
+                "info", "Wait for the current operation to finish before "
+                        "restarting elevated.", 4000)
             return
         if sys.platform != "win32":
             return
@@ -1887,7 +1904,28 @@ class PulseApp(QMainWindow):
             self._sync_window_state()
 
     def _task_is_running(self) -> bool:
+        """A single PowerShellTask is in flight (the one-at-a-time slot)."""
         return self._thread is not None and self._thread.isRunning()
+
+    def _playbook_is_running(self) -> bool:
+        return self._playbook_runner is not None
+
+    def _busy(self) -> bool:
+        """Is the engine mutating this machine right now, by ANY route?
+
+        v10.3: this exists because "is something running" was previously
+        asked four different ways, and every one of them inspected only
+        `self._thread`. A PlaybookRunner owns its OWN QThread, so all four
+        answered False for the longest and most destructive operation the
+        app can perform — a playbook halfway through a machine baseline.
+        The close guard skipped its confirmation, the elevation relaunch
+        offered to quit mid-run, and request_task would have started a
+        second engine on top of the first.
+
+        Every one of those questions is the same question, so it now has
+        exactly one answer.
+        """
+        return self._task_is_running() or self._playbook_is_running()
 
     def closeEvent(self, event):
         """Guard against orphaning the backend process tree: if a
@@ -1909,8 +1947,15 @@ class PulseApp(QMainWindow):
         then chose NOT to close, which is harmless today but wrong the
         moment anything else keys off that write.
         """
-        if self._task_is_running():
-            title = (self._running_item or {}).get("title", "")
+        if self._busy():
+            # Name what is actually in flight. A playbook is the case that
+            # matters most here — it is the longest operation the app runs
+            # and the one whose half-finished state is hardest to reason
+            # about — and it used to slip past this guard entirely.
+            if self._playbook_is_running():
+                title = f"the playbook “{self._playbook_runner.playbook.name}”"
+            else:
+                title = (self._running_item or {}).get("title", "")
             if self._exec_dialog(
                     CloseConfirmDialog(self, self.theme.t, title)) != QDialog.DialogCode.Accepted:
                 event.ignore()
@@ -1918,6 +1963,17 @@ class PulseApp(QMainWindow):
 
         prefs.set_window_geometry(self.saveGeometry())
         prefs.set_drawer_pinned(self.activity.is_pinned())
+        if self._playbook_is_running():
+            # Stops the step in flight and prevents the next one starting.
+            # The steps already applied are deliberately left in place —
+            # same policy as the Stop button (see PlaybookRunner.cancel).
+            self._playbook_runner.cancel()
+            # ...then let the run dialog's exec() loop unwind. It is
+            # parented to this window, so leaving it up would outlive its
+            # own parent. force_close is the sanctioned override of the
+            # run lock that reject() otherwise enforces.
+            if self._playbook_dialog is not None:
+                self._playbook_dialog.force_close()
         if self._task_is_running():
             if self._worker is not None:
                 self._worker.cancel()
