@@ -52,7 +52,7 @@ _SRC_DIR = os.path.dirname(_FRONTEND_DIR)
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from utils import prefs  # noqa: E402
+from utils import prefs, resources  # noqa: E402
 from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
@@ -98,14 +98,7 @@ _FLUSH_MARGINS = (10, 6, 10, 10)
 
 def _locate_icon() -> str | None:
     """assets/pulse.ico — project root in dev, _MEIPASS in the bundle."""
-    candidates = [os.path.join(os.path.dirname(_SRC_DIR), "assets", "pulse.ico")]
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        candidates.insert(0, os.path.join(meipass, "assets", "pulse.ico"))
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-    return None
+    return resources.find_resource("assets/pulse.ico")
 
 
 # ============================================================
@@ -1688,10 +1681,8 @@ class PulseApp(QMainWindow):
             self._open_health_report()
             return
 
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        localappdata = os.environ.get(
-            "LOCALAPPDATA",
-            os.path.join(os.path.expanduser("~"), "AppData", "Local"))
+        desktop = resources.desktop_dir()
+        localappdata = resources.local_appdata()
         # Newest home first, then the pre-6.1 Desktop locations (including
         # the pre-rebrand v5.x names) — upgraded machines keep working.
         targets = {
@@ -1722,19 +1713,22 @@ class PulseApp(QMainWindow):
     # ============================================================
     #  ENGINE / ENVIRONMENT
     # ============================================================
-    def _locate_ps1(self) -> str | None:
-        candidates = [
-            os.path.join(_SRC_DIR, "backend", PS1_FILENAME),
-            os.path.join(_FRONTEND_DIR, PS1_FILENAME),
-            os.path.join(os.path.dirname(_SRC_DIR), PS1_FILENAME),
-        ]
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:  # PyInstaller onefile extraction dir
-            candidates.insert(0, os.path.join(meipass, "src", "backend", PS1_FILENAME))
-        for path in candidates:
-            if os.path.exists(path):
-                return path
-        return None
+    @staticmethod
+    def _locate_ps1() -> str | None:
+        """The PowerShell engine.
+
+        Searched across BUNDLED roots only — deliberately not the
+        directory the exe sits in, unlike playbooks. See
+        utils/resources.py: a core.ps1 that could be dropped beside an
+        installed Pulse would be a script anyone with write access to the
+        install folder could swap, and it runs elevated on every task.
+        """
+        return resources.find_resource(
+            f"src/backend/{PS1_FILENAME}",
+            f"src/frontend/{PS1_FILENAME}",
+            f"backend/{PS1_FILENAME}",
+            PS1_FILENAME,
+        )
 
     @staticmethod
     def _check_admin() -> bool:

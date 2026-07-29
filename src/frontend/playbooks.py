@@ -28,13 +28,13 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QObject, QThread, Signal
 
 from frontend.menu_structure import iter_leaf_items, requires_admin
+from utils import resources
 from utils.helpers import DEFAULT_PLAYBOOK_TIMEOUT, PowerShellTask, TaskResult
 
 #: Directory name searched for *.json playbooks.
@@ -86,27 +86,16 @@ class PlaybookError(ValueError):
 def playbook_dirs() -> list[str]:
     """Every directory searched for playbooks, most specific first.
 
-    Mirrors main._locate_ps1's resolution order rather than inventing a
-    second one: the PyInstaller extraction dir first when frozen, then the
-    repo layout for a source checkout.
+    USER roots, not bundled ones (utils/resources.py): dropping a
+    `workstation-standard.json` next to an installed Pulse is a supported
+    workflow, so the executable's own directory is searched first. That is
+    a deliberate widening relative to how the ENGINE is resolved, and it
+    is safe for the same reason it is useful — a playbook can only name
+    tasks the dispatcher already implements (see parse_playbook), so it
+    adds recipes, never capability.
     """
-    here = os.path.dirname(os.path.abspath(__file__))
-    src_dir = os.path.dirname(here)
-    repo_root = os.path.dirname(src_dir)
-
-    candidates = [
-        os.path.join(repo_root, PLAYBOOK_DIRNAME),
-        os.path.join(src_dir, PLAYBOOK_DIRNAME),
-    ]
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        candidates.insert(0, os.path.join(meipass, PLAYBOOK_DIRNAME))
-    # Alongside a frozen exe, so a technician can add playbooks to an
-    # installed copy without rebuilding it.
-    if getattr(sys, "frozen", False):
-        candidates.insert(0, os.path.join(
-            os.path.dirname(sys.executable), PLAYBOOK_DIRNAME))
-    return [path for path in candidates if os.path.isdir(path)]
+    return resources.resource_dirs(PLAYBOOK_DIRNAME,
+                                   roots=resources.user_roots())
 
 
 def _catalog() -> dict[str, dict]:
@@ -312,10 +301,6 @@ class PlaybookRunner(QObject):
         self.run.cancelled = True
         if self._worker is not None:
             self._worker.cancel()
-
-    @property
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.isRunning()
 
     # -- the queue --------------------------------------------
     def _advance(self):

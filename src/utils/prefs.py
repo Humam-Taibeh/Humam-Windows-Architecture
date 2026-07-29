@@ -136,10 +136,6 @@ def push_recent_operation(task: str, title: str, glyph: str,
     _settings().setValue("ui/recent", json.dumps(trail[:RECENT_LIMIT]))
 
 
-def clear_recent_operations():
-    _settings().remove("ui/recent")
-
-
 # ============================================================
 #  PER-TASK HISTORY  (last run + typical duration)
 # ============================================================

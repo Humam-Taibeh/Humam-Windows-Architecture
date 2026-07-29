@@ -122,7 +122,6 @@ SPACE = {
     "md":  12,   # between related blocks
     "lg":  16,   # grid gutters, card padding
     "xl":  24,   # section separation, dialog padding
-    "xxl": 32,   # page-level breathing room
 }
 
 # Semantic radii — named by the surface they belong to, so a card and a
@@ -522,10 +521,6 @@ class ThemeManager(QObject):
     @property
     def t(self) -> dict:
         return _MODES[self._mode]
-
-    @property
-    def is_dark(self) -> bool:
-        return self._mode == "dark"
 
     def set_mode(self, mode: str):
         if mode in _MODES and mode != self._mode:

@@ -37,7 +37,6 @@ from PySide6.QtCore import (
     QEasingCurve, QElapsedTimer, QObject, QPoint, QPropertyAnimation, QTimer,
     Qt, Signal,
 )
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFrame, QGraphicsOpacityEffect, QHBoxLayout,
     QLabel, QWidget,

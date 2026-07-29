@@ -50,6 +50,7 @@ from frontend import theme as TH
 # native (threading process ownership through main.py) would either block
 # the dialog's own loading UI or duplicate PowerShellTask's cancellation-
 # safe process/thread bookkeeping here.
+from utils import resources  # noqa: E402
 from utils.helpers import PowerShellTask, TaskResult  # noqa: E402
 
 
@@ -397,10 +398,6 @@ class TitleBar(QWidget):
                 btn.setProperty("nchover", on)
                 btn.style().unpolish(btn)
                 btn.style().polish(btn)
-
-    def set_max_hover(self, on: bool):
-        """Back-compat shim over set_nc_hover."""
-        self.set_nc_hover("max" if on else None)
 
     # -- maximize / restore -----------------------------------
     def _toggle_max(self):
@@ -832,16 +829,6 @@ class ClampedLabel(QLabel):
 
     def fullText(self) -> str:
         return self._full
-
-    def setMaxLines(self, n: int):
-        n = max(1, n)
-        if n != self._max_lines:
-            self._max_lines = n
-            self._pin_height()
-            self._reflow()
-
-    def is_elided(self) -> bool:
-        return self._elided
 
     # -- layout -----------------------------------------------
     def _pin_height(self, lines: int | None = None):
@@ -2393,9 +2380,8 @@ class HealthReportDialog(PulseDialog):
         if not self._report:
             return
         stamp = time.strftime("%Y%m%d_%H%M")
-        default = os.path.join(
-            os.path.join(os.path.expanduser("~"), "Desktop"),
-            f"Pulse_HealthReport_{stamp}.{kind}")
+        default = os.path.join(resources.desktop_dir(),
+                               f"Pulse_HealthReport_{stamp}.{kind}")
         filters = {"html": "HTML report (*.html)", "json": "JSON data (*.json)"}
         path, _chosen = QFileDialog.getSaveFileName(
             self, f"Export {kind.upper()} report", default, filters[kind])
@@ -2762,9 +2748,6 @@ class LiveConsole(QPlainTextEdit):
         observed, and un-stamping would have to parse them back out of text
         that may legitimately contain a similar prefix."""
         self._timestamps = bool(on)
-
-    def timestamps_enabled(self) -> bool:
-        return self._timestamps
 
     def _stamp(self, text: str) -> str:
         if not self._timestamps:
@@ -3143,7 +3126,7 @@ class ActivityDrawer(QWidget):
             self._tell("info", "There is no output to save yet.")
             return
         default = os.path.join(
-            os.path.join(os.path.expanduser("~"), "Desktop"),
+            resources.desktop_dir(),
             f"Pulse_Output_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.txt")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save live output", default, "Text files (*.txt);;All files (*)")
