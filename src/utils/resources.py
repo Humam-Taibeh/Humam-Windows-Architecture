@@ -62,14 +62,33 @@ def bundled_roots() -> list[str]:
 
     Used for anything whose contents are part of the application: the
     PowerShell engine and the app icon.
+
+    FROZEN BUILDS RETURN THE BUNDLE AND NOTHING ELSE (v1.0), and that is a
+    security fix rather than a tidy-up. REPO_ROOT and SRC_DIR are derived
+    from this module's own __file__, which inside a PyInstaller bundle is a
+    synthetic path under the extraction directory — so in a ONEFILE build,
+    where _MEIPASS is `%TEMP%\\_MEIxxxxxx`, the ladder resolved to:
+
+        SRC_DIR   = %TEMP%\\_MEIxxxxxx
+        REPO_ROOT = %TEMP%              <-- user-writable, and a "bundled" root
+
+    That silently handed back the exact boundary this module's docstring
+    promises to hold: `%TEMP%\\src\\backend\\core.ps1` became a fallback
+    location for the elevated engine, and because resource_dirs() merges
+    every match rather than stopping at the first, `%TEMP%\\playbooks\\*.json`
+    joined the playbook list outright. Any process running as the user could
+    write both.
+
+    The source-checkout ladder is only meaningful when there IS a checkout,
+    so it is now scoped to exactly that case.
     """
-    roots = []
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        roots.append(meipass)
-    roots.append(REPO_ROOT)
-    roots.append(SRC_DIR)
-    return _dedupe(roots)
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        # No _MEIPASS on a frozen build is not a layout we ship, but the exe's
+        # own directory is the only defensible answer if it ever happens —
+        # never a path derived from __file__.
+        return _dedupe([meipass or os.path.dirname(sys.executable)])
+    return _dedupe([REPO_ROOT, SRC_DIR])
 
 
 def user_roots() -> list[str]:

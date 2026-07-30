@@ -52,6 +52,164 @@ function Get-OSCaption {
 }
 
 # ============================================================
+#  USER-HIVE TARGETING  (v1.0 - the split-token problem)
+# ============================================================
+# HKCU: IS NOT "THE USER" - IT IS "WHOEVER OWNS THIS TOKEN".
+#
+# When a standard user elevates Pulse by typing a DIFFERENT account's
+# administrator credentials into the UAC dialog - the "over the shoulder"
+# flow, which is the normal case on managed and Enterprise machines, and on
+# any home PC whose daily account is not itself an admin - the elevated
+# process belongs to that administrator. HKCU: then resolves to the
+# ADMINISTRATOR's hive, not the hive of the person sitting at the desktop.
+#
+# Every per-user tweak Pulse applies is an HKCU write: dark mode, mouse
+# acceleration, taskbar layout, Game Mode, the advertising ID
+# ($Script:TweakCatalog in 01-Catalogs.ps1). Under a split token all of them
+# landed on a profile nobody was looking at.
+#
+# THE REASON THIS WAS INVISIBLE, AND WHY IT IS THE WORST KIND OF BUG:
+# 11-StateProbe.ps1 reads the same HKCU:, so it read back exactly what had
+# just been written and the card lit up "Applied". The rollback snapshots in
+# 02-Safety.ps1 went to the administrator's hive too, so "Reset All Tweaks"
+# had nothing to restore for the real user. The system reported complete,
+# consistent success for work that had no effect on the machine the user saw.
+#
+# THE FIX: resolve the DESKTOP user's SID and rewrite HKCU: paths to that
+# user's subtree of HKEY_USERS. Their hive is already loaded - they are
+# signed in - so this needs no `reg load` and no impersonation. When the
+# token and the desktop user are the same account (the common case: an admin
+# elevating themselves, or an unelevated run) nothing is rewritten at all and
+# this costs one cached comparison.
+$Script:UserHiveRoot         = $null    # $null = HKCU: is already correct
+$Script:IsSplitToken         = $false
+$Script:SplitTokenAccount    = $null    # the desktop user, for the notice
+$Script:SplitTokenUnresolved = $false   # split detected, hive NOT reachable
+$Script:SplitTokenNoticeShown = $false
+$Script:_UserHiveResolved    = $false
+
+function Test-IsElevatedSession {
+    <# Cheap, local, no WMI - unlike Get-OSCaption this is safe to call on
+       the hot path. #>
+    try {
+        return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
+}
+
+function Get-InteractiveUserSid {
+    <# SID of the account owning the interactive desktop session, or $null.
+
+       Win32_ComputerSystem.UserName is the console session's user; it is
+       $null on a machine with nobody signed in interactively (a scheduled
+       task, a service, an SSH session), which is a legitimate answer meaning
+       "there is no desktop user to target". #>
+    try {
+        $Account = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
+        if ([string]::IsNullOrWhiteSpace($Account)) { return $null }
+        $Sid = (New-Object System.Security.Principal.NTAccount($Account)).Translate(
+            [System.Security.Principal.SecurityIdentifier])
+        return [PSCustomObject]@{ Account = $Account; Sid = $Sid.Value }
+    } catch {
+        Write-Log "Could not resolve the interactive desktop user: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Initialize-UserHiveTargeting {
+    <# Resolves $Script:UserHiveRoot once per process.
+
+       Only pays the WMI cost when the session is actually elevated, because
+       an unelevated Pulse cannot be running as anyone but the desktop user -
+       there is no split to detect. #>
+    if ($Script:_UserHiveResolved) { return }
+    $Script:_UserHiveResolved = $true
+
+    if (-not (Test-IsElevatedSession)) { return }
+
+    $TokenSid = try {
+        [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    } catch { $null }
+    if (-not $TokenSid) { return }
+
+    $Desktop = Get-InteractiveUserSid
+    if (-not $Desktop) { return }
+    if ($Desktop.Sid -eq $TokenSid) { return }   # same account - nothing to do
+
+    $Script:IsSplitToken = $true
+    $Script:SplitTokenAccount = $Desktop.Account
+
+    # The desktop user is signed in, so their hive is mounted under
+    # HKEY_USERS. If it somehow is not, do NOT silently fall back to HKCU: -
+    # that is the exact wrong-profile write this whole block exists to stop.
+    # Flag it instead and let the tweak paths refuse.
+    $Candidate = "Registry::HKEY_USERS\$($Desktop.Sid)"
+    if (Test-Path $Candidate) {
+        $Script:UserHiveRoot = $Candidate
+        Write-Log "SPLIT TOKEN: elevated as a different account than the desktop user '$($Desktop.Account)'. Per-user settings will be written to that user's hive ($($Desktop.Sid))."
+    } else {
+        $Script:SplitTokenUnresolved = $true
+        Write-Log "SPLIT TOKEN: desktop user '$($Desktop.Account)' ($($Desktop.Sid)) has no loaded hive under HKEY_USERS. Per-user tweaks cannot be targeted correctly."
+    }
+}
+
+function Resolve-UserRegPath {
+    <# Rewrites an HKCU: path onto the desktop user's hive when this session
+       is elevated as somebody else. A no-op in every other case, and
+       IDEMPOTENT - an already-rewritten path no longer starts with HKCU:,
+       so passing a path through twice is harmless (several call sites do).
+
+       Only HKCU: is touched. HKLM:, HKU: and provider-qualified paths are
+       machine-wide or already explicit and are returned verbatim. #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not $Script:_UserHiveResolved) { Initialize-UserHiveTargeting }
+    if (-not $Script:UserHiveRoot) { return $Path }
+    if ($Path -notlike 'HKCU:\*') { return $Path }
+
+    $Relative = $Path.Substring(6)      # strip "HKCU:\"
+
+    # HKCU\Software\Classes is a symlink to HKU\<SID>_Classes, not a child of
+    # HKU\<SID>. The classic-context-menu tweak writes a CLSID there, so
+    # mapping it to the plain subtree would put the key somewhere Explorer
+    # never reads.
+    if ($Relative -eq 'Software\Classes' -or $Relative -like 'Software\Classes\*') {
+        $Tail = $Relative.Substring('Software\Classes'.Length).TrimStart('\')
+        $ClassesRoot = "$($Script:UserHiveRoot)_Classes"
+        if ([string]::IsNullOrEmpty($Tail)) { return $ClassesRoot }
+        return "$ClassesRoot\$Tail"
+    }
+
+    return "$($Script:UserHiveRoot)\$Relative"
+}
+
+function Test-UserHiveWritable {
+    <# $false only when a split token was detected AND the desktop user's
+       hive could not be reached - the one case where an HKCU write would
+       silently hit the wrong profile. Callers report this as a failure
+       rather than proceeding. #>
+    if (-not $Script:_UserHiveResolved) { Initialize-UserHiveTargeting }
+    return -not $Script:SplitTokenUnresolved
+}
+
+function Write-SplitTokenNotice {
+    <# Surfaces the split ONCE per process, on the console and in the GUI's
+       live output. Silence here would leave the user with per-user settings
+       applied to an account they never see, which is precisely the failure
+       mode that made this bug so expensive to find. #>
+    if (-not $Script:_UserHiveResolved) { Initialize-UserHiveTargeting }
+    if (-not $Script:IsSplitToken -or $Script:SplitTokenNoticeShown) { return }
+    $Script:SplitTokenNoticeShown = $true
+    if ($Script:SplitTokenUnresolved) {
+        Write-Warn "Pulse is elevated as a different account than the signed-in user ($Script:SplitTokenAccount), and that user's settings hive is not reachable. Per-user tweaks will be refused rather than applied to the wrong profile. Sign in as an administrator, or run Pulse without elevating, to change per-user settings."
+    } else {
+        Write-Info "Elevated as a different account than the signed-in user - per-user settings are being applied to '$Script:SplitTokenAccount' (the desktop user), not to the administrator account."
+    }
+}
+
+# ============================================================
 #  LOG LOCATION (%LOCALAPPDATA%\Pulse\logs) + SIZE ROTATION
 # ============================================================
 # v6.1: the log moved off the Desktop - on OneDrive-synced Desktops every
@@ -351,6 +509,10 @@ function Read-NumericChoice {
 # ============================================================
 function Get-RegValue {
     param([string]$Path, [string]$Name)
+    # Resolve-UserRegPath so a read sees the same hive a write targets. If the
+    # two ever disagreed, the state probe would report a tweak as applied on
+    # the strength of a value in a profile the tweak did not touch.
+    $Path = Resolve-UserRegPath $Path
     if (-not (Test-Path $Path)) { return $null }
     try { return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name } catch { return $null }
 }
@@ -433,6 +595,23 @@ function Invoke-Mutation {
     return (& $Action)
 }
 
+function Assert-UserRegPathTargetable {
+    <# Throws when $Path is a per-user path we cannot target correctly.
+
+       Only fires in the narrow split-token-with-unreachable-hive case. It
+       throws rather than returning $false because every mutation call site
+       already sits inside a try/catch that reports through Write-ErrorX -
+       so this surfaces as an honest task failure instead of a write that
+       "succeeds" against the administrator's profile. #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if ($Path -notlike 'HKCU:\*') { return }
+    if (Test-UserHiveWritable) { return }
+    Write-SplitTokenNotice
+    throw ("Refusing to write '$Path': Pulse is elevated as a different account than the signed-in user " +
+           "($Script:SplitTokenAccount), whose settings hive is not reachable. Applying it here would change the " +
+           "administrator's profile instead. Run Pulse without elevating to change per-user settings.")
+}
+
 function Set-RegValue {
     <# Guarded registry write: creates the key path if missing, then sets
        the value. Throws on failure (callers keep their own try/catch). #>
@@ -442,7 +621,12 @@ function Set-RegValue {
         [Parameter(Mandatory = $true)]$Value,
         [string]$Type
     )
+    # Dry-run reports the path the USER asked for, not the rewritten one - a
+    # [WHATIF] line naming HKEY_USERS\S-1-5-21-... would be accurate and
+    # unreadable. The rewrite happens after the gate.
     if (Test-DryRun "Set registry value $Path\$Name = '$Value'") { return }
+    Assert-UserRegPathTargetable $Path
+    $Path = Resolve-UserRegPath $Path
     if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
     if ($Type) {
         Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type -Force -ErrorAction Stop
@@ -459,6 +643,8 @@ function Remove-RegValue {
         [Parameter(Mandatory = $true)][string]$Name
     )
     if (Test-DryRun "Remove registry value $Path\$Name") { return }
+    Assert-UserRegPathTargetable $Path
+    $Path = Resolve-UserRegPath $Path
     if (Test-Path $Path) { Remove-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue }
 }
 
@@ -467,5 +653,7 @@ function Remove-RegKey {
        inside Invoke-WithRetry keep their retry semantics. #>
     param([Parameter(Mandatory = $true)][string]$Path)
     if (Test-DryRun "Remove registry key $Path") { return }
+    Assert-UserRegPathTargetable $Path
+    $Path = Resolve-UserRegPath $Path
     if (Test-Path $Path) { Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop }
 }

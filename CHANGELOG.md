@@ -12,6 +12,58 @@ GUI version, with core changes called out explicitly.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Activation Status** — a new read-only card under *Safety & Recovery*
+  reporting Windows and Office licence state. It answers the three
+  questions a technician actually has about a machine: is it licensed,
+  under which channel (retail / OEM / volume-KMS / MAK / subscription),
+  and does that licence expire. Each state is shown as a tone-coloured
+  verdict pill plus a plain-English sentence explaining what it means —
+  `LicenseStatus` is an integer the licensing service never explains, and
+  it is now translated in exactly one place (`Get-ActivationStatusDetail`)
+  so the GUI, the console view and the log cannot describe the same code
+  differently.
+  - New backend module `src/backend/modules/13-Activation.ps1`, with a
+    HARD READ-ONLY contract inherited from `11-StateProbe.ps1`: it reads
+    the Software Licensing WMI providers and formats what they say. It
+    does not install a product key, contact a licensing server, or alter
+    licence state — pinned by
+    `test_contract.py::test_activation_module_is_read_only`, which fails
+    on `slmgr`, `ospp`, `ActivateProduct`, `Invoke-CimMethod`,
+    `Invoke-Expression`, `Invoke-WebRequest` and `Start-Process` alike.
+  - Needs **no elevation**: every property read is available to a standard
+    user, so the card answers in full from an unelevated Pulse. The one
+    field that genuinely requires admin (the OEM firmware licence) reports
+    *unknown* rather than a false "absent".
+  - Both Office licensing platforms are queried and merged — modern
+    Click-to-Run / Microsoft 365 under `SoftwareLicensingProduct`, and
+    Office 2010-era installs under `OfficeSoftwareProtectionProduct` — so
+    an absent provider is never mistaken for "Office is unlicensed". A
+    separate install probe distinguishes *no Office on this machine* from
+    *Office installed but holding no licence*, which are opposite findings
+    that both produce an empty licence list.
+  - When something needs changing, the dialog hands off to Windows' own
+    activation page (`ms-settings:activation`) rather than acting on the
+    licence itself.
+  - Also reachable from the standalone console app: **Safety & Recovery →
+    [5] Activation Status**.
+- **Contract tests** for three drift classes that previously had none: a
+  GUI-local `@action` with no handler in `main.py` (it used to fail at
+  click time with "Unknown local action"), a card `glyph` absent from
+  `theme.GLYPHS` (renders a blank icon plaque, silently), and the
+  activation module's read-only guarantee.
+
+### Changed
+- `HealthReportDialog`'s private row/note/heading renderers were lifted to
+  module-level `report_row` / `report_note` / `report_heading` primitives
+  now shared with the activation report. Both surfaces render the same
+  shape of content and must colour a tone identically — two private copies
+  of that mapping would eventually disagree about what amber means.
+
+---
+
 ## [10.0.0] — 2026-07-28
 
 The v10 UX overhaul. The app version was pinned at 6.1 while the

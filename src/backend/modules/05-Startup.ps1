@@ -31,10 +31,95 @@ function ConvertTo-LiteralPropertyName {
 # ============================================================
 #  STARTUP ITEM DISCOVERY
 # ============================================================
+# ============================================================
+#  ORIGIN LEDGER (v1.0)
+#  Remembers which hive / folder a disabled item was removed from, so
+#  re-enabling puts it back where it was instead of defaulting to the
+#  current user. See $Script:StartupOriginRegPath in 01-Catalogs.ps1 for
+#  why this lives in a sub-key rather than beside the disabled entries.
+# ============================================================
+function Get-StartupOriginName {
+    param(
+        [Parameter(Mandatory = $true)][string]$Type,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    return "$Type|||$Name"
+}
+
+function Save-StartupOrigin {
+    <# Best-effort: losing the origin record degrades a later re-enable to
+       the old per-user default, which is worse than it could be but far
+       better than failing the disable the user actually asked for. #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Type,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Origin
+    )
+    try {
+        $Path = Resolve-UserRegPath $Script:StartupOriginRegPath
+        if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
+        Set-ItemProperty -Path $Path -Name (Get-StartupOriginName -Type $Type -Name $Name) `
+            -Value $Origin -Type String -Force -ErrorAction Stop
+    } catch {
+        Write-Log "Could not record the origin of startup item '$Name' ($Type): $($_.Exception.Message). A later re-enable will fall back to the current user."
+    }
+}
+
+function Get-StartupOrigin {
+    <# The recorded origin, or $null when there is none - an item disabled by
+       a pre-1.0 Pulse, or one whose record could not be written. Callers
+       must treat $null as "fall back to the per-user location". #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Type,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $Value = Get-RegValue -Path $Script:StartupOriginRegPath `
+        -Name (Get-StartupOriginName -Type $Type -Name $Name)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    return [string]$Value
+}
+
+function Remove-StartupOrigin {
+    param(
+        [Parameter(Mandatory = $true)][string]$Type,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $Path = Resolve-UserRegPath $Script:StartupOriginRegPath
+    if (-not (Test-Path $Path)) { return }
+    Remove-ItemProperty -Path $Path `
+        -Name (ConvertTo-LiteralPropertyName (Get-StartupOriginName -Type $Type -Name $Name)) `
+        -ErrorAction SilentlyContinue
+}
+
+function Resolve-StartupRestoreTarget {
+    <# Where an item should be put back.
+
+       A recorded origin is only honoured if it is one of the KNOWN startup
+       locations ($Script:StartupRunKeyPaths / $Script:StartupFolderPaths).
+       The record lives in a user-writable hive, and this value is fed
+       straight to Set-ItemProperty / Move-Item, so an allow-list is what
+       keeps a tampered record from redirecting a write somewhere arbitrary.
+       An unrecognised or missing origin falls back to the per-user location,
+       which is exactly the pre-1.0 behaviour. #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Type,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $Known = if ($Type -eq "Registry") { $Script:StartupRunKeyPaths } else { $Script:StartupFolderPaths }
+    $Fallback = $Known[0]        # per-user is always the first entry
+    $Origin = Get-StartupOrigin -Type $Type -Name $Name
+    if (-not $Origin) { return $Fallback }
+    foreach ($Candidate in $Known) {
+        if ($Origin -eq $Candidate) { return $Candidate }
+    }
+    Write-Log "Startup item '$Name' ($Type) recorded an unrecognised origin '$Origin' - restoring to '$Fallback' instead."
+    return $Fallback
+}
+
 function Get-StartupRunKeyItems {
     $Keys = @(
-        @{ Hive = "HKCU"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" },
-        @{ Hive = "HKLM"; Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" }
+        @{ Hive = "HKCU"; Path = $Script:StartupRunKeyPaths[0] },
+        @{ Hive = "HKLM"; Path = $Script:StartupRunKeyPaths[1] }
     )
     $Items = @()
     foreach ($Key in $Keys) {
@@ -62,10 +147,7 @@ function Get-StartupRunKeyItems {
 }
 
 function Get-StartupFolderItems {
-    $Folders = @(
-        "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup",
-        "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
-    )
+    $Folders = @($Script:StartupFolderPaths)
     $Items = @()
     foreach ($Folder in $Folders) {
         if (-not (Test-Path $Folder)) { continue }
@@ -85,8 +167,9 @@ function Get-StartupFolderItems {
 
 function Get-DisabledStartupItems {
     $Items = @()
-    if (Test-Path $Script:StartupDisabledRegPath) {
-        $Props = Get-ItemProperty -Path $Script:StartupDisabledRegPath -ErrorAction SilentlyContinue
+    $DisabledPath = Resolve-UserRegPath $Script:StartupDisabledRegPath
+    if (Test-Path $DisabledPath) {
+        $Props = Get-ItemProperty -Path $DisabledPath -ErrorAction SilentlyContinue
         if ($Props) {
             foreach ($Prop in $Props.PSObject.Properties) {
                 # Skip ALL of Get-ItemProperty's synthetic PS* members. Missing
@@ -270,17 +353,28 @@ function Disable-StartupItem {
     if (Test-DryRun "Disable startup item '$($Item.Name)' ($($Item.Type)) - backed up for re-enable") { return }
     try {
         if ($Item.Type -eq "Registry") {
-            if (-not (Test-Path $Script:StartupDisabledRegPath)) {
-                New-Item -Path $Script:StartupDisabledRegPath -Force | Out-Null
+            $DisabledPath = Resolve-UserRegPath $Script:StartupDisabledRegPath
+            if (-not (Test-Path $DisabledPath)) {
+                New-Item -Path $DisabledPath -Force | Out-Null
             }
-            Set-ItemProperty -Path $Script:StartupDisabledRegPath -Name $Item.Name -Value $Item.Command -Force
+            Set-ItemProperty -Path $DisabledPath -Name $Item.Name -Value $Item.Command -Force
+            # Record the hive BEFORE the removal: $Item.RegPath is the only
+            # place that knowledge exists, and after the delete there is no
+            # way to recover whether this was an all-users (HKLM) entry.
+            Save-StartupOrigin -Type "Registry" -Name $Item.Name -Origin $Item.RegPath
             Remove-ItemProperty -Path $Item.RegPath `
                 -Name (ConvertTo-LiteralPropertyName $Item.Name) -ErrorAction Stop
-            Write-Success "Disabled startup entry '$($Item.Name)' (backed up for re-enable)."
+            $Scope = if ($Item.Hive -eq "HKLM") { " (all users)" } else { "" }
+            Write-Success "Disabled startup entry '$($Item.Name)'$Scope - backed up for re-enable."
         } else {
             if (-not (Test-Path $Script:StartupBackupFolder)) {
                 New-Item -Path $Script:StartupBackupFolder -ItemType Directory -Force | Out-Null
             }
+            # Same reasoning as the registry branch: the containing folder is
+            # what distinguishes a per-user shortcut from an all-users one,
+            # and moving the file destroys that evidence.
+            Save-StartupOrigin -Type "Folder" -Name $Item.Name `
+                -Origin (Split-Path -Path $Item.Command -Parent)
             # -LiteralPath: a shortcut called "Game [2].lnk" is an ordinary
             # filename, but -Path would read the brackets as a character class
             # and move nothing.
@@ -293,22 +387,43 @@ function Disable-StartupItem {
 }
 
 function Enable-StartupItem {
+    <# Restores an item to the location it was DISABLED FROM, not to the
+       current user. Before v1.0 both branches hard-coded the per-user
+       target, so an all-users entry (HKLM Run, or a ProgramData shortcut)
+       came back as a current-user-only entry: it still launched for whoever
+       clicked re-enable, and silently stopped launching for every other
+       account on the machine. Nothing reported that, because the operation
+       itself succeeded.
+
+       Restoring to HKLM / ProgramData needs elevation, which the dispatcher
+       already requires for StartupEnableItem
+       ($Script:AdminRequiredTasks, 01-Catalogs.ps1). #>
     param($Item)
-    if (Test-DryRun "Re-enable startup item '$($Item.Name)' ($($Item.Type))") { return }
+    if (Test-DryRun "Re-enable startup item '$($Item.Name)' ($($Item.Type)) at its original location") { return }
     try {
+        $Target = Resolve-StartupRestoreTarget -Type $Item.Type -Name $Item.Name
         if ($Item.Type -eq "Registry") {
-            if (-not (Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run")) {
-                New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Force | Out-Null
-            }
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name $Item.Name -Value $Item.Command -Force
-            Remove-ItemProperty -Path $Script:StartupDisabledRegPath `
+            if (-not (Test-Path $Target)) { New-Item -Path $Target -Force | Out-Null }
+            Set-ItemProperty -Path $Target -Name $Item.Name -Value $Item.Command -Force
+            Remove-ItemProperty -Path (Resolve-UserRegPath $Script:StartupDisabledRegPath) `
                 -Name (ConvertTo-LiteralPropertyName $Item.Name) -ErrorAction Stop
-            Write-Success "Re-enabled startup entry '$($Item.Name)'."
+            $Scope = if ($Target -like "HKLM:*") { " for all users" } else { "" }
+            Write-Success "Re-enabled startup entry '$($Item.Name)'$Scope."
         } else {
-            $Dest = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
-            Move-Item -LiteralPath $Item.Command -Destination $Dest -Force -ErrorAction Stop
-            Write-Success "Re-enabled startup shortcut '$($Item.Name)'."
+            # A recorded origin folder that has since been deleted would make
+            # Move-Item fail; recreate it rather than silently relocating the
+            # shortcut to a different scope than it came from.
+            if (-not (Test-Path $Target)) {
+                New-Item -Path $Target -ItemType Directory -Force | Out-Null
+            }
+            Move-Item -LiteralPath $Item.Command -Destination $Target -Force -ErrorAction Stop
+            $Scope = if ($Target -eq $Script:StartupFolderPaths[1]) { " for all users" } else { "" }
+            Write-Success "Re-enabled startup shortcut '$($Item.Name)'$Scope."
         }
+        # Only once the restore actually succeeded - a stale origin record is
+        # harmless, but dropping it before a failed move would lose the scope
+        # for good on the retry.
+        Remove-StartupOrigin -Type $Item.Type -Name $Item.Name
     } catch {
         Write-ErrorX "Could not re-enable '$($Item.Name)': $($_.Exception.Message)"
     }

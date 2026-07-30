@@ -39,8 +39,14 @@ function Test-RegValueEquals {
     foreach ($check in $Checks) {
         $value = $null
         try {
-            if (Test-Path $check.Path -ErrorAction Stop) {
-                $item = Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction Stop
+            # Resolve-UserRegPath (v1.0): under a split token the tweak was
+            # written to the DESKTOP user's hive, so probing the elevated
+            # administrator's HKCU: would report every per-user tweak as not
+            # applied - a card that reads "not applied" for a setting that is
+            # in effect is the same lie as the reverse, just inverted.
+            $path = Resolve-UserRegPath $check.Path
+            if (Test-Path $path -ErrorAction Stop) {
+                $item = Get-ItemProperty -Path $path -Name $check.Name -ErrorAction Stop
                 $value = $item.($check.Name)
             }
         } catch {
@@ -83,7 +89,7 @@ function Get-PulseTweakState {
         # Classic context menu: the tweak is the PRESENCE of the CLSID
         # InprocServer32 key with an empty default value, so absence is a
         # definite "not applied" rather than an unknown.
-        $classic = "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
+        $classic = Resolve-UserRegPath "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
         try {
             if (Test-Path $classic -ErrorAction Stop) {
                 $default = (Get-ItemProperty -Path $classic -ErrorAction Stop).'(default)'

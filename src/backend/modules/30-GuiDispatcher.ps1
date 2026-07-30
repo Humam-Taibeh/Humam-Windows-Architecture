@@ -160,6 +160,13 @@ function Invoke-GuiTask {
         Write-Host ("   " + [string][char]0x25B6 + "  Task '$TaskName' started at $(Get-Date -Format 'HH:mm:ss') - live output follows.")
         Write-Log "GUI-TASK START: $TaskName"
 
+        # Split-token disclosure (v1.0). Emitted once per process, and BEFORE
+        # the task runs, so the live console says which profile per-user
+        # settings are about to land in rather than leaving the user to infer
+        # it from a success message that looks identical either way. A no-op
+        # in the ordinary case (same account, or unelevated).
+        Write-SplitTokenNotice
+
         switch ($TaskName) {
 
             # ============ 1. SOFTWARE MANAGEMENT ============
@@ -589,8 +596,9 @@ function Invoke-GuiTask {
             }
             "RestoreServices" {
                 $Count = 0
-                if (Test-Path $Script:ServicesBackupRegPath) {
-                    $Props = Get-ItemProperty -Path $Script:ServicesBackupRegPath -ErrorAction SilentlyContinue
+                $BackupRoot = Resolve-UserRegPath $Script:ServicesBackupRegPath
+                if (Test-Path $BackupRoot) {
+                    $Props = Get-ItemProperty -Path $BackupRoot -ErrorAction SilentlyContinue
                     if ($Props) {
                         foreach ($Prop in $Props.PSObject.Properties) {
                             if ($Prop.Name -notmatch '^PS(Path|ParentPath|ChildName|Provider)$') { $Count++ }
@@ -611,6 +619,27 @@ function Invoke-GuiTask {
                 Complete-GuiTask -Action { Install-MicrosoftEdge } `
                     -SuccessMessage "Microsoft Edge reinstated; backed-up settings restored where available." `
                     -FailureMessage "Edge restoration did not complete."
+                break
+            }
+            "ActivationStatus" {
+                # Read-only Windows/Office licence report (13-Activation.ps1),
+                # emitted as one DATA document the GUI's ActivationStatusDialog
+                # renders. Like HealthReport it mutates nothing but IS
+                # user-initiated, so it DOES log — a technician who checked a
+                # client machine's licence state wants that visit on record.
+                #
+                # NOT ADMIN-GATED, and it must stay that way: every property
+                # the probe reads is available to a standard user, so gating it
+                # would raise a needless elevation prompt to answer a question
+                # the unelevated session can already answer in full.
+                #
+                # No dry-run branch either, for the same reason GetTweakState
+                # and HealthReport have none: there is nothing to simulate when
+                # nothing is written.
+                Write-Log "GUI-TASK: reading Windows and Office activation status."
+                $Report = Get-PulseActivationStatus
+                Write-GuiData -Data $Report
+                Write-Output "##PULSE##SUCCESS|$(Get-ActivationSummaryLine -Report $Report)"
                 break
             }
 

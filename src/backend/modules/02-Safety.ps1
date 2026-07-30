@@ -106,8 +106,15 @@ function Backup-OriginalRegValue {
     # writing one would itself be a mutation).
     if ($Script:DryRun) { return }
     try {
-        if (-not (Test-Path $Script:TweaksBackupRegPath)) {
-            New-Item -Path $Script:TweaksBackupRegPath -Force | Out-Null
+        # The snapshot has to live in the SAME hive the tweak will be written
+        # to (v1.0). Under a split token the value being captured belongs to
+        # the desktop user, so filing its original under the elevated
+        # administrator's profile would leave "Reset All Tweaks" with nothing
+        # to restore for the person whose setting actually changed - the
+        # rollback would silently be a no-op.
+        $BackupRoot = Resolve-UserRegPath $Script:TweaksBackupRegPath
+        if (-not (Test-Path $BackupRoot)) {
+            New-Item -Path $BackupRoot -Force | Out-Null
         }
         $BackupName = ("$TweakKey--$Name") -replace '[\\:\s]', '_'
         $Existing = Get-RegValue -Path $Script:TweaksBackupRegPath -Name $BackupName
@@ -115,7 +122,7 @@ function Backup-OriginalRegValue {
 
         $CurrentVal = Get-RegValue -Path $Path -Name $Name
         $Serialized = if ($null -eq $CurrentVal) { "__NOTSET__" } else { "$CurrentVal" }
-        Set-ItemProperty -Path $Script:TweaksBackupRegPath -Name $BackupName -Value $Serialized -Type String -Force
+        Set-ItemProperty -Path $BackupRoot -Name $BackupName -Value $Serialized -Type String -Force
     } catch {
         # This was Write-Log only - completely invisible on console/GUI.
         # A silent snapshot failure here means "Reset All Tweaks" later has
@@ -255,13 +262,17 @@ function Backup-ServiceState {
     # Dry-run: the service will not actually be changed - skip the snapshot.
     if ($Script:DryRun) { return }
     try {
-        if (-not (Test-Path $Script:ServicesBackupRegPath)) {
-            New-Item -Path $Script:ServicesBackupRegPath -Force | Out-Null
+        # Same hive as the tweak snapshots above, for the same reason: the
+        # "Restore Services" task reads this back through Get-RegValue, and
+        # the two must not resolve to different profiles.
+        $BackupRoot = Resolve-UserRegPath $Script:ServicesBackupRegPath
+        if (-not (Test-Path $BackupRoot)) {
+            New-Item -Path $BackupRoot -Force | Out-Null
         }
         if (Get-RegValue -Path $Script:ServicesBackupRegPath -Name $Name) { return }
         $State = Get-ServiceState -Name $Name
         if (-not $State.Exists) { return }
-        Set-ItemProperty -Path $Script:ServicesBackupRegPath -Name $Name -Value "$($State.StartType)|$($State.Status)" -Type String -Force
+        Set-ItemProperty -Path $BackupRoot -Name $Name -Value "$($State.StartType)|$($State.Status)" -Type String -Force
     } catch {
         # Same reasoning as Backup-OriginalRegValue above: a silent failure
         # here means Restore-AllServicesToPreviousState will find no backup
@@ -277,8 +288,9 @@ function Backup-ServiceState {
 function Restore-AllServicesToPreviousState {
     Write-Banner "RESTORE ALL SERVICES TO PREVIOUS STATE"
     $Names = @()
-    if (Test-Path $Script:ServicesBackupRegPath) {
-        $Props = Get-ItemProperty -Path $Script:ServicesBackupRegPath -ErrorAction SilentlyContinue
+    $BackupRoot = Resolve-UserRegPath $Script:ServicesBackupRegPath
+    if (Test-Path $BackupRoot) {
+        $Props = Get-ItemProperty -Path $BackupRoot -ErrorAction SilentlyContinue
         if ($Props) {
             foreach ($Prop in $Props.PSObject.Properties) {
                 if ($Prop.Name -match '^PS(Path|ParentPath|ChildName|Provider)$') { continue }

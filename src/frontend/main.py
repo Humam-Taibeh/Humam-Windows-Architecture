@@ -62,7 +62,8 @@ from frontend.menu_structure import (  # noqa: E402
     requires_admin, search_haystack,
 )
 from frontend.widgets import (  # noqa: E402
-    ActivityDrawer, AmbientGlow, AppSelectorDialog, BreathingIcon,
+    ActivationStatusDialog, ActivityDrawer, AmbientGlow, AppSelectorDialog,
+    BreathingIcon,
     CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
     DevHubSelectorDialog,
     ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog, NavButton,
@@ -1231,6 +1232,16 @@ class PulseApp(QMainWindow):
             return
         self._exec_dialog(HealthReportDialog(self, self.ps1_path, self.theme.t))
 
+    def _open_activation_status(self):
+        """Read-only licence report — same reasoning as the health report:
+        it never mutates anything, so it does not take the shell's task
+        slot, and it needs no elevation because every property the backend
+        probe reads is available to a standard user."""
+        if not self.ps1_path:
+            self.toasts.show("error", f"{PS1_FILENAME} not found — engine unavailable.", 5000)
+            return
+        self._exec_dialog(ActivationStatusDialog(self, self.ps1_path, self.theme.t))
+
     # ============================================================
     #  PLAYBOOKS (v10.3)
     # ============================================================
@@ -1679,6 +1690,9 @@ class PulseApp(QMainWindow):
             return
         if task == "@health_report":
             self._open_health_report()
+            return
+        if task == "@activation":
+            self._open_activation_status()
             return
 
         desktop = resources.desktop_dir()

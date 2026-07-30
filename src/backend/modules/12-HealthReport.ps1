@@ -86,8 +86,16 @@ function Get-HealthRestorePointReport {
 function Get-HealthStartupReport {
     try {
         $items = @(Get-AllStartupItems)
+        # .Recommendation, not the bare call (v1.0 fix). Get-StartupRecommendation
+        # returns a HASHTABLE - @{ Recommendation; Impact; Reason } - so comparing
+        # it to a string was always $false and recommendedDisable was hard-wired
+        # to 0 on every machine. The only consumer is the report's "N startup
+        # item(s) are recommended for disabling" finding
+        # (frontend/health_report.py:findings), which therefore never fired: the
+        # feature silently reported a clean bill of health for a machine with a
+        # dozen flagged launchers.
         $recommended = @($items | Where-Object {
-            (Get-StartupRecommendation -Item $_) -eq 'Disable' })
+            (Get-StartupRecommendation -Item $_).Recommendation -eq 'Disable' })
         return [PSCustomObject]@{
             total              = $items.Count
             enabled            = @($items | Where-Object { $_.Enabled }).Count

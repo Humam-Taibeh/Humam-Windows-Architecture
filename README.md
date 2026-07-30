@@ -37,7 +37,7 @@ Every module follows the same lifecycle:
 
 > **preview → confirm → snapshot → apply → log**
 
-This project is built through **Advanced GenAI System Orchestration**: every module boundary, thread-safety contract, and rendering rule below was specified through detailed architectural prompting, then implemented, audited, and iterated on with AI coding assistants inside VS Code. The architecture discipline — module decomposition, concurrency contracts, event-loop boundaries — is mine; the code generation is delegated and rigorously reviewed. The strict orchestration contract between the PySide6 (Qt 6) UI event loop and the 13 isolated PowerShell core modules — one dispatch call in, one `SUCCESS`/`ERROR` verdict out, no shared state — is what keeps the two layers decoupled and independently testable.
+This project is built through **Advanced GenAI System Orchestration**: every module boundary, thread-safety contract, and rendering rule below was specified through detailed architectural prompting, then implemented, audited, and iterated on with AI coding assistants inside VS Code. The architecture discipline — module decomposition, concurrency contracts, event-loop boundaries — is mine; the code generation is delegated and rigorously reviewed. The strict orchestration contract between the PySide6 (Qt 6) UI event loop and the 16 isolated PowerShell core modules — one dispatch call in, one `SUCCESS`/`ERROR` verdict out, no shared state — is what keeps the two layers decoupled and independently testable.
 
 ---
 
@@ -83,6 +83,7 @@ The execution engine is built for **observability and control**, not fire-and-fo
 - **Reset All Tweaks** — restores your *actual* prior values, not factory defaults
 - **Restore All Services** — puts every touched service back exactly as found
 - Restore-point creation and Edge/OneDrive backup recovery
+- **Activation Status** — read-only Windows & Office licence report: state, channel (retail / OEM / volume / subscription) and expiry, each with a plain-English explanation. It reports only — activation itself is handed off to Windows' own settings page
 
 ---
 
@@ -144,12 +145,15 @@ Pulse/
 ├── 📁 src/
 │   ├── 📁 backend/
 │   │   ├── core.ps1             # Thin orchestrator — params, elevation, module loader
-│   │   └── 📁 modules/          # 13 single-responsibility engine modules
+│   │   └── 📁 modules/          # 16 single-responsibility engine modules
 │   │       ├── 00-Foundation.ps1     # logging, console vocabulary, dry-run primitives
 │   │       ├── 01-Catalogs.ps1       # ALL data: tweaks, app catalogs, services
 │   │       ├── 02-Safety.ps1         # restore points, snapshots, backups, rollback
 │   │       ├── …                     # environment, software engine, startup,
-│   │       │                         #   tweaks, maintenance, privacy, sysinfo
+│   │       │                         #   tweaks, maintenance, privacy, sysinfo, office
+│   │       ├── 11-StateProbe.ps1     # read-only "is this tweak applied?" probe
+│   │       ├── 12-HealthReport.ps1   # read-only health + configuration-drift snapshot
+│   │       ├── 13-Activation.ps1     # read-only Windows/Office licence status report
 │   │       ├── 20-Menus.ps1          # the full interactive terminal experience
 │   │       └── 30-GuiDispatcher.ps1  # Invoke-GuiTask — the GUI task contract
 │   ├── 📁 frontend/

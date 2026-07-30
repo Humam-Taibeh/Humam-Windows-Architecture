@@ -378,7 +378,33 @@ $Script:TelemetryTasks = @(
 #  STARTUP MANAGER LOCATIONS
 # ============================================================
 $Script:StartupDisabledRegPath = "HKCU:\Software\Pulse\DisabledStartup"
+# Where a disabled item CAME FROM (v1.0). A SUB-KEY, deliberately, not extra
+# values under DisabledStartup: Get-DisabledStartupItems enumerates that key's
+# values to build the disabled list, so an origin record stored alongside them
+# would surface in the GUI as a phantom startup entry. Sub-keys are invisible
+# to Get-ItemProperty, so this rides along without touching that contract.
+#
+# Value name  = "<Type>|||<Name>"  (Registry|||Acme Updater, Folder|||Foo.lnk)
+# Value       = the hive path or folder the item was removed from
+#
+# Without it, Enable-StartupItem had nowhere to look and unconditionally
+# restored to the CURRENT USER — so disabling an all-users entry (HKLM Run, or
+# a shortcut in ProgramData) and re-enabling it silently narrowed its scope to
+# one profile. Entries disabled by an older Pulse have no record here and fall
+# back to the old per-user behaviour, which is why lookups must tolerate a miss.
+$Script:StartupOriginRegPath   = "$Script:StartupDisabledRegPath\_Origins"
 $Script:StartupBackupFolder    = "$env:USERPROFILE\Desktop\Pulse_StartupBackup"
+# The per-user and all-users Run keys / Startup folders an item can be restored
+# to. Kept as data so Enable-StartupItem can validate a recorded origin against
+# a known-good set instead of writing to whatever string it read back.
+$Script:StartupRunKeyPaths = @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+)
+$Script:StartupFolderPaths = @(
+    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+    "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
+)
 # Pre-rebrand fallback: shortcuts disabled under v5.x were moved into the old
 # HTCore folder - keep them restorable after the rename to Pulse.
 if (-not (Test-Path $Script:StartupBackupFolder) -and (Test-Path "$env:USERPROFILE\Desktop\HTCore_StartupBackup")) {

@@ -61,5 +61,29 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    uac_admin=True,
+    # uac_admin is deliberately NOT set (v1.0). It used to be True, which put
+    # `requestedExecutionLevel requireAdministrator` in the manifest and made
+    # EVERY launch of the packaged app elevated — with two consequences that
+    # only showed up in the shipped binary, never when running from source:
+    #
+    #   1. A large, fully-tested subsystem became unreachable. The per-task
+    #      elevation gate (menu_structure.requires_admin), the inline
+    #      ElevatePromptDialog, the sidebar "Run as Administrator" CTA, the
+    #      locked-card affordance and the "Not Elevated" hero chip can only
+    #      ever be exercised by a non-elevated session. There wasn't one.
+    #
+    #   2. It made a documented failure permanent. Some installers set
+    #      `elevationProhibited` and hard-refuse under an Administrator token
+    #      (see $Script:KnownElevationProhibitedAppIds in 01-Catalogs.ps1);
+    #      the backend's own error text tells the user to "use Pulse's GUI
+    #      without elevating", which was impossible advice in the release
+    #      build. Those packages were simply un-installable.
+    #
+    # Launching asInvoked restores the intended model: Pulse starts with the
+    # rights the user has, and the ~24 tasks that genuinely need HKLM /
+    # services / machine state ask for elevation at the moment they are
+    # clicked. That is also what keeps HKCU tweaks landing in the hive of the
+    # user who asked for them — see Initialize-UserHiveTargeting in
+    # src/backend/modules/00-Foundation.ps1 for what goes wrong when an
+    # elevated session belongs to a different account than the desktop.
 )
