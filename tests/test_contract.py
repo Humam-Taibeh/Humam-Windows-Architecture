@@ -30,6 +30,11 @@ _PROGRAMMATIC = {
     # behind them, invoked by widgets.HealthReportDialog rather than by a
     # card, which is exactly what this allow-list is for.
     "HealthReport",
+    # Same shape as HealthReport. The Safety & Recovery card is
+    # GUI-LOCAL ("@activation") because the report is rendered by a dialog
+    # that runs its own PowerShellTask — widgets.ActivationStatusDialog —
+    # rather than through main.py's single-task pipeline.
+    "ActivationStatus",
 }
 
 
@@ -199,6 +204,67 @@ def test_local_actions_are_marked_with_an_at_sign():
     local = {t for t in _gui_tasks() if t.startswith("@")}
     assert local, "the '@' convention for GUI-local actions has vanished"
     assert not (local & _dispatcher_cases())
+
+
+def test_every_local_action_is_handled_by_the_gui():
+    """The '@' convention's other half. A local action has no dispatcher
+    case to catch it, so a card whose task main.py does not handle falls
+    through to _run_local_action's path lookup and reports 'Unknown local
+    action' at click time — the exact failure the task/case parity check
+    above prevents for backend tasks."""
+    main = open(os.path.join(_ROOT, "src/frontend/main.py"), encoding="utf-8").read()
+    handler = main[main.index("def _run_local_action"):]
+    unhandled = sorted(t for t in _gui_tasks()
+                       if t.startswith("@") and f'"{t}"' not in handler)
+    assert not unhandled, f"local actions with no handler in main.py: {unhandled}"
+
+
+def test_every_menu_glyph_exists_in_the_icon_map(qapp):
+    """A card's `glyph` is looked up with GLYPHS.get(name, ("", "")), which
+    means a typo'd or newly-invented name renders a BLANK icon plaque
+    rather than raising — invisible in exactly the way a missing icon
+    always is."""
+    from frontend import theme as TH
+    names = set(re.findall(r'"glyph"\s*:\s*"([^"]+)"', _menu_source()))
+    assert names, "no glyphs found to check"
+    missing = sorted(names - set(TH.GLYPHS))
+    assert not missing, f"menu glyphs absent from theme.GLYPHS: {missing}"
+
+
+_ACTIVATION = os.path.join(_ROOT, "src/backend/modules/13-Activation.ps1")
+
+
+def test_activation_module_is_read_only():
+    """13-Activation.ps1's hard contract, and the whole point of the
+    module: it REPORTS licence state and never changes it. The same static
+    scan TestStateProbe applies to the tweak probe, plus the licensing
+    tools specifically — a module that could activate would make every
+    reassurance in its own header false.
+    """
+    source = open(_ACTIVATION, encoding="utf-8-sig").read()
+    code = "\n".join(line for line in source.splitlines()
+                     if not line.lstrip().startswith("#"))
+    code = re.sub(r"<#.*?#>", "", code, flags=re.S)
+
+    forbidden = [
+        # generic mutation primitives
+        "Set-ItemProperty", "New-ItemProperty", "Remove-ItemProperty",
+        "New-Item", "Remove-Item", "Set-Item", "Set-Service",
+        "Set-Content", "Out-File", "reg add", "reg delete",
+        # Licensing-specific: the calls that would CHANGE activation state.
+        # Named precisely (ActivateProduct, not "Activate") because the
+        # module legitimately says "activated", "re-activated" and "Not
+        # activated" all over its own status strings — a loose substring
+        # here would fail on the report's vocabulary instead of its calls.
+        "slmgr", "ospp", "InstallProductKey", "ActivateProduct",
+        "SetKeyManagementServiceMachine", "Invoke-CimMethod",
+        "Invoke-WebRequest", "Invoke-Expression", "Start-Process",
+    ]
+    found = sorted({c for c in forbidden if c.lower() in code.lower()})
+    assert not found, (
+        f"13-Activation.ps1 contains state-changing or remote-code call(s): "
+        f"{found}. This module is a read-only report; activation is Windows' "
+        "own job, reached through the Settings deep link in the dialog.")
 
 
 class TestThemes:

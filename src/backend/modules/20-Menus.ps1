@@ -87,20 +87,23 @@ function Show-SafetyRecoveryMenu {
             "Rollback to this session's System Restore point (whole-system undo)",
             "Reset ALL Tweaks to Windows Defaults (uses your original captured values)",
             "Restore All Services this tool has ever disabled",
-            "Session Log: view successes, warnings, and failures with timestamps"
+            "Session Log: view successes, warnings, and failures with timestamps",
+            "Activation Status: read-only Windows & Office licence report"
         )
         Write-Host "   [1]  Rollback to Session Restore Point" -ForegroundColor White
         Write-Host "   [2]  Reset ALL Tweaks to Windows Defaults" -ForegroundColor White
         Write-Host "   [3]  Restore All Services to Previous State" -ForegroundColor White
         Write-Host "   [4]  View Session Log" -ForegroundColor White
+        Write-Host "   [5]  Activation Status (Windows & Office)" -ForegroundColor White
         Write-Host "   [X]  Back to Main Menu" -ForegroundColor DarkGray
         Write-Divider
-        $Choice = Read-Choice -Prompt "   Select option (1-4, X)" -Valid @('1', '2', '3', '4', 'x')
+        $Choice = Read-Choice -Prompt "   Select option (1-5, X)" -Valid @('1', '2', '3', '4', '5', 'x')
         switch ($Choice) {
             '1' { Invoke-ScriptRollback }
             '2' { Reset-AllTweaksToDefaults; Read-Host "   Press Enter to continue" }
             '3' { Restore-AllServicesToPreviousState }
             '4' { Show-SessionLogViewer }
+            '5' { Show-ActivationStatusReport }
             'x' { return }
         }
     } while ($true)

@@ -27,6 +27,9 @@
       08-Privacy.ps1        bloatware, telemetry, advertising ID, activity
       09-SystemInfo.ps1     read-only system insight
       10-Office.ps1         Office Deployment Tool suite
+      11-StateProbe.ps1     read-only "is this tweak applied?" probe
+      12-HealthReport.ps1   read-only health + configuration-drift snapshot
+      13-Activation.ps1     read-only Windows/Office licence status report
       20-Menus.ps1          the entire interactive console experience
       30-GuiDispatcher.ps1  Invoke-GuiTask - the PySide6 frontend contract
 

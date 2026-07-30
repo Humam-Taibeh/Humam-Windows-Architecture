@@ -254,6 +254,7 @@ GLYPHS: dict[str, tuple[str, str]] = {
     'save':          ("", "💿"),                    # Driver Backup
     'search':        ("", "🔍"),                    # Missing Driver Scan
     'restorepoint':  ("", "🛟"),                    # Create Restore Point
+    'key':           ("", "🔑"),                    # Activation Status (licence)
     'log':           ("", "📜"),                    # View Operation Log
     'folder':        ("", "📁"),                    # OneDrive Backup Folder
     # --- system tools subs ---

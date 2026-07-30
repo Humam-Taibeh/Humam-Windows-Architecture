@@ -15,9 +15,17 @@ Contract with the backend (src/backend/core.ps1 + src/backend/modules/):
     directly.
 
     Tasks starting with "@" are LOCAL actions handled by the GUI itself
-    (no PowerShell process is spawned):
+    (no PowerShell process is spawned by main.py's task pipeline):
         @open_log              -> opens %LOCALAPPDATA%\\Pulse\\logs\\Pulse_Log.txt
         @open_onedrive_backup  -> opens Desktop\\Pulse_OneDriveBackup
+        @playbooks             -> widgets.PlaybookDialog
+        @health_report         -> widgets.HealthReportDialog
+        @activation            -> widgets.ActivationStatusDialog
+    The last three open a Pulse surface rather than a file. Each dialog
+    runs its OWN PowerShellTask (HealthReport / ActivationStatus) rather
+    than going through request_task, which is why those backend cases are
+    allow-listed in tests/test_contract.py::_PROGRAMMATIC instead of being
+    reachable from a card's `task`.
 
 Item schema:
     NOTE ON `accent` (v10): a category's "accent" is a SEMANTIC MODULE KEY
@@ -516,6 +524,13 @@ CATEGORIES = [
             {"icon": "🛟", "title": "Create Restore Point",
              "desc": "Manual System Restore checkpoint — your safety net.",
              "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600},
+            # Read-only, and deliberately so: it reports what Windows'
+            # licensing service already knows and hands off to Settings for
+            # anything that needs changing. Nothing in Pulse activates,
+            # keys, or alters a licence.
+            {"icon": "🔑", "title": "Activation Status",
+             "desc": "Windows and Office licence state, channel and expiry — read-only.",
+             "glyph": "key", "task": "@activation"},
             {"icon": "☁️", "title": "OneDrive Backup Folder",
              "desc": "Open files rescued before OneDrive removal.",
              "glyph": "folder", "task": "@open_onedrive_backup"},

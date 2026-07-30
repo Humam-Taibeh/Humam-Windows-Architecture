@@ -2162,6 +2162,72 @@ class PlaybookDialog(PulseDialog):
         _present_dialog(self)
 
 
+# ============================================================
+#  READ-ONLY REPORT PRIMITIVES
+#
+#  Shared by the two report surfaces — HealthReportDialog and
+#  ActivationStatusDialog. Both render the same shape of content (a titled
+#  section, label/value pairs, full-width explanation sentences), and both
+#  must colour a "tone" identically: a warning in the health report and a
+#  warning in the activation report are the same warning, and two private
+#  copies of this mapping would eventually disagree about what amber means.
+#
+#  `tone` is always a KEY ('ok'/'warn'/'err'), never a colour — the hex is
+#  resolved from the CURRENT theme here, so these survive a live theme
+#  switch the same way every other widget does.
+# ============================================================
+def report_tone_color(t: dict, tone: str) -> str:
+    """A tone key -> this theme's hex. Anything unrecognised (including
+    "") falls back to neutral body text, which is the honest rendering of
+    a state we could not determine — not a guess dressed up as a fact."""
+    return {"ok": t["ok"], "warn": t["warn"], "err": t["err"]}.get(tone, t["text"])
+
+
+def report_row(t: dict, label: str, value: str, tone: str = "",
+               label_width: int = 210) -> QWidget:
+    """One label/value line. `label_width` is a parameter because the two
+    reports carry different label vocabularies — the health report's
+    "Operating system" needs the wider column that would leave the
+    activation report's "Status" stranded in whitespace."""
+    holder = QWidget()
+    holder.setStyleSheet("background: transparent;")
+    line = QHBoxLayout(holder)
+    line.setContentsMargins(0, 2, 0, 2)
+    line.setSpacing(10)
+    left = QLabel(label)
+    left.setStyleSheet(TH.label_qss(t, "caption"))
+    left.setMinimumWidth(label_width)
+    line.addWidget(left, 0)
+    right = QLabel(value)
+    right.setWordWrap(True)
+    right.setStyleSheet(
+        f"color: {report_tone_color(t, tone)}; font-size: 12px; font-weight: 600;"
+        "background: transparent; border: none;")
+    line.addWidget(right, 1)
+    return holder
+
+
+def report_note(t: dict, text: str, tone: str = "") -> QLabel:
+    """A FULL-WIDTH line. Findings and explanations are sentences, not
+    label/value pairs — running them through report_row indents every one
+    of them past an empty label column."""
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setStyleSheet(
+        f"color: {report_tone_color(t, tone)}; font-size: 12px; font-weight: 600;"
+        "background: transparent; border: none;")
+    return label
+
+
+def report_heading(t: dict, accent: str, text: str) -> QLabel:
+    label = QLabel(text.upper())
+    label.setStyleSheet(
+        f"color: {accent}; font-size: 10px; font-weight: 800;"
+        "letter-spacing: 1.2px; background: transparent; border: none;"
+        "margin-top: 8px;")
+    return label
+
+
 class HealthReportDialog(PulseDialog):
     """The Health & Drift Report (v10.3): run the probe, read it, export it.
 
@@ -2280,48 +2346,17 @@ class HealthReportDialog(PulseDialog):
             self._thread = None
 
     # -- rendering --------------------------------------------
+    # Thin wrappers over the shared report primitives above — the layout
+    # rules they encode are identical to the activation report's, and one
+    # definition of "how a toned line looks" is what keeps them so.
     def _row(self, label: str, value: str, tone: str = "") -> QWidget:
-        t = self._t
-        holder = QWidget()
-        holder.setStyleSheet("background: transparent;")
-        line = QHBoxLayout(holder)
-        line.setContentsMargins(0, 2, 0, 2)
-        line.setSpacing(10)
-        left = QLabel(label)
-        left.setStyleSheet(TH.label_qss(t, "caption"))
-        left.setMinimumWidth(210)
-        line.addWidget(left, 0)
-        right = QLabel(value)
-        right.setWordWrap(True)
-        colour = {"ok": t["ok"], "err": t["err"], "warn": t["warn"]}.get(
-            tone, t["text"])
-        right.setStyleSheet(
-            f"color: {colour}; font-size: 12px; font-weight: 600;"
-            "background: transparent; border: none;")
-        line.addWidget(right, 1)
-        return holder
+        return report_row(self._t, label, value, tone)
 
     def _note(self, text: str, tone: str = "") -> QLabel:
-        """A FULL-WIDTH line. Findings are sentences, not label/value pairs
-        — running them through _row left every one of them indented past a
-        210px empty column."""
-        t = self._t
-        label = QLabel(text)
-        label.setWordWrap(True)
-        colour = {"ok": t["ok"], "err": t["err"], "warn": t["warn"]}.get(
-            tone, t["text"])
-        label.setStyleSheet(
-            f"color: {colour}; font-size: 12px; font-weight: 600;"
-            "background: transparent; border: none;")
-        return label
+        return report_note(self._t, text, tone)
 
     def _heading(self, text: str) -> QLabel:
-        label = QLabel(text.upper())
-        label.setStyleSheet(
-            f"color: {self._accent}; font-size: 10px; font-weight: 800;"
-            "letter-spacing: 1.2px; background: transparent; border: none;"
-            "margin-top: 8px;")
-        return label
+        return report_heading(self._t, self._accent, text)
 
     def _render(self, report: dict):
         from frontend.health_report import TWEAK_LABELS, findings, tweak_rows
@@ -2395,6 +2430,287 @@ class HealthReportDialog(PulseDialog):
             self._status.setText(f"Could not write the file: {exc}")
             return
         self._status.setText(f"Exported to {path}")
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+    def reject(self):
+        if self._worker is not None:
+            self._worker.cancel()
+        super().reject()
+
+
+class ActivationStatusDialog(PulseDialog):
+    """Windows & Office licence status — a read-only report.
+
+    Runs its own PowerShellTask for the same reason HealthReportDialog and
+    StartupManagerDialog do: it is a self-contained panel that hands
+    nothing back, so entangling it with the shell's single-task pipeline
+    would let opening a read-only report block a real operation.
+
+    SCOPE, deliberately: this dialog REPORTS. Neither it nor
+    13-Activation.ps1 behind it installs a product key, contacts a
+    licensing server, or alters licence state in any way — which is also
+    why it needs no elevation and no confirm step. When something does
+    need changing it hands off to Windows' own Activation page, where the
+    user sees and controls exactly what happens.
+    """
+
+    #: Windows' own activation page. A URI scheme, not a process spawn —
+    #: the Settings app opens visibly, in front of the user, and Pulse has
+    #: no further part in whatever they do there.
+    SETTINGS_URI = "ms-settings:activation"
+
+    def __init__(self, parent: QWidget, ps1_path: str, t: dict):
+        super().__init__(parent)
+        self._t = t
+        self._ps1 = ps1_path
+        self._thread: QThread | None = None
+        self._worker: PowerShellTask | None = None
+
+        accent = TH.resolve_accent(t, "safety")
+        self._accent = accent
+        panel = _dialog_chrome(self, t, accent, responsive=True)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(12)
+
+        head = QLabel("🔑  Activation Status")
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
+        lay.addWidget(head)
+
+        self._status = QLabel("Reading the licensing service…")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(self._status)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(TH.scroll_area_qss(t))
+        self._host = QWidget()
+        self._host.setStyleSheet("background: transparent;")
+        self._host_lay = QVBoxLayout(self._host)
+        self._host_lay.setContentsMargins(0, 0, 6, 0)
+        self._host_lay.setSpacing(6)
+        self._host_lay.addStretch()
+        self._scroll.setWidget(self._host)
+        lay.addWidget(self._scroll, 1)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_cancel_qss(t))
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
+
+        self._refresh_btn = QPushButton("Re-check")
+        self._refresh_btn.setFixedSize(110, 36)
+        self._refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._refresh_btn.setStyleSheet(TH.dialog_cancel_qss(t))
+        self._refresh_btn.setEnabled(False)
+        self._refresh_btn.clicked.connect(self._start)
+        row.addWidget(self._refresh_btn)
+
+        settings = QPushButton("Open Windows Activation Settings")
+        settings.setFixedSize(258, 36)
+        settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        settings.setStyleSheet(TH.dialog_go_qss(t, accent))
+        settings.clicked.connect(self._open_settings)
+        row.addWidget(settings)
+        lay.addLayout(row)
+
+        QTimer.singleShot(0, self._start)
+
+    # -- data -------------------------------------------------
+    def _start(self):
+        if not self._ps1:
+            self._status.setText("Engine unavailable — core.ps1 was not found.")
+            return
+        if self._worker is not None:      # a re-check is already in flight
+            return
+        self._refresh_btn.setEnabled(False)
+        self._status.setText("Reading the licensing service…")
+        thread = QThread(self)
+        # 120s: the probe returns in about a second on a healthy machine,
+        # but the licensing WMI provider can stall for a long while on one
+        # with a misconfigured KMS host — the timeout exists for that, not
+        # for the happy path.
+        worker = PowerShellTask(self._ps1, "ActivationStatus", timeout=120)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_report)
+        worker.failed.connect(self._on_failed)
+        for signal in (worker.finished, worker.failed, worker.cancelled):
+            signal.connect(thread.quit)
+        thread.finished.connect(self._cleanup)
+        self._thread, self._worker = thread, worker
+        thread.start()
+
+    def _on_report(self, result: TaskResult):
+        if not result.success or not isinstance(result.data, dict):
+            self._on_failed(result.message or "The licence status could not be read.")
+            return
+        self._render(result.data)
+
+    def _on_failed(self, message: str):
+        self._clear()
+        self._status.setText(f"Could not read activation status: {message}")
+
+    def _cleanup(self):
+        if self._worker is not None:
+            self._worker.deleteLater()
+            self._worker = None
+        if self._thread is not None:
+            self._thread.deleteLater()
+            self._thread = None
+        self._refresh_btn.setEnabled(True)
+
+    def _open_settings(self):
+        if not QDesktopServices.openUrl(QUrl(self.SETTINGS_URI)):
+            self._status.setText(
+                "Windows could not open the Activation settings page. "
+                "Open Settings › System › Activation manually.")
+
+    # -- rendering --------------------------------------------
+    def _add(self, widget: QWidget):
+        self._host_lay.insertWidget(self._host_lay.count() - 1, widget)
+
+    def _clear(self):
+        """Re-check replaces the report rather than appending a second copy
+        of it — everything except the trailing stretch goes."""
+        while self._host_lay.count() > 1:
+            item = self._host_lay.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _pill(self, text: str, tone: str) -> QLabel:
+        """The one-word verdict, styled as a card meta pill in the tone's
+        own colour so the answer is readable before any row is."""
+        label = QLabel(text)
+        label.setStyleSheet(TH.card_meta_pill_qss(
+            self._t, report_tone_color(self._t, tone)))
+        return label
+
+    def _product(self, product: dict, label_width: int):
+        """One licensed product: verdict pill, the facts behind it, then
+        the plain-English sentence saying what the verdict means."""
+        tone = str(product.get("tone") or "")
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent;")
+        pill_row = QHBoxLayout(holder)
+        pill_row.setContentsMargins(0, 2, 0, 2)
+        pill_row.setSpacing(10)
+        pill_row.addWidget(self._pill(str(product.get("status") or "Unknown"), tone), 0)
+        pill_row.addStretch(1)
+        self._add(holder)
+
+        self._add(report_row(self._t, "Licence channel",
+                             str(product.get("channel") or "Unknown"),
+                             label_width=label_width))
+        partial = str(product.get("partialKey") or "")
+        if partial:
+            # Windows shows the same five characters in Settings. The full
+            # key is never read by the backend, so it cannot be shown here.
+            self._add(report_row(self._t, "Product key", f"Ends in {partial}",
+                                 label_width=label_width))
+        if product.get("statusCode") == 1:
+            self._add(report_row(
+                self._t, "Licence type",
+                "Permanent — does not expire" if product.get("permanent")
+                else "Leased — renews automatically",
+                label_width=label_width))
+        days = product.get("remainingDays")
+        if isinstance(days, int):
+            # Same field, two meanings, and the label has to say which:
+            # on a licensed lease it counts down to renewal, in any grace
+            # state it counts down to features being restricted.
+            self._add(report_row(
+                self._t,
+                "Renews in" if product.get("statusCode") == 1 else "Grace period left",
+                f"{days} day(s)", label_width=label_width))
+        explanation = str(product.get("explanation") or "")
+        if explanation:
+            self._add(report_note(self._t, explanation, tone))
+
+    def _render(self, report: dict):
+        self._clear()
+        host = str(report.get("hostname") or "this machine")
+        edition = str(report.get("edition") or "Unknown edition")
+        build = report.get("build")
+        self._status.setText(
+            f"{host} · {edition}" + (f" (build {build})" if build else ""))
+
+        # -- Windows ------------------------------------------
+        self._add(report_heading(self._t, self._accent, "Windows"))
+        windows = report.get("windows")
+        if isinstance(windows, dict):
+            self._product(windows, label_width=170)
+        else:
+            self._add(report_note(
+                self._t,
+                "The licensing service did not report a Windows licence on "
+                "this machine. That is normal on some managed or evaluation "
+                "images; Settings › System › Activation is authoritative.",
+                "warn"))
+
+        # -- Office -------------------------------------------
+        self._add(report_heading(self._t, self._accent, "Microsoft Office"))
+        office = report.get("office")
+        office = office if isinstance(office, list) else []
+        install = report.get("officeInstall")
+        install = install if isinstance(install, dict) else {}
+        if office:
+            for index, product in enumerate(office):
+                if not isinstance(product, dict):
+                    continue
+                if index:
+                    self._add(report_note(self._t, ""))
+                self._add(report_note(self._t, str(product.get("name") or "Office product")))
+                self._product(product, label_width=170)
+        elif install.get("installed"):
+            # The actionable case, and the reason officeInstall exists at
+            # all: installed-but-unlicensed and not-installed both produce
+            # an empty licence list, and they mean opposite things.
+            kind = str(install.get("kind") or "")
+            version = str(install.get("version") or "")
+            detail = " · ".join(part for part in (kind, version) if part)
+            self._add(report_note(
+                self._t,
+                f"Office is installed ({detail}) but reports no licence."
+                if detail else "Office is installed but reports no licence.",
+                "warn"))
+        else:
+            self._add(report_note(
+                self._t, "No Microsoft Office installation was found on this machine."))
+
+        # -- Licensing service --------------------------------
+        # Rendered only when it has something to say: on an ordinary
+        # consumer PC every field here is empty, and an empty section is
+        # just noise between the reader and the two that matter.
+        service = report.get("service")
+        service = service if isinstance(service, dict) else {}
+        kms = str(service.get("kmsHost") or "")
+        firmware = service.get("firmwareKeyPresent")
+        if kms or firmware is not None:
+            self._add(report_heading(self._t, self._accent, "Licensing service"))
+            if kms:
+                self._add(report_row(self._t, "KMS host", kms, label_width=170))
+            if firmware is True:
+                edition_name = str(service.get("firmwareKeyEdition") or "")
+                self._add(report_row(
+                    self._t, "OEM firmware licence",
+                    f"Present{f' ({edition_name})' if edition_name else ''}",
+                    "ok", label_width=170))
+            elif firmware is False:
+                self._add(report_row(
+                    self._t, "OEM firmware licence", "Not present",
+                    label_width=170))
 
     def showEvent(self, e):
         super().showEvent(e)
