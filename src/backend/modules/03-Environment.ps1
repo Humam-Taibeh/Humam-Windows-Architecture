@@ -104,6 +104,54 @@ function Invoke-WingetBootstrap {
 # via Ensure-Winget, the first time a software operation actually needs it.
 $global:WingetAvailable = [bool](Get-Command winget -ErrorAction SilentlyContinue)
 $Script:WingetBootstrapTried = $false
+$Script:WingetPath = $null
+
+function Get-WingetPath {
+    <#
+    .SYNOPSIS
+        The absolute path to winget.exe, resolved once per process.
+
+    .DESCRIPTION
+        winget is the one external tool Pulse drives that is NOT a stock
+        System32 binary - it ships as an app-execution alias, so
+        Get-SystemBinary (00-Foundation.ps1) cannot anchor it and the
+        engine was calling bare `winget` at seven separate sites. Each of
+        those was an independent $env:PATH search, performed elevated,
+        every time.
+
+        Resolution now happens ONCE and the absolute path is reused, so
+        the search cannot be won by something planted between two calls of
+        the same operation, and the path Pulse logs is the path Pulse ran.
+
+        HONEST LIMITATION, stated rather than papered over: the alias
+        itself lives under %LOCALAPPDATA%\Microsoft\WindowsApps, which the
+        unelevated user can write. Pinning the resolved path removes the
+        repeated-search and time-of-check/time-of-use windows; it does not
+        make a user-writable alias trustworthy. Only the package's real
+        home under Program Files\WindowsApps is admin-only, and that
+        directory's ACL blocks enumeration even for administrators, so it
+        cannot be reliably discovered here. The name is therefore checked
+        (it must actually be winget.exe) and the resolved path is logged.
+
+        Returns $null when winget is genuinely absent - callers already
+        gate on $global:WingetAvailable.
+    #>
+    if ($Script:WingetPath) { return $Script:WingetPath }
+
+    $Command = @(Get-Command winget -CommandType Application -ErrorAction SilentlyContinue) |
+        Select-Object -First 1
+    if (-not $Command) { return $null }
+
+    $Resolved = [string]$Command.Source
+    if ([System.IO.Path]::GetFileName($Resolved) -ne 'winget.exe') {
+        Write-Log "WARN: 'winget' on PATH resolved to '$Resolved', which is not winget.exe - refusing it."
+        return $null
+    }
+
+    $Script:WingetPath = $Resolved
+    Write-Log "winget resolved to '$Resolved'."
+    return $Script:WingetPath
+}
 
 function Ensure-Winget {
     if ($global:WingetAvailable) { return $true }

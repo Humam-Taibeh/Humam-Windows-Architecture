@@ -489,7 +489,7 @@ function Show-StartupProgramManager {
             }
             't' {
                 Write-Info "Opening Task Manager..."
-                Start-Process "taskmgr.exe" -ArgumentList "/7" -ErrorAction SilentlyContinue
+                Start-Process -FilePath (Get-SystemBinary "taskmgr") -ArgumentList "/7" -ErrorAction SilentlyContinue
             }
             'r' { }
             'x' { return }

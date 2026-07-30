@@ -49,7 +49,7 @@ function Initialize-WingetBatchCache {
     $Script:WingetBatchCache = @{ ById = @{}; ByName = @{} }
     if (-not $global:WingetAvailable) { return }
     try {
-        $Raw = & winget list --accept-source-agreements --disable-interactivity 2>$null
+        $Raw = & (Get-WingetPath) list --accept-source-agreements --disable-interactivity 2>$null
         foreach ($Item in (ConvertFrom-WingetUpgradeTable -Raw $Raw)) {
             $Entry = @{ Installed = $Item.CurrentVersion; Available = $Item.AvailableVersion }
             $Script:WingetBatchCache.ById[$Item.Id]     = $Entry
@@ -82,9 +82,9 @@ function Get-InstalledVersion {
         return $null
     }
 
-    $Lines = & winget list --id $AppId --exact --accept-source-agreements --disable-interactivity 2>$null
+    $Lines = & (Get-WingetPath) list --id $AppId --exact --accept-source-agreements --disable-interactivity 2>$null
     if (-not $Lines) {
-        $Lines = & winget list --query $AppName --exact --accept-source-agreements --disable-interactivity 2>$null
+        $Lines = & (Get-WingetPath) list --query $AppName --exact --accept-source-agreements --disable-interactivity 2>$null
     }
     if (-not $Lines) { return $null }
 
@@ -127,7 +127,7 @@ function Get-LatestVersion {
         # winget's msstore source, when reachable, gives a real version to
         # compare against Get-AppxPackage's installed version instead.
         if (-not $global:WingetAvailable) { return "Store" }
-        $Lines = & winget show --id $AppId --exact --source msstore --accept-source-agreements --disable-interactivity 2>$null
+        $Lines = & (Get-WingetPath) show --id $AppId --exact --source msstore --accept-source-agreements --disable-interactivity 2>$null
         if (-not $Lines) { return "Store" }
         foreach ($Line in $Lines) {
             if ($Line -match '^\s*Version:\s*(\S+)') { return $Matches[1] }
@@ -145,7 +145,7 @@ function Get-LatestVersion {
         return "Unknown"   # not installed - the batch cache has no manifest data to probe for uninstalled apps
     }
 
-    $Lines = & winget show --id $AppId --exact --accept-source-agreements --disable-interactivity 2>$null
+    $Lines = & (Get-WingetPath) show --id $AppId --exact --accept-source-agreements --disable-interactivity 2>$null
     if (-not $Lines) { return "Unknown" }
     foreach ($Line in $Lines) {
         if ($Line -match '^\s*Version:\s*(\S+)') { return $Matches[1] }
@@ -244,12 +244,12 @@ function Get-WingetUpgradeList {
     #>
     if (-not $global:WingetAvailable) { return @() }
 
-    $WingetRaw = & winget upgrade --include-unknown --accept-source-agreements --disable-interactivity 2>$null
+    $WingetRaw = & (Get-WingetPath) upgrade --include-unknown --accept-source-agreements --disable-interactivity 2>$null
     $WingetItems = @(ConvertFrom-WingetUpgradeTable -Raw $WingetRaw)
 
     $StoreItems = @()
     try {
-        $StoreRaw = & winget upgrade --include-unknown --source msstore --accept-source-agreements --disable-interactivity 2>$null
+        $StoreRaw = & (Get-WingetPath) upgrade --include-unknown --source msstore --accept-source-agreements --disable-interactivity 2>$null
         $StoreItems = @(ConvertFrom-WingetUpgradeTable -Raw $StoreRaw)
     } catch {
         Write-Log "msstore upgrade scan failed: $($_.Exception.Message)"
@@ -295,7 +295,7 @@ function Stop-LockingProcesses {
 
 function Invoke-Winget {
     param([string[]]$ArgList)
-    $Proc = Start-Process -FilePath "winget" -ArgumentList $ArgList -NoNewWindow -Wait -PassThru
+    $Proc = Start-Process -FilePath (Get-WingetPath) -ArgumentList $ArgList -NoNewWindow -Wait -PassThru
     return $Proc.ExitCode
 }
 
@@ -393,11 +393,27 @@ function Open-FallbackUrl {
         return
     }
     if ($url) {
+        # Test-SafeWebUrl (00-Foundation.ps1) before handing anything to
+        # Start-Process: that call is ShellExecute, so a catalog entry that
+        # was not actually a web address - a local path, a UNC share, a
+        # file:// URI - would be EXECUTED rather than browsed to.
+        if (-not (Test-SafeWebUrl $url)) {
+            Write-Warn "The download URL mapped for $AppName is not a web address - not opening it."
+            Write-Log "FALLBACK-URL for ${AppName}: refused non-http(s) URL '$url'."
+            return
+        }
         Write-Info "Opening official download page: $url"
         Start-Process $url
     } else {
+        # URL-ENCODED. $AppName reaches this from the app catalog and can
+        # carry spaces, '&', '#' and '+' - all of which are QUERY SYNTAX
+        # once they land in a query string. Unencoded, "Notepad++" searched
+        # for "Notepad  " (the '+'s decoding back to spaces), and a name
+        # containing '&' silently truncated the search and appended
+        # whatever followed as a second parameter.
+        $Query = [System.Uri]::EscapeDataString("$AppName download")
         Write-Info "No official URL mapped. Opening search..."
-        Start-Process "https://www.google.com/search?q=$AppName download"
+        Start-Process "https://www.google.com/search?q=$Query"
     }
 }
 
@@ -436,7 +452,7 @@ function Invoke-GuiLocalInstall {
         # installer's folder nor anything the installer knows about.
         $WorkDir = Split-Path -Path $FilePath -Parent
         if ($Ext -eq ".msi") {
-            $Proc = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", ('"' + $FilePath + '"')) `
+            $Proc = Start-Process -FilePath (Get-SystemBinary "msiexec") -ArgumentList @("/i", ('"' + $FilePath + '"')) `
                 -WorkingDirectory $WorkDir -Wait -PassThru
         } else {
             $Proc = Start-Process -FilePath $FilePath -WorkingDirectory $WorkDir -Wait -PassThru

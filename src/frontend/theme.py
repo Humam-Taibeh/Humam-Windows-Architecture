@@ -216,9 +216,11 @@ def has_icon_font() -> bool:
 # documents for custom app chrome.
 GLYPHS: dict[str, tuple[str, str]] = {
     # --- nav / chrome ---
-    'home':          ("", "⌂"),                    # Home
+    # ('home' and 'back' lived here until v1.0 with no call site anywhere in
+    # the app — the breadcrumb draws its own separators and nothing ever
+    # asked for either. A glyph catalogue carrying entries nothing renders
+    # is a list of promises, not a resource.)
     'chevron':       ("", "›"),                    # ChevronRight
-    'back':          ("", "‹"),                    # ChevronLeft
     'lock':          ("", "🔒"),             # Lock — admin-gated affordance
     # --- modules (sidebar) ---
     'package':       ("", "📦"),                    # Software Management
@@ -309,7 +311,10 @@ _DARK = {
     # a little blue chroma (the Linear/Vercel "alive dark" tell, vs. dead
     # gray) — and, crucially, opens a real perceptual GAP between the canvas
     # and the card tier so surfaces genuinely float.
-    "bg":          "rgba(16, 18, 27, 0.97)",
+    # ("bg", a translucent twin of bg_solid, was removed in v1.0: the shell
+    # has painted an OPAQUE gradient over every pixel since the layered-
+    # window path was dropped, so nothing had read it in either mode for
+    # several versions.)
     "bg_solid":    "#10121b",
     # shell gradient — a lit deep-space fall: a lifted indigo top settling
     # into a rich near-black-blue floor (not cold near-black).
@@ -417,8 +422,7 @@ _LIGHT = {
     # hairlines + a painted contact shadow. Nothing is pure #ffffff except
     # the hero tier, so the whole mode reads as paper under studio light,
     # not a lightbox.
-    "bg":          "rgba(222, 228, 239, 0.98)",
-    "bg_solid":    "#dee4ef",
+    "bg_solid":    "#dee4ef",   # see the note on the dark side's dropped "bg"
     # v10: the canvas floor drops further (#c8d2e3 → #b6c2da). In light
     # mode elevation CANNOT come from brightening the card — a near-white
     # card on a near-white page has nowhere to go (pure #ffffff over the
@@ -1012,6 +1016,71 @@ def badge_qss(t: dict) -> str:
     """
 
 
+def report_subcard_qss(t: dict, accent: str) -> str:
+    """A titled block inside a read-only report dialog (v1.0).
+
+    The reports used to be one continuous run of label/value rows, so
+    "Windows", "Office" and "Licensing service" were separated by nothing
+    but a heading — three unrelated subjects reading as one wall of text.
+    Each subject now sits on its own surface.
+
+    Deliberately QUIETER than GlassCard: this is a container inside an
+    already-elevated dialog, and repeating the card material here would
+    stack two glass tiers and flatten both. It gets the recessed `panel`
+    fill and a hairline, with the accent showing only in the left edge
+    that ties the block back to the module that opened it.
+    """
+    return f"""
+        QFrame {{
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']};
+            border-left: 2px solid {alpha(accent, 0.55)};
+            border-radius: {RADIUS['plaque']}px;
+        }}
+    """
+
+
+def report_badge_qss(t: dict, color: str) -> str:
+    """The verdict pill on a report sub-card ('Licensed', 'Not activated').
+
+    Bigger and firmer than card_meta_pill_qss: on a card the pill is
+    secondary metadata, but here it IS the answer — it must be the first
+    thing read, ahead of every row beneath it. `color` is already resolved
+    from a tone key by widgets.report_tone_color, so this never has to
+    know what ok/warn/err mean.
+
+    NO FILL, and that is a measurement rather than a taste. The obvious
+    build — tint the pill with its own tone, as the other chips do — tints
+    it in the SAME HUE as the text sitting on it, so every point of opacity
+    subtracts contrast from the one thing the pill exists to make legible.
+    Measured, a 0.13 tint drops dark `err` to 4.11:1 and all three light
+    tones to ~4.0-4.3:1, under AA; the largest tint every tone survives in
+    both modes is 0.045, which is invisible. Tinting toward a neutral is no
+    better — it helps in one mode and hurts in the other, since the tones
+    are light-on-dark in one and dark-on-light in the other.
+
+    So the pill stays transparent and takes its weight from a firm tone
+    border plus 800 text. Contrast is then tone-against-the-sub-card, which
+    the v10 palette already solves for every tone in both modes.
+    """
+    return f"""
+        color: {color}; font-size: 11px; font-weight: 800;
+        background: transparent;
+        border: 1px solid {alpha(color, 0.55)};
+        border-radius: {RADIUS['chip']}px;
+        padding: 3px 11px; letter-spacing: 0.6px;
+    """
+
+
+def report_subcard_title_qss(t: dict) -> str:
+    """The subject line of a report sub-card ('Windows', 'Microsoft 365
+    Apps for enterprise'). Full text weight — the sub-card's own surface
+    supplies the separation that the old all-caps accent heading was
+    carrying on its own."""
+    return (f"color: {t['text']}; font-size: 13px; font-weight: 700;"
+            "background: transparent; border: none;")
+
+
 def dialog_panel_qss(t: dict, accent: str) -> str:
     """Same frosted-glass material as GlassCard (glass_fill), so a dialog
     reads as depth-consistent with the surface that opened it instead of a
@@ -1284,12 +1353,19 @@ def icon_ghost_button_qss(t: dict, accent: str) -> str:
 
 
 def link_button_qss(t: dict, accent: str) -> str:
+    """An inline textual action ('Learn more', 'Choose a folder…'). The only
+    control in the app with no chrome to light up, so its press feedback has
+    to come from the text itself — without it, the one thing a user clicks
+    to leave the app was also the one thing that never acknowledged the
+    click."""
     return f"""
         QPushButton {{
             background: transparent; border: none;
             color: {accent}; font-size: 11px; font-weight: 600;
         }}
         QPushButton:hover {{ color: {t['text']}; }}
+        QPushButton:pressed {{ color: {alpha(accent, 0.70)}; }}
+        QPushButton:disabled {{ color: {t['text_faint']}; }}
     """
 
 

@@ -97,7 +97,18 @@ if (-not $Task) {
         if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             $ElevArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
             if ($WhatIf) { $ElevArgs += " -WhatIf" }
-            Start-Process powershell -ArgumentList $ElevArgs -Verb RunAs
+            # ABSOLUTE PATH, and the one place in Pulse that cannot use
+            # Get-SystemBinary (00-Foundation.ps1): this block re-launches
+            # the script ELEVATED, and it runs before the module loader,
+            # so the helper does not exist yet. Bare `powershell` here
+            # would resolve through $env:PATH - which the unelevated user
+            # controls via HKCU - and hand a planted powershell.exe the
+            # administrator token the UAC prompt was granting to Pulse.
+            # This is the single highest-value path anchor in the codebase
+            # and is therefore written out in full rather than shared.
+            $PSExe = Join-Path ([System.Environment]::GetFolderPath('System')) `
+                'WindowsPowerShell\v1.0\powershell.exe'
+            Start-Process -FilePath $PSExe -ArgumentList $ElevArgs -Verb RunAs
             Exit
         }
     }

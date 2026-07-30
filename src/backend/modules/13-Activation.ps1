@@ -148,9 +148,14 @@ function ConvertTo-ActivationProduct {
 function Get-WindowsActivationStatus {
     <# The Windows licence, or $null when WMI cannot be read at all. #>
     try {
+        # Escaped even though the operand is a module-level constant GUID:
+        # the WQL-escaping contract (test_contract.py) is enforced with no
+        # "this one is safe" exemptions, because the exemption is what
+        # survives into the next filter that isn't.
+        $Filter = "ApplicationID = '{0}' AND PartialProductKey IS NOT NULL" -f `
+            (ConvertTo-WqlLiteral $Script:ActivationAppIdWindows)
         $Products = @(Get-CimInstance -ClassName SoftwareLicensingProduct `
-            -Filter "ApplicationID = '$Script:ActivationAppIdWindows' AND PartialProductKey IS NOT NULL" `
-            -ErrorAction Stop)
+            -Filter $Filter -ErrorAction Stop)
         if ($Products.Count -eq 0) { return $null }
         # A machine can hold several licensed stubs at once (an upgraded
         # edition alongside the one it replaced). A licensed one is the
@@ -176,9 +181,10 @@ function Get-OfficeActivationStatus {
        absent is never mistaken for "Office is not licensed". #>
     $Found = @()
     try {
+        $Filter = "ApplicationID = '{0}' AND PartialProductKey IS NOT NULL" -f `
+            (ConvertTo-WqlLiteral $Script:ActivationAppIdOffice)
         $Found += @(Get-CimInstance -ClassName SoftwareLicensingProduct `
-            -Filter "ApplicationID = '$Script:ActivationAppIdOffice' AND PartialProductKey IS NOT NULL" `
-            -ErrorAction Stop)
+            -Filter $Filter -ErrorAction Stop)
     } catch {
         # WMI unreadable, or no modern Office licence registered here.
     }

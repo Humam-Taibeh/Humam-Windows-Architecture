@@ -87,7 +87,7 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint M
     }
 
     try {
-        Start-Process -FilePath "ie4uinit.exe" -ArgumentList "-show" -WindowStyle Hidden -ErrorAction Stop
+        Start-Process -FilePath (Get-SystemBinary "ie4uinit") -ArgumentList "-show" -WindowStyle Hidden -ErrorAction Stop
     } catch {
         Write-Log "ShellThemeRefresh: ie4uinit -show failed - $($_.Exception.Message)"
     }
@@ -118,7 +118,9 @@ function Enable-ClassicContextMenu {
             Invoke-Mutation -Description "Restart explorer.exe to apply the classic context menu" -Action {
                 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Seconds 1
-                Start-Process explorer
+                # Anchored: this runs elevated, and a planted explorer.exe
+                # earlier in PATH would inherit that token (00-Foundation.ps1).
+                Start-Process -FilePath (Get-SystemBinary "explorer")
                 Write-Success "Explorer restarted. Classic menu should now be active."
             } | Out-Null
         } else {

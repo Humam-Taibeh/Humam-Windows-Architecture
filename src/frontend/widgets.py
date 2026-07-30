@@ -149,16 +149,44 @@ def _resolve_host_window(dialog: QDialog) -> QWidget | None:
     return host
 
 
+def _content_width_floor(dialog: QDialog) -> int:
+    """The width `dialog`'s own content refuses to go below, or 0 before
+    that content exists (v1.0).
+
+    A responsive panel is given a FIXED size, so nothing about it yields to
+    the layout inside it: when the band's floor lands under what the
+    content actually needs, Qt resolves the conflict by shrinking widgets
+    below their minimums, and the dialog silently ships with elided labels
+    and clipped rows. The Startup Manager was doing exactly that at the
+    800px floor — its rows need 869.
+
+    Reading the floor back off the layout keeps that impossible for every
+    responsive dialog at once, including ones added later, instead of
+    leaving each to be discovered by eye. Returns 0 at construction time
+    (no layout yet); refit_dialog re-applies the size from showEvent, by
+    which point the content is real and the true floor is known.
+    """
+    panel = getattr(dialog, "panel", None)
+    layout = panel.layout() if panel is not None else None
+    return layout.minimumSize().width() if layout is not None else 0
+
+
 def _selector_panel_size(dialog: QDialog) -> tuple[int, int]:
     """(width, height) for a responsive selector panel, derived from the
     host window's CURRENT size — called once at construction and again on
     every host resize (refit_dialog), so an already-open dialog visibly
     grows/shrinks along with the window instead of freezing at whatever
-    size the window happened to be when it was opened."""
+    size the window happened to be when it was opened.
+
+    The content floor wins over BOTH ends of the band: over the minimum for
+    the reason in _content_width_floor, and over the maximum because a
+    ceiling that clipped content would be choosing empty margins over
+    legibility."""
+    floor = max(_SELECTOR_WIDTH_MIN, _content_width_floor(dialog))
     host = _resolve_host_window(dialog)
     if host is None:
-        return (_SELECTOR_WIDTH_MIN, _SELECTOR_HEIGHT_MIN)
-    width = max(_SELECTOR_WIDTH_MIN,
+        return (floor, _SELECTOR_HEIGHT_MIN)
+    width = max(floor,
                 min(_SELECTOR_WIDTH_MAX, round(host.width() * _SELECTOR_WIDTH_FRACTION)))
     height = max(_SELECTOR_HEIGHT_MIN, round(host.height() * _SELECTOR_HEIGHT_FRACTION))
     return (width, height)
@@ -211,6 +239,38 @@ def _dialog_chrome(dialog: PulseDialog, t: dict, accent: str,
     return panel
 
 
+def dialog_body(panel: "DepthCard", spacing: str = "md") -> QVBoxLayout:
+    """The content layout inside a dialog panel, carrying the ONE padding
+    every Pulse dialog uses (v1.0).
+
+    Thirteen dialogs each re-typed `setContentsMargins(28, 24, 28, 22)` by
+    hand — an asymmetric quartet that reads as an accident rather than a
+    decision, and one a fourteenth dialog would have had to transcribe
+    correctly to match. Padding now comes off TH.SPACE like every other
+    measurement in the app, so dialogs are consistent by construction.
+
+    `spacing` names the step between the panel's top-level blocks: the
+    default "md" suits the usual header / body / action-bar stack, and
+    dialogs of dense rows pass "sm".
+    """
+    lay = QVBoxLayout(panel)
+    lay.setContentsMargins(TH.SPACE["xl"], TH.SPACE["xl"],
+                           TH.SPACE["xl"], TH.SPACE["lg"])
+    lay.setSpacing(TH.SPACE[spacing])
+    return lay
+
+
+def scroll_host_layout(host: QWidget, spacing: str = "sm") -> QVBoxLayout:
+    """The column inside a dialog's QScrollArea. The right margin is a
+    GUTTER for the scrollbar, not decoration — without it the bar overlaps
+    the last few pixels of every row — and it was being eyeballed as 4 or 6
+    depending on the dialog."""
+    lay = QVBoxLayout(host)
+    lay.setContentsMargins(0, 0, TH.SPACE["sm"], 0)
+    lay.setSpacing(TH.SPACE[spacing])
+    return lay
+
+
 def refit_dialog(dialog: PulseDialog):
     """Resize `dialog` to exactly cover its host window's BODY — always
     fully below the title bar, so minimize/maximize/close stay visible
@@ -230,8 +290,15 @@ def refit_dialog(dialog: PulseDialog):
             # both states too (DWM owns the window's rounding), so a
             # rounded scrim would leave four lit wedges of shell showing.
             dialog._set_scrim(theme_mgr.t, 0)
-        if getattr(dialog, "_responsive_panel", False) and dialog.panel is not None:
-            dialog.panel.setFixedSize(*_selector_panel_size(dialog))
+
+    # OUTSIDE the host check, deliberately. Panel sizing used to sit inside
+    # it, so a dialog with no resolvable host kept whatever size it was
+    # given at construction — which is before its content exists, and so
+    # before _content_width_floor can know what that content needs. The
+    # host governs how the panel scales; it does not govern whether the
+    # panel is allowed to fit its own contents.
+    if getattr(dialog, "_responsive_panel", False) and dialog.panel is not None:
+        dialog.panel.setFixedSize(*_selector_panel_size(dialog))
 
 
 def _present_dialog(dialog: PulseDialog, duration_ms: int = 130):
@@ -1786,9 +1853,7 @@ class ConfirmDialog(PulseDialog):
         accent = t["err"] if danger else t["accent"]
         panel = _dialog_chrome(self, t, accent, width=440)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(10)
+        lay = dialog_body(panel, "sm")
 
         head = QLabel(f"{item['icon']}  {item['title']}")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
@@ -1938,9 +2003,7 @@ class PlaybookDialog(PulseDialog):
         self._accent = accent
         panel = _dialog_chrome(self, t, accent, responsive=True)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(12)
+        lay = dialog_body(panel, "md")
 
         head = QLabel("📘  Playbooks")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
@@ -2000,8 +2063,10 @@ class PlaybookDialog(PulseDialog):
         self._scroll.setStyleSheet(TH.scroll_area_qss(t))
         self._host = QWidget()
         self._host.setStyleSheet("background: transparent;")
-        self._host_lay = QVBoxLayout(self._host)
-        self._host_lay.setContentsMargins(0, 0, 6, 0)
+        self._host_lay = scroll_host_layout(self._host)
+        # The one scroll host that stays FLUSH: PlaybookStepRow carries its
+        # own framing, and a gap between steps would break the sequence
+        # into unrelated rows instead of reading as one ordered list.
         self._host_lay.setSpacing(0)
         self._host_lay.addStretch()
         self._scroll.setWidget(self._host)
@@ -2195,7 +2260,15 @@ def report_row(t: dict, label: str, value: str, tone: str = "",
     line.setContentsMargins(0, 2, 0, 2)
     line.setSpacing(10)
     left = QLabel(label)
-    left.setStyleSheet(TH.label_qss(t, "caption"))
+    # `text_muted`, not the caption role's `text_faint`. text_faint is
+    # pinned at exactly 4.55:1 on the CARD, and a report row renders on the
+    # sub-card panel — a brighter surface in light mode, where the same
+    # colour measures 4.48:1 and slips under AA. The label column here is
+    # content (it names the value beside it), not decoration, so it takes
+    # the step above rather than the floor.
+    left.setStyleSheet(
+        f"color: {t['text_muted']}; font-size: 10px; font-weight: 500;"
+        "letter-spacing: 1px; background: transparent; border: none;")
     left.setMinimumWidth(label_width)
     line.addWidget(left, 0)
     right = QLabel(value)
@@ -2219,13 +2292,70 @@ def report_note(t: dict, text: str, tone: str = "") -> QLabel:
     return label
 
 
-def report_heading(t: dict, accent: str, text: str) -> QLabel:
-    label = QLabel(text.upper())
-    label.setStyleSheet(
-        f"color: {accent}; font-size: 10px; font-weight: 800;"
-        "letter-spacing: 1.2px; background: transparent; border: none;"
-        "margin-top: 8px;")
-    return label
+class ReportSubCard(QFrame):
+    """One subject inside a read-only report — a titled, padded block with
+    an optional verdict badge on its title row (v1.0).
+
+    Exists because the reports had no structure below the dialog itself:
+    Windows, Office and the licensing service were three separate subjects
+    rendered as one uninterrupted column of rows, and a reader had to
+    reconstruct the boundaries from the headings alone. Each subject now
+    owns a surface, so "which of these facts belong together" is answered
+    by the layout instead of by careful reading.
+
+    Padding and spacing come from TH.SPACE, and the title row is a header
+    (title + badge) sitting ABOVE full-width content — the same anatomy
+    GlassCard uses, and for the same reason: a badge beside the content
+    steals the width that the explanation sentences need.
+    """
+
+    def __init__(self, t: dict, accent: str, title: str,
+                 badge: tuple[str, str] | None = None,
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self._t = t
+        self.setStyleSheet(TH.report_subcard_qss(t, accent))
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
+                                 TH.SPACE["lg"], TH.SPACE["md"])
+        outer.setSpacing(TH.SPACE["sm"])
+
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(TH.SPACE["sm"])
+        caption = QLabel(title)
+        caption.setWordWrap(True)
+        caption.setStyleSheet(TH.report_subcard_title_qss(t))
+        head.addWidget(caption, 1)
+        if badge is not None:
+            text, tone = badge
+            pill = QLabel(text)
+            pill.setStyleSheet(TH.report_badge_qss(t, report_tone_color(t, tone)))
+            head.addWidget(pill, 0, Qt.AlignmentFlag.AlignRight
+                           | Qt.AlignmentFlag.AlignVCenter)
+        outer.addLayout(head)
+
+        #: Rows go here rather than into `outer`, so the title row keeps its
+        #: own breathing room while the body stays tight.
+        self._body = QVBoxLayout()
+        self._body.setContentsMargins(0, 0, 0, 0)
+        self._body.setSpacing(TH.SPACE["xs"])
+        outer.addLayout(self._body)
+
+    def add(self, widget: QWidget) -> "ReportSubCard":
+        """Returns self so a caller can chain a block of rows in one
+        expression — the render methods below then read as a description of
+        the card rather than as a sequence of statements."""
+        self._body.addWidget(widget)
+        return self
+
+    def row(self, label: str, value: str, tone: str = "",
+            label_width: int = 150) -> "ReportSubCard":
+        return self.add(report_row(self._t, label, value, tone, label_width))
+
+    def note(self, text: str, tone: str = "") -> "ReportSubCard":
+        return self.add(report_note(self._t, text, tone))
 
 
 class HealthReportDialog(PulseDialog):
@@ -2254,9 +2384,7 @@ class HealthReportDialog(PulseDialog):
         self._accent = accent
         panel = _dialog_chrome(self, t, accent, responsive=True)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(12)
+        lay = dialog_body(panel, "md")
 
         head = QLabel("🩺  Health & Drift Report")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
@@ -2273,9 +2401,7 @@ class HealthReportDialog(PulseDialog):
         self._scroll.setStyleSheet(TH.scroll_area_qss(t))
         self._host = QWidget()
         self._host.setStyleSheet("background: transparent;")
-        self._host_lay = QVBoxLayout(self._host)
-        self._host_lay.setContentsMargins(0, 0, 6, 0)
-        self._host_lay.setSpacing(6)
+        self._host_lay = scroll_host_layout(self._host, "md")
         self._host_lay.addStretch()
         self._scroll.setWidget(self._host)
         lay.addWidget(self._scroll, 1)
@@ -2346,20 +2472,18 @@ class HealthReportDialog(PulseDialog):
             self._thread = None
 
     # -- rendering --------------------------------------------
-    # Thin wrappers over the shared report primitives above — the layout
-    # rules they encode are identical to the activation report's, and one
-    # definition of "how a toned line looks" is what keeps them so.
-    def _row(self, label: str, value: str, tone: str = "") -> QWidget:
-        return report_row(self._t, label, value, tone)
+    #: Wider than the activation report's column: this report's label
+    #: vocabulary runs to "Operating system" and "Configuration drift"
+    #: entries, which wrap at the narrower width.
+    _LABEL_W = 200
 
-    def _note(self, text: str, tone: str = "") -> QLabel:
-        return report_note(self._t, text, tone)
-
-    def _heading(self, text: str) -> QLabel:
-        return report_heading(self._t, self._accent, text)
+    def _card(self, title: str, badge: tuple[str, str] | None = None) -> ReportSubCard:
+        card = ReportSubCard(self._t, self._accent, title, badge)
+        self._add(card)
+        return card
 
     def _render(self, report: dict):
-        from frontend.health_report import TWEAK_LABELS, findings, tweak_rows
+        from frontend.health_report import findings, tweak_rows
 
         summary = report.get("tweakSummary") or {}
         self._status.setText(
@@ -2368,42 +2492,52 @@ class HealthReportDialog(PulseDialog):
             f"{summary.get('notApplied', 0)} not applied · "
             f"{summary.get('unknown', 0)} unknown")
 
+        # Findings lead, and carry the report's verdict in their badge —
+        # "is anything wrong here" is the question this dialog is opened
+        # to answer, and it is now answerable without reading a line.
         found = findings(report)
-        self._add(self._heading("Findings"))
+        card = self._card(
+            "Findings",
+            (f"{len(found)} to review", "warn") if found else ("All clear", "ok"))
         if found:
             for line in found:
-                self._add(self._note(f"•  {line}", "warn"))
+                card.note(f"•  {line}", "warn")
         else:
-            self._add(self._note("•  Nothing needing attention.", "ok"))
+            card.note("•  Nothing needing attention.", "ok")
 
         system = report.get("system") or {}
         if system:
-            self._add(self._heading("System"))
-            self._add(self._row("Operating system",
-                                f"{system.get('os')} (build {system.get('build')})"))
-            self._add(self._row("Processor", str(system.get("cpu"))))
-            self._add(self._row(
-                "Memory",
-                f"{system.get('freeRAMGB')} GB free of {system.get('totalRAMGB')} GB"))
-            self._add(self._row("Power plan", str(system.get("powerPlan"))))
+            self._card("System") \
+                .row("Operating system",
+                     f"{system.get('os')} (build {system.get('build')})",
+                     label_width=self._LABEL_W) \
+                .row("Processor", str(system.get("cpu")), label_width=self._LABEL_W) \
+                .row("Memory",
+                     f"{system.get('freeRAMGB')} GB free of "
+                     f"{system.get('totalRAMGB')} GB", label_width=self._LABEL_W) \
+                .row("Power plan", str(system.get("powerPlan")),
+                     label_width=self._LABEL_W)
 
         drives = report.get("drives") or []
         if drives:
-            self._add(self._heading("Storage"))
+            card = self._card("Storage")
             for drive in drives:
                 percent = drive.get("percentFree", 100)
                 tone = "err" if isinstance(percent, (int, float)) and percent < 10 else ""
-                self._add(self._row(
-                    f"Drive {drive.get('name')}",
-                    f"{drive.get('freeGB')} GB free of {drive.get('totalGB')} GB "
-                    f"({percent}%)", tone))
+                card.row(f"Drive {drive.get('name')}",
+                         f"{drive.get('freeGB')} GB free of "
+                         f"{drive.get('totalGB')} GB ({percent}%)",
+                         tone, label_width=self._LABEL_W)
 
-        self._add(self._heading("Configuration drift"))
-        for label, state, _task in tweak_rows(report):
+        rows = tweak_rows(report)
+        applied = sum(1 for _label, state, _task in rows if state == "applied")
+        card = self._card("Configuration drift",
+                          (f"{applied} of {len(rows)} applied", "") if rows else None)
+        for label, state, _task in rows:
             tone = {"applied": "ok", "not-applied": "err"}.get(state, "")
             shown = {"applied": "Applied", "not-applied": "Not applied",
                      "unknown": "Unknown"}[state]
-            self._add(self._row(label, shown, tone))
+            card.row(label, shown, tone, label_width=self._LABEL_W)
 
     def _add(self, widget: QWidget):
         self._host_lay.insertWidget(self._host_lay.count() - 1, widget)
@@ -2462,6 +2596,15 @@ class ActivationStatusDialog(PulseDialog):
     #: no further part in whatever they do there.
     SETTINGS_URI = "ms-settings:activation"
 
+    #: Office's counterpart, and the reason the action bar is a PAIR. Office
+    #: licences are not administered from ms-settings:activation at all —
+    #: they live against the Microsoft account that owns the subscription,
+    #: so "Open Windows Activation Settings" was a dead end for exactly the
+    #: half of this report a reader most often arrives with a problem in.
+    #: Same principle as SETTINGS_URI: Microsoft's own surface, opened
+    #: visibly, with Pulse taking no part in what happens there.
+    OFFICE_ACCOUNT_URL = "https://account.microsoft.com/services"
+
     def __init__(self, parent: QWidget, ps1_path: str, t: dict):
         super().__init__(parent)
         self._t = t
@@ -2469,16 +2612,18 @@ class ActivationStatusDialog(PulseDialog):
         self._thread: QThread | None = None
         self._worker: PowerShellTask | None = None
 
-        accent = TH.resolve_accent(t, "safety")
+        accent = TH.resolve_accent(t, "information")
         self._accent = accent
         panel = _dialog_chrome(self, t, accent, responsive=True)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(12)
+        lay = dialog_body(panel)
 
-        head = QLabel("🔑  Activation Status")
+        # The title carries the scope. The dialog covers two products, and
+        # a bare "Activation Status" left a reader to discover the Office
+        # half by scrolling to it.
+        head = QLabel("🔑  Activation Status — Windows & Office")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
+        head.setWordWrap(True)
         lay.addWidget(head)
 
         self._status = QLabel("Reading the licensing service…")
@@ -2492,39 +2637,66 @@ class ActivationStatusDialog(PulseDialog):
         self._scroll.setStyleSheet(TH.scroll_area_qss(t))
         self._host = QWidget()
         self._host.setStyleSheet("background: transparent;")
-        self._host_lay = QVBoxLayout(self._host)
-        self._host_lay.setContentsMargins(0, 0, 6, 0)
-        self._host_lay.setSpacing(6)
+        # Sub-cards are separated blocks, not stacked rows — they take the
+        # gutter step, not the row step.
+        self._host_lay = scroll_host_layout(self._host, "md")
         self._host_lay.addStretch()
         self._scroll.setWidget(self._host)
         lay.addWidget(self._scroll, 1)
 
+        # -- action bar ---------------------------------------
+        # Two destinations, because the report has two subjects and they
+        # are administered in different places. Both are secondary-weight
+        # against nothing: this dialog has no primary action of its own —
+        # it changes nothing — so the two hand-offs share the emphasis
+        # rather than one of them pretending to be the thing to do.
         row = QHBoxLayout()
+        row.setSpacing(TH.SPACE["sm"])
         row.addStretch()
-        close = QPushButton("Close")
-        close.setFixedSize(96, 36)
-        close.setCursor(Qt.CursorShape.PointingHandCursor)
-        close.setStyleSheet(TH.dialog_cancel_qss(t))
-        close.clicked.connect(self.reject)
-        row.addWidget(close)
-
-        self._refresh_btn = QPushButton("Re-check")
-        self._refresh_btn.setFixedSize(110, 36)
-        self._refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._refresh_btn.setStyleSheet(TH.dialog_cancel_qss(t))
-        self._refresh_btn.setEnabled(False)
-        self._refresh_btn.clicked.connect(self._start)
-        row.addWidget(self._refresh_btn)
-
-        settings = QPushButton("Open Windows Activation Settings")
-        settings.setFixedSize(258, 36)
-        settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        settings.setStyleSheet(TH.dialog_go_qss(t, accent))
-        settings.clicked.connect(self._open_settings)
-        row.addWidget(settings)
+        for widget in self._action_buttons(t, accent):
+            row.addWidget(widget)
         lay.addLayout(row)
 
         QTimer.singleShot(0, self._start)
+
+    def _action_buttons(self, t: dict, accent: str) -> list[QPushButton]:
+        """Built in one place so every button in the bar gets the same
+        height, cursor and sizing rule. Widths are natural (a minimum plus
+        the label) rather than fixed — the fixed 258px on the old Settings
+        button was already the widest thing in the dialog, and a second
+        hand-off beside it would have forced a horizontal scrollbar at the
+        dialog's smaller responsive sizes."""
+        def button(text: str, style: str, slot, minimum: int) -> QPushButton:
+            btn = QPushButton(text)
+            btn.setFixedHeight(36)
+            btn.setMinimumWidth(minimum)
+            btn.setSizePolicy(QSizePolicy.Policy.Preferred,
+                              QSizePolicy.Policy.Fixed)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(style)
+            btn.clicked.connect(slot)
+            return btn
+
+        close = button("Close", TH.dialog_cancel_qss(t), self.reject, 88)
+
+        self._refresh_btn = button("Re-check", TH.dialog_cancel_qss(t),
+                                   self._start, 100)
+        self._refresh_btn.setEnabled(False)
+
+        office = button("Office Account & Licensing",
+                        TH.dialog_secondary_go_qss(t, accent),
+                        self._open_office_account, 196)
+        office.setToolTip(
+            "Opens your Microsoft account's services and subscriptions page, "
+            "where Office licences are assigned and managed.")
+
+        windows = button("Windows Activation Settings",
+                         TH.dialog_go_qss(t, accent), self._open_settings, 200)
+        windows.setToolTip(
+            "Opens Settings › System › Activation, where Windows licence "
+            "state is changed.")
+
+        return [close, self._refresh_btn, office, windows]
 
     # -- data -------------------------------------------------
     def _start(self):
@@ -2576,6 +2748,12 @@ class ActivationStatusDialog(PulseDialog):
                 "Windows could not open the Activation settings page. "
                 "Open Settings › System › Activation manually.")
 
+    def _open_office_account(self):
+        if not QDesktopServices.openUrl(QUrl(self.OFFICE_ACCOUNT_URL)):
+            self._status.setText(
+                "Windows could not open your browser. Go to "
+                f"{self.OFFICE_ACCOUNT_URL} manually to manage Office licences.")
+
     # -- rendering --------------------------------------------
     def _add(self, widget: QWidget):
         self._host_lay.insertWidget(self._host_lay.count() - 1, widget)
@@ -2589,54 +2767,48 @@ class ActivationStatusDialog(PulseDialog):
             if widget is not None:
                 widget.deleteLater()
 
-    def _pill(self, text: str, tone: str) -> QLabel:
-        """The one-word verdict, styled as a card meta pill in the tone's
-        own colour so the answer is readable before any row is."""
-        label = QLabel(text)
-        label.setStyleSheet(TH.card_meta_pill_qss(
-            self._t, report_tone_color(self._t, tone)))
-        return label
+    #: Label column inside a sub-card. Narrower than the dialog-wide 170px
+    #: the flat layout used, because the sub-card's own padding already
+    #: indents every row — keeping 170 here pushed values into the right
+    #: third of the block and left a visible trough down the middle.
+    _LABEL_W = 150
 
-    def _product(self, product: dict, label_width: int):
-        """One licensed product: verdict pill, the facts behind it, then
-        the plain-English sentence saying what the verdict means."""
+    def _card(self, title: str, badge: tuple[str, str] | None = None) -> ReportSubCard:
+        card = ReportSubCard(self._t, self._accent, title, badge)
+        self._add(card)
+        return card
+
+    def _product_card(self, title: str, product: dict) -> ReportSubCard:
+        """One licensed product as a sub-card: the verdict badges the title
+        row, the facts behind it fill the body, and the plain-English
+        sentence saying what the verdict MEANS closes it."""
         tone = str(product.get("tone") or "")
-        holder = QWidget()
-        holder.setStyleSheet("background: transparent;")
-        pill_row = QHBoxLayout(holder)
-        pill_row.setContentsMargins(0, 2, 0, 2)
-        pill_row.setSpacing(10)
-        pill_row.addWidget(self._pill(str(product.get("status") or "Unknown"), tone), 0)
-        pill_row.addStretch(1)
-        self._add(holder)
+        card = self._card(title, (str(product.get("status") or "Unknown"), tone))
 
-        self._add(report_row(self._t, "Licence channel",
-                             str(product.get("channel") or "Unknown"),
-                             label_width=label_width))
+        card.row("Licence channel", str(product.get("channel") or "Unknown"),
+                 label_width=self._LABEL_W)
         partial = str(product.get("partialKey") or "")
         if partial:
             # Windows shows the same five characters in Settings. The full
             # key is never read by the backend, so it cannot be shown here.
-            self._add(report_row(self._t, "Product key", f"Ends in {partial}",
-                                 label_width=label_width))
+            card.row("Product key", f"Ends in {partial}", label_width=self._LABEL_W)
         if product.get("statusCode") == 1:
-            self._add(report_row(
-                self._t, "Licence type",
-                "Permanent — does not expire" if product.get("permanent")
-                else "Leased — renews automatically",
-                label_width=label_width))
+            card.row("Licence type",
+                     "Permanent — does not expire" if product.get("permanent")
+                     else "Leased — renews automatically",
+                     label_width=self._LABEL_W)
         days = product.get("remainingDays")
         if isinstance(days, int):
             # Same field, two meanings, and the label has to say which:
             # on a licensed lease it counts down to renewal, in any grace
             # state it counts down to features being restricted.
-            self._add(report_row(
-                self._t,
-                "Renews in" if product.get("statusCode") == 1 else "Grace period left",
-                f"{days} day(s)", label_width=label_width))
+            card.row("Renews in" if product.get("statusCode") == 1
+                     else "Grace period left",
+                     f"{days} day(s)", label_width=self._LABEL_W)
         explanation = str(product.get("explanation") or "")
         if explanation:
-            self._add(report_note(self._t, explanation, tone))
+            card.note(explanation, tone)
+        return card
 
     def _render(self, report: dict):
         self._clear()
@@ -2647,32 +2819,30 @@ class ActivationStatusDialog(PulseDialog):
             f"{host} · {edition}" + (f" (build {build})" if build else ""))
 
         # -- Windows ------------------------------------------
-        self._add(report_heading(self._t, self._accent, "Windows"))
         windows = report.get("windows")
         if isinstance(windows, dict):
-            self._product(windows, label_width=170)
+            self._product_card("Windows", windows)
         else:
-            self._add(report_note(
-                self._t,
+            # Still a sub-card, not a bare sentence: "we could not tell" is
+            # a state of the Windows subject, and demoting it to loose text
+            # would make the one case a reader most needs to notice the
+            # least visible thing in the dialog.
+            self._card("Windows", ("Unknown", "warn")).note(
                 "The licensing service did not report a Windows licence on "
                 "this machine. That is normal on some managed or evaluation "
                 "images; Settings › System › Activation is authoritative.",
-                "warn"))
+                "warn")
 
         # -- Office -------------------------------------------
-        self._add(report_heading(self._t, self._accent, "Microsoft Office"))
         office = report.get("office")
         office = office if isinstance(office, list) else []
         install = report.get("officeInstall")
         install = install if isinstance(install, dict) else {}
         if office:
-            for index, product in enumerate(office):
-                if not isinstance(product, dict):
-                    continue
-                if index:
-                    self._add(report_note(self._t, ""))
-                self._add(report_note(self._t, str(product.get("name") or "Office product")))
-                self._product(product, label_width=170)
+            for product in office:
+                if isinstance(product, dict):
+                    self._product_card(
+                        str(product.get("name") or "Microsoft Office"), product)
         elif install.get("installed"):
             # The actionable case, and the reason officeInstall exists at
             # all: installed-but-unlicensed and not-installed both produce
@@ -2680,37 +2850,38 @@ class ActivationStatusDialog(PulseDialog):
             kind = str(install.get("kind") or "")
             version = str(install.get("version") or "")
             detail = " · ".join(part for part in (kind, version) if part)
-            self._add(report_note(
-                self._t,
-                f"Office is installed ({detail}) but reports no licence."
-                if detail else "Office is installed but reports no licence.",
-                "warn"))
+            card = self._card("Microsoft Office", ("No licence", "warn"))
+            if detail:
+                card.row("Installation", detail, label_width=self._LABEL_W)
+            card.note(
+                "Office is installed but reports no licence. Office licences "
+                "are held against the Microsoft account that owns the "
+                "subscription — check it under Office Account & Licensing.",
+                "warn")
         else:
-            self._add(report_note(
-                self._t, "No Microsoft Office installation was found on this machine."))
+            self._card("Microsoft Office", ("Not installed", "")).note(
+                "No Microsoft Office installation was found on this machine.")
 
         # -- Licensing service --------------------------------
         # Rendered only when it has something to say: on an ordinary
-        # consumer PC every field here is empty, and an empty section is
-        # just noise between the reader and the two that matter.
+        # consumer PC every field here is empty, and an empty sub-card is
+        # louder noise than an empty heading ever was.
         service = report.get("service")
         service = service if isinstance(service, dict) else {}
         kms = str(service.get("kmsHost") or "")
         firmware = service.get("firmwareKeyPresent")
         if kms or firmware is not None:
-            self._add(report_heading(self._t, self._accent, "Licensing service"))
+            card = self._card("Licensing service")
             if kms:
-                self._add(report_row(self._t, "KMS host", kms, label_width=170))
+                card.row("KMS host", kms, label_width=self._LABEL_W)
             if firmware is True:
                 edition_name = str(service.get("firmwareKeyEdition") or "")
-                self._add(report_row(
-                    self._t, "OEM firmware licence",
-                    f"Present{f' ({edition_name})' if edition_name else ''}",
-                    "ok", label_width=170))
+                card.row("OEM firmware licence",
+                         f"Present{f' ({edition_name})' if edition_name else ''}",
+                         "ok", label_width=self._LABEL_W)
             elif firmware is False:
-                self._add(report_row(
-                    self._t, "OEM firmware licence", "Not present",
-                    label_width=170))
+                card.row("OEM firmware licence", "Not present",
+                         label_width=self._LABEL_W)
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -2742,11 +2913,14 @@ class CloseConfirmDialog(PulseDialog):
     def __init__(self, parent: QWidget, t: dict, task_title: str = ""):
         super().__init__(parent)
         accent = t["warn"]
-        panel = _dialog_chrome(self, t, accent, width=460)
+        # 540, not 460: the three action buttons are named for their
+        # OUTCOME rather than "Yes"/"No", and their combined minimum is
+        # 516px. At 460 the row was over-constrained, so Qt shrank the
+        # labels below their own text and the outcome names — the entire
+        # point of the dialog — came out elided.
+        panel = _dialog_chrome(self, t, accent, width=540)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(10)
+        lay = dialog_body(panel, "sm")
 
         head = QLabel("⚠️  A task is still running")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
@@ -2816,9 +2990,7 @@ class ElevatePromptDialog(PulseDialog):
         accent = t["warn"]
         panel = _dialog_chrome(self, t, accent, width=470)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(10)
+        lay = dialog_body(panel, "sm")
 
         head = QLabel("🛡  Administrator required")
         head.setStyleSheet(TH.label_qss(t, "card"))
@@ -2932,9 +3104,7 @@ class HubDialog(PulseDialog):
         accent = t["accent"]
         panel = _dialog_chrome(self, t, accent, responsive=True)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(14)
+        lay = dialog_body(panel, "md")
 
         head = QLabel(f"{hub['icon']}  {hub['title']}")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
@@ -2951,9 +3121,7 @@ class HubDialog(PulseDialog):
         scroll.setStyleSheet(TH.scroll_area_qss(t))
         host = QWidget()
         host.setStyleSheet("background: transparent;")
-        host_lay = QVBoxLayout(host)
-        host_lay.setContentsMargins(0, 0, 6, 0)
-        host_lay.setSpacing(14)
+        host_lay = scroll_host_layout(host, "md")
         groups = hub.get("groups")
         if groups:
             # Grouped hub (System Tools & Utilities): each group opens with
@@ -3804,9 +3972,7 @@ class AppSelectorDialog(PulseDialog):
 
         panel = _dialog_chrome(self, t, accent, responsive=True)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(12)
+        lay = dialog_body(panel, "md")
 
         head = QLabel(f"{item['icon']}  {item['title']}")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
@@ -3847,9 +4013,7 @@ class AppSelectorDialog(PulseDialog):
 
         host = QWidget()
         host.setStyleSheet("background: transparent;")
-        host_lay = QVBoxLayout(host)
-        host_lay.setContentsMargins(0, 0, 6, 0)
-        host_lay.setSpacing(8)
+        host_lay = scroll_host_layout(host, "sm")
         for app_id, app_name, desc, url in apps:
             row = DevHubRow(app_id, app_name, desc, None, None, t, checked=True)
             row.checkbox.toggled.connect(self._update_count)
@@ -4099,11 +4263,11 @@ class OfficeWizardDialog(PulseDialog):
         # Path B was picked directly, "guide" if arriving via Path C.
         self._locate_origin = "choice"
 
-        panel = _dialog_chrome(self, t, t["accent"], width=560)
+        # 620: the locate step's path row (label + elided path + Browse)
+        # needs 588px before anything is squeezed.
+        panel = _dialog_chrome(self, t, t["accent"], width=620)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(14)
+        lay = dialog_body(panel, "md")
 
         head = QHBoxLayout()
         title_col = QVBoxLayout()
@@ -4630,9 +4794,7 @@ class ToolInstallWizardDialog(PulseDialog):
 
         panel = _dialog_chrome(self, t, t["accent"], width=470)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(12)
+        lay = dialog_body(panel, "md")
 
         head = QLabel(f"⚙️  {app_name}")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
@@ -4806,9 +4968,7 @@ class DevHubSelectorDialog(PulseDialog):
 
         panel = _dialog_chrome(self, t, t["accent"], responsive=True)
 
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(10)
+        lay = dialog_body(panel, "sm")
 
         head = QLabel("🎓  Developer Toolkit")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
@@ -4861,9 +5021,7 @@ class DevHubSelectorDialog(PulseDialog):
 
         host = QWidget()
         host.setStyleSheet("background: transparent;")
-        host_lay = QVBoxLayout(host)
-        host_lay.setContentsMargins(0, 0, 4, 0)
-        host_lay.setSpacing(10)
+        host_lay = scroll_host_layout(host, "md")
 
         for group_title, tools in groups:
             section = QLabel(group_title)
@@ -5082,9 +5240,7 @@ class UpdateCenterDialog(PulseDialog):
         accent = t["accent"]
 
         panel = _dialog_chrome(self, t, accent, responsive=True)
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(12)
+        lay = dialog_body(panel, "md")
 
         head = QLabel("🔄  Update Center")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
@@ -5247,9 +5403,7 @@ class UpdateCenterDialog(PulseDialog):
         scroll.setStyleSheet(TH.scroll_area_qss(t))
         self._host = QWidget()
         self._host.setStyleSheet("background: transparent;")
-        self._host_lay = QVBoxLayout(self._host)
-        self._host_lay.setContentsMargins(0, 0, 6, 0)
-        self._host_lay.setSpacing(8)
+        self._host_lay = scroll_host_layout(self._host, "sm")
         self._host_lay.addStretch()
         scroll.setWidget(self._host)
         lay.addWidget(scroll, 1)
@@ -5512,9 +5666,7 @@ class StartupManagerDialog(PulseDialog):
 
         accent = t["accent"]
         panel = _dialog_chrome(self, t, accent, responsive=True)
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 24, 28, 22)
-        lay.setSpacing(12)
+        lay = dialog_body(panel, "md")
 
         head = QHBoxLayout()
         title_col = QVBoxLayout()
@@ -5648,9 +5800,7 @@ class StartupManagerDialog(PulseDialog):
         scroll.setStyleSheet(TH.scroll_area_qss(t))
         self._host = QWidget()
         self._host.setStyleSheet("background: transparent;")
-        self._host_lay = QVBoxLayout(self._host)
-        self._host_lay.setContentsMargins(0, 0, 6, 0)
-        self._host_lay.setSpacing(8)
+        self._host_lay = scroll_host_layout(self._host, "sm")
         self._host_lay.addStretch()
         scroll.setWidget(self._host)
         lay.addWidget(scroll, 1)

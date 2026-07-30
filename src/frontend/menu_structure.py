@@ -484,7 +484,7 @@ CATEGORIES = [
         "icon": "📊",
         "glyph": "info",
         "title": "Information & Utilities",
-        "tagline": "System insight, driver tools and the operation log",
+        "tagline": "System insight, licence status, driver tools and the log",
         "accent": "information",
         "items": [
             {"icon": "📊", "title": "System Info Snapshot",
@@ -499,6 +499,20 @@ CATEGORIES = [
             {"icon": "🛟", "title": "Create Restore Point",
              "desc": "Manual System Restore checkpoint before big changes.",
              "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600},
+            # Read-only, and deliberately so: it reports what Windows'
+            # licensing service already knows and hands off to Microsoft's
+            # own surfaces for anything that needs changing. Nothing in
+            # Pulse activates, keys, or alters a licence.
+            #
+            # Lives HERE rather than under Safety & Recovery (where it
+            # shipped in v10.3): Safety is the undo/rollback module, and a
+            # read-only licence report is neither. It is an inspector, and
+            # it belongs beside the other inspectors — System Info Snapshot
+            # and the driver scan — where a reader looking for "tell me
+            # about this machine" will actually go.
+            {"icon": "🔑", "title": "Activation Status",
+             "desc": "Windows and Office licence state, channel and expiry — read-only.",
+             "glyph": "key", "task": "@activation"},
             {"icon": "📜", "title": "View Operation Log",
              "desc": "Open the full Pulse operation log.",
              "glyph": "log", "task": "@open_log"},
@@ -524,13 +538,6 @@ CATEGORIES = [
             {"icon": "🛟", "title": "Create Restore Point",
              "desc": "Manual System Restore checkpoint — your safety net.",
              "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600},
-            # Read-only, and deliberately so: it reports what Windows'
-            # licensing service already knows and hands off to Settings for
-            # anything that needs changing. Nothing in Pulse activates,
-            # keys, or alters a licence.
-            {"icon": "🔑", "title": "Activation Status",
-             "desc": "Windows and Office licence state, channel and expiry — read-only.",
-             "glyph": "key", "task": "@activation"},
             {"icon": "☁️", "title": "OneDrive Backup Folder",
              "desc": "Open files rescued before OneDrive removal.",
              "glyph": "folder", "task": "@open_onedrive_backup"},

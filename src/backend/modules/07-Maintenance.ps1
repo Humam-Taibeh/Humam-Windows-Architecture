@@ -261,7 +261,14 @@ function Get-ServiceState {
     if (-not $Svc) {
         return [PSCustomObject]@{ Exists = $false; Status = "N/A"; StartType = "N/A" }
     }
-    $StartType = (Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue).StartMode
+    # ESCAPED: $Name is interpolated into a WQL string literal, and WQL
+    # quotes with ' and escapes with \. A service name carrying either ends
+    # the literal early and the remainder is parsed as QUERY - the WMI
+    # equivalent of SQL injection. Service names reach here from the
+    # catalog and, on the Restore-Services path, from the machine's own
+    # service list, so this is not a value the caller fully controls.
+    $Filter = "Name='{0}'" -f (ConvertTo-WqlLiteral $Name)
+    $StartType = (Get-CimInstance Win32_Service -Filter $Filter -ErrorAction SilentlyContinue).StartMode
     return [PSCustomObject]@{ Exists = $true; Status = $Svc.Status; StartType = $StartType }
 }
 

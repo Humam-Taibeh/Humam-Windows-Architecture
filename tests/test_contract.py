@@ -267,6 +267,106 @@ def test_activation_module_is_read_only():
         "own job, reached through the Settings deep link in the dialog.")
 
 
+_BACKEND_DIR = os.path.join(_ROOT, "src/backend")
+
+#: Stock tools that must never be invoked by bare name from an elevated
+#: process. Each has an anchored path behind Get-SystemBinary
+#: (00-Foundation.ps1); winget is the exception and goes through
+#: Get-WingetPath (03-Environment.ps1) because it is an app-execution
+#: alias rather than a System32 binary.
+_ANCHORED_TOOLS = (
+    "powershell", "pwsh", "explorer", "taskmgr", "cmd", "winget",
+    "msiexec", "ie4uinit", "rundll32", "regsvr32", "sc", "reg", "schtasks",
+)
+
+
+def _backend_files():
+    for root, _dirs, names in os.walk(_BACKEND_DIR):
+        for name in sorted(names):
+            if name.endswith(".ps1"):
+                yield os.path.join(root, name)
+
+
+def _code_lines(path):
+    """(line_number, text) for lines that are actually code — comments and
+    block comments carry the prose that DESCRIBES these patterns, and a
+    scan that matched those would fail on its own documentation."""
+    source = open(path, encoding="utf-8-sig").read()
+    source = re.sub(r"<#.*?#>", "", source, flags=re.S)
+    out = []
+    for number, line in enumerate(source.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        out.append((number, line.split("#")[0] if " #" in line else line))
+    return out
+
+
+def test_no_bare_executable_invocations():
+    """v1.0 PATH-hijack contract.
+
+    Pulse runs elevated, and a bare executable name is a $env:PATH SEARCH
+    rather than a path. PATH is assembled from HKCU as well as HKLM, so an
+    unelevated user can place a directory ahead of System32 and have their
+    binary launched with Pulse's administrator token.
+
+    Every stock tool therefore goes through Get-SystemBinary (or
+    Get-WingetPath for the app-execution alias). This scan is the guard
+    that keeps a future `Start-Process explorer` from quietly restoring the
+    hole, since the resulting behaviour is indistinguishable from correct
+    on a machine that is not under attack.
+    """
+    names = "|".join(_ANCHORED_TOOLS)
+    patterns = (
+        # Start-Process explorer / Start-Process "taskmgr.exe" / -FilePath "winget"
+        re.compile(
+            r'Start-Process\s+(?:-FilePath\s+)?["\']?(?:%s)(?:\.exe)?["\']?[\s,]' % names,
+            re.I),
+        # & winget ... / & "explorer" ...
+        re.compile(r'&\s+["\']?(?:%s)(?:\.exe)?["\']?\s' % names, re.I),
+    )
+
+    offenders = []
+    for path in _backend_files():
+        relative = os.path.relpath(path, _ROOT).replace(os.sep, "/")
+        for number, line in _code_lines(path):
+            for pattern in patterns:
+                if pattern.search(line):
+                    offenders.append(f"{relative}:{number}: {line.strip()}")
+
+    assert not offenders, (
+        "bare executable invocation(s) found — these resolve through "
+        "$env:PATH, which the unelevated user controls, and Pulse runs "
+        "elevated. Route them through Get-SystemBinary (00-Foundation.ps1) "
+        "or Get-WingetPath (03-Environment.ps1):\n  " + "\n  ".join(offenders))
+
+
+def test_wql_filters_escape_interpolated_values():
+    """A WQL -Filter that interpolates a variable directly is injectable:
+    WQL quotes with ' and escapes with \\, so a value carrying either ends
+    the literal early and the rest is parsed as query. Interpolated values
+    must go through ConvertTo-WqlLiteral (00-Foundation.ps1).
+
+    A filter built only from literals (13-Activation.ps1's two constant
+    application-ID GUIDs) has nothing to escape and is not matched here.
+    """
+    # -Filter "...'$Something'..." — a bare $var inside a quoted literal.
+    raw = re.compile(r'-Filter\s+"[^"]*\'\$(?!\()[A-Za-z_]\w*[^"]*\'')
+
+    offenders = []
+    for path in _backend_files():
+        relative = os.path.relpath(path, _ROOT).replace(os.sep, "/")
+        for number, line in _code_lines(path):
+            if raw.search(line):
+                offenders.append(f"{relative}:{number}: {line.strip()}")
+
+    assert not offenders, (
+        "WQL filter(s) interpolate a value without escaping it. Build the "
+        "filter with ConvertTo-WqlLiteral, e.g.\n"
+        '  $Filter = "Name=\'{0}\'" -f (ConvertTo-WqlLiteral $Name)\n  '
+        + "\n  ".join(offenders))
+
+
 class TestThemes:
     @staticmethod
     def _themes(qapp):

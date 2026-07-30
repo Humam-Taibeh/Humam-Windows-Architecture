@@ -52,6 +52,113 @@ function Get-OSCaption {
 }
 
 # ============================================================
+#  TRUSTED BINARY PATHS  (v1.0 - PATH-hijack hardening)
+# ============================================================
+# PULSE RUNS ELEVATED, AND A BARE EXECUTABLE NAME IS A SEARCH, NOT A PATH.
+#
+# `Start-Process explorer` or `& winget` resolves the name through
+# $env:PATH, and PATH is assembled from HKCU as well as HKLM - a registry
+# hive the UNELEVATED user owns and can write freely. Anything that drops
+# an "explorer.exe" into a directory sitting earlier in PATH than the real
+# one gets it launched WITH PULSE'S ADMINISTRATOR TOKEN, from a script the
+# user believes only touches Windows' own tools. Naming the absolute path
+# deletes the search, and with it the substitution.
+#
+# Resolved from the environment rather than a literal "C:\Windows": the
+# system drive is not guaranteed to be C:, and GetFolderPath reads the same
+# value the loader itself uses. On a 32-bit host process 'System' correctly
+# yields SysWOW64, which is where that process's stock tools genuinely are.
+$Script:WindowsDir  = [System.Environment]::GetFolderPath('Windows')
+$Script:System32Dir = [System.Environment]::GetFolderPath('System')
+
+# The stock tools Pulse shells out to. explorer.exe lives in the Windows
+# ROOT, not System32 - a detail worth encoding once here rather than
+# rediscovering at each call site.
+$Script:SystemBinaries = @{
+    'powershell' = Join-Path $Script:System32Dir 'WindowsPowerShell\v1.0\powershell.exe'
+    'explorer'   = Join-Path $Script:WindowsDir  'explorer.exe'
+    'taskmgr'    = Join-Path $Script:System32Dir 'taskmgr.exe'
+    'ie4uinit'   = Join-Path $Script:System32Dir 'ie4uinit.exe'
+    'msiexec'    = Join-Path $Script:System32Dir 'msiexec.exe'
+    'rundll32'   = Join-Path $Script:System32Dir 'rundll32.exe'
+    'cmd'        = Join-Path $Script:System32Dir 'cmd.exe'
+    'sc'         = Join-Path $Script:System32Dir 'sc.exe'
+    'reg'        = Join-Path $Script:System32Dir 'reg.exe'
+}
+
+function Get-SystemBinary {
+    <#
+    .SYNOPSIS
+        Absolute path to a stock Windows tool, by short name.
+
+    .DESCRIPTION
+        Returns the anchored path unconditionally - including when the file
+        is missing. That is deliberate: falling back to the bare name on a
+        Test-Path miss would restore the exact PATH search this function
+        exists to remove, and would do it precisely on the machines whose
+        System32 is already unusual. A genuinely absent stock tool is a
+        broken Windows, and the caller's own error handling should say so
+        rather than silently running whatever PATH offers instead.
+
+        An unknown name is a programming error, not a runtime condition, so
+        it throws.
+    #>
+    param([Parameter(Mandatory)][string]$Name)
+
+    if (-not $Script:SystemBinaries.ContainsKey($Name)) {
+        throw "Get-SystemBinary: '$Name' is not a known system binary."
+    }
+    $Path = $Script:SystemBinaries[$Name]
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Write-Log "WARN: system binary '$Name' not found at '$Path'."
+    }
+    return $Path
+}
+
+function ConvertTo-WqlLiteral {
+    <#
+    .SYNOPSIS
+        Escape a string for safe interpolation into a WQL string literal.
+
+    .DESCRIPTION
+        WQL quotes strings with ' and escapes with backslash, so a value
+        carrying either character ends the literal early and the remainder
+        is parsed as QUERY rather than as data - the WMI equivalent of SQL
+        injection. Service and product names reach these filters from the
+        registry and from the machine's own installed-software list, i.e.
+        from places a caller does not control.
+
+        Backslash MUST be escaped first: doing the quote first would then
+        have its own escaping backslash escaped by the second pass, undoing
+        it.
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
+
+    return $Value.Replace('\', '\\').Replace("'", "\'")
+}
+
+function Test-SafeWebUrl {
+    <#
+    .SYNOPSIS
+        Is this a plain http/https URL that is safe to hand to the shell?
+
+    .DESCRIPTION
+        `Start-Process $url` is ShellExecute: it launches whatever the
+        string resolves to. A value that is not actually a web address -
+        a local path, a UNC share, a file:// or ms-settings: URI - runs or
+        opens THAT instead, which is not what any caller passing a
+        "download page" means. Only http and https survive.
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Url)
+
+    $Parsed = $null
+    if (-not [System.Uri]::TryCreate($Url, [System.UriKind]::Absolute, [ref]$Parsed)) {
+        return $false
+    }
+    return @('http', 'https') -contains $Parsed.Scheme
+}
+
+# ============================================================
 #  USER-HIVE TARGETING  (v1.0 - the split-token problem)
 # ============================================================
 # HKCU: IS NOT "THE USER" - IT IS "WHOEVER OWNS THIS TOKEN".
