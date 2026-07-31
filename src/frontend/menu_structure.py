@@ -409,9 +409,20 @@ CATEGORIES = [
             {"icon": "📡", "title": "Network & Ping Optimizer",
              "desc": "Flush DNS and reset Winsock for lower latency.",
              "glyph": "network", "task": "NetworkOptimization", "timeout": 300, "confirm": True},
+            # DESKTOP ONLY, and the copy says so before the badge does: the
+            # plan parks the CPU at maximum and the task also pins display
+            # and sleep timeouts to Never on AC, which on a battery-powered
+            # machine means a hot laptop that never sleeps in a bag.
+            # `confirm` is set for the same reason — this is no longer a
+            # one-line scheme switch, so the user sees the full description
+            # and agrees to it before anything changes.
             {"icon": "⚡", "title": "Ultimate Power Plan",
-             "desc": "Unlock the hidden high-performance power scheme.",
-             "glyph": "bolt", "task": "UltimatePowerPlan", "timeout": 300},
+             "desc": "Unlock the hidden high-performance scheme. Designed "
+                     "strictly for Desktop PCs. Not recommended for "
+                     "laptops/mobile devices — also disables display and "
+                     "sleep timeouts while on AC power.",
+             "glyph": "bolt", "task": "UltimatePowerPlan", "timeout": 300,
+             "note": "Desktop PCs only", "confirm": True},
         ],
     },
     # --------------------------------------------------------

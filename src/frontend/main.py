@@ -247,7 +247,10 @@ class WelcomePage(QWidget):
     # keeps each operation's fuller description). Keyed by task name.
     ACTION_BLURBS = {
         "UpdateSelectedApps": "Scan installed apps and update your picks.",
-        "UltimatePowerPlan":  "Unlock the hidden high-performance scheme.",
+        # The desktop-only caveat outranks the feature description here: a
+        # laptop owner needs to know this one isn't for them BEFORE they
+        # read what it does. The category card carries the full wording.
+        "UltimatePowerPlan":  "Desktop PCs only — not for laptops/mobile.",
         "CleanCache":         "Wipe temp, Update and system caches.",
         "DisableTelemetry":   "Stop diagnostic data collection.",
         "SystemInfo":         "Hardware, uptime and disk snapshot.",
@@ -278,7 +281,10 @@ class WelcomePage(QWidget):
         # every system fact now lives in one place and the masthead reads as
         # a calm wordmark rather than a banner competing with its own
         # metadata. Shorter, too (116 → 96), reclaiming vertical canvas.
-        self._hero = DepthCard(radius=22)
+        # radius from the scale, not a literal: hero_banner_qss rounds this
+        # same surface from RADIUS["panel"], and the two drifted (22 vs 20)
+        # for as long as the number was written out here by hand.
+        self._hero = DepthCard(radius=TH.RADIUS["panel"], t=t)
         self._hero.setObjectName("heroBanner")
         self._hero.setFixedHeight(96)
         hb = QHBoxLayout(self._hero)
@@ -306,7 +312,7 @@ class WelcomePage(QWidget):
         # and the engine/admin state pills on the right. Folding the hero's
         # old chip column in here is what makes it a true status bar instead
         # of a metrics ribbon with the status living somewhere else.
-        self._telemetry = DepthCard(radius=16)
+        self._telemetry = DepthCard(radius=TH.RADIUS["card"], t=t)
         self._telemetry.setObjectName("telemetry")
         self._telemetry.setFixedHeight(66)
         tb = QHBoxLayout(self._telemetry)
@@ -483,6 +489,7 @@ class WelcomePage(QWidget):
     def apply_theme(self, t: dict):
         self._logo.apply_theme(t)
         self._hero.setStyleSheet(TH.hero_banner_qss(t))
+        self._hero.set_theme(t)
         # authoritative masthead wordmark — larger and tighter than the old
         # spread-out splash "hero" role
         self._name.setStyleSheet(
@@ -492,6 +499,7 @@ class WelcomePage(QWidget):
             TH.label_qss(t, "tagline") + "font-size: 12px; letter-spacing: 1px;")
 
         self._telemetry.setStyleSheet(TH.telemetry_qss(t))
+        self._telemetry.set_theme(t)
         for i, lbl in enumerate(self._tel_icons):
             accent = t[self._TEL_ACCENTS[i % len(self._TEL_ACCENTS)]]
             # The plaque QSS owns the well; the emoji glyph rides on top,

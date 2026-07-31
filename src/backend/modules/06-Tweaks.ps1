@@ -522,6 +522,48 @@ function Invoke-NetworkOptimization {
     $Script:PendingRestart = $true
 }
 
+function Set-PulsePowerPlanTimeouts {
+    <#
+        .SYNOPSIS
+        Pin the display and sleep timeouts to Never on AC power.
+
+        .DESCRIPTION
+        The Ultimate/Pulse plan removes the CPU's power ceiling, but Windows
+        still blanks the display and drops the machine to standby on the
+        plan's inherited timeouts - so a workstation left to run a long
+        build, render or transfer stalls anyway. Setting both to 0 (Never)
+        is what makes the plan mean what its name promises.
+
+        AC ONLY, deliberately. The -dc counterparts are left untouched: a
+        machine on battery that never sleeps is a flat battery (and, in a
+        bag, a hot one), which is also why the GUI marks this operation
+        Desktop-PCs-only. Anything running on mains keeps its behaviour on
+        mains and its safe defaults off it.
+
+        Failures here are reported but NOT fatal to the caller: the power
+        scheme itself is already active by this point, and a policy-managed
+        machine can refuse the timeout change while allowing the plan.
+    #>
+    if (Test-DryRun "Set display and sleep timeouts to Never on AC power") { return }
+
+    $Settings = @(
+        @{ Label = "Display timeout (AC)"; Arg = "monitor-timeout-ac" },
+        @{ Label = "Sleep timeout (AC)";   Arg = "standby-timeout-ac" }
+    )
+    foreach ($Setting in $Settings) {
+        try {
+            powercfg /change $Setting.Arg 0 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "$($Setting.Label) set to Never."
+            } else {
+                Write-Warn "Could not set $($Setting.Label) - powercfg exited $LASTEXITCODE."
+            }
+        } catch {
+            Write-Warn "Could not set $($Setting.Label): $($_.Exception.Message)"
+        }
+    }
+}
+
 function Enable-UltimatePerformancePowerPlan {
     Write-SectionHeader "Pulse Power Plan"
     New-SystemRestorePoint
@@ -533,6 +575,13 @@ function Enable-UltimatePerformancePowerPlan {
         $ActiveLine = ($Existing -split "`n") | Where-Object { $_ -match [regex]::Escape($PlanName) -and $_ -match '\*' }
         if ($ActiveLine) {
             Write-AlreadyOK "$PlanName is already active."
+            # Re-assert the timeouts even on the no-op path. The plan being
+            # active does NOT imply its timeouts are still Never - Windows
+            # Update, a docking profile or the Settings app can and does
+            # reset them under an unchanged scheme, and a user re-running
+            # this action to fix exactly that would otherwise be told
+            # everything was fine and given nothing.
+            Set-PulsePowerPlanTimeouts
             return
         }
     }
@@ -552,6 +601,7 @@ function Enable-UltimatePerformancePowerPlan {
                 # ACTUAL active scheme instead of trusting the exit code.
                 if ((powercfg /getactivescheme | Out-String) -match [regex]::Escape($guid)) {
                     Write-Success "$PlanName activated (existing profile)."
+                    Set-PulsePowerPlanTimeouts
                 } else {
                     Write-ErrorX "Could not activate $PlanName - the scheme switch did not take effect (policy restriction?)."
                 }
@@ -573,6 +623,7 @@ function Enable-UltimatePerformancePowerPlan {
             powercfg /setactive $newGuid > $null
             if ((powercfg /getactivescheme | Out-String) -match [regex]::Escape($newGuid)) {
                 Write-Success "$PlanName activated successfully."
+                Set-PulsePowerPlanTimeouts
             } else {
                 Write-ErrorX "Could not activate $PlanName - the scheme switch did not take effect (policy restriction?)."
             }

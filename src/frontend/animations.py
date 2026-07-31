@@ -246,6 +246,57 @@ def _cached_stroke(painter: QPainter, rect, key: tuple, draw) -> None:
     painter.restore()
 
 
+def paint_drop_shadow(painter: QPainter, rect, radius: int,
+                      alpha: float = 0.055, spread: int = 6):
+    """The soft cast shadow under an elevated surface — v11's primary
+    elevation cue in both themes (see theme.shadow_alphas).
+
+    Qt QSS has no box-shadow, and QGraphicsDropShadowEffect is off the table
+    here: it re-renders the widget into an offscreen buffer every repaint,
+    which is precisely the per-frame cost animations.py exists to avoid, and
+    it would apply to every card in a grid at once.
+
+    So the shadow is painted, and painted INSIDE the widget rect — a layout
+    clips a child to its own geometry, so there is no canvas outside a card
+    to cast onto. That sounds like a compromise and mostly isn't: what the
+    eye reads as a drop shadow is the soft darkening gradient hugging the
+    lower edge of the surface, and drawing that gradient just inside the
+    edge produces the same cue. The tell it cannot reproduce is a shadow
+    falling ON a neighbour, which at these alphas is invisible anyway.
+
+    Built as `spread` concentric rounded-rect strokes, each one pixel
+    further in and weaker than the last, weighted toward the BOTTOM by
+    offsetting the arc downward — the `0 4px` vertical bias of the CSS
+    spec. Cached and blitted like every other stroke here, so a grid of
+    cards costs one blit each.
+    """
+    if alpha <= 0.002 or spread <= 0:
+        return
+    peak = int(255 * alpha)
+    if peak <= 0:
+        return
+
+    def draw(p, width, height):
+        for i in range(spread):
+            # Quadratic falloff: strongest against the edge, gone by
+            # `spread` px in — a soft ramp rather than a hard ring.
+            k = (1.0 - i / float(spread)) ** 2
+            a = int(peak * k)
+            if a <= 0:
+                continue
+            inset = 0.5 + i
+            # The downward offset is the shadow's vertical bias: the top
+            # edge sheds the stroke almost immediately, the bottom keeps it.
+            inner = QRectF(0.0, 0.0, float(width), float(height)).adjusted(
+                inset, inset * 1.7, -inset, -inset * 0.35)
+            if inner.width() <= 1 or inner.height() <= 1:
+                break
+            p.setPen(QPen(QColor(0, 0, 0, a), 1.0))
+            p.drawRoundedRect(inner, radius, radius)
+
+    _cached_stroke(painter, rect, ("shadow", int(radius), peak, int(spread)), draw)
+
+
 def paint_bevel_frame(painter: QPainter, rect, radius: int,
                       light_alpha: float = 0.14, dark_alpha: float = 0.20):
     """Permanent glass-edge bevel — depth + a sub-pixel highlight in one

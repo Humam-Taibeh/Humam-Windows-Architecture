@@ -62,6 +62,41 @@ def to_qcolor(value: str) -> QColor:
     return QColor(s)
 
 
+def blend(base: str, tint: str) -> str:
+    """Composite `tint` (an rgba() string) over the OPAQUE `base` and return
+    the flat '#rrggbb' result.
+
+    QSS has no notion of "the fill I already declared plus this tint" — a
+    `background-color` in a :hover rule REPLACES the base rule outright. So
+    a hover written as a low-alpha tint doesn't tint the card, it swaps the
+    card's fill for a nearly-transparent one and lets whatever is behind
+    show through. On v11's opaque card tiers that is a visible collapse: a
+    hovered card would drop to the recessed content well and read as
+    LESS elevated than its neighbours, the exact opposite of the intent.
+
+    Blending here, once per theme switch, keeps every state rule an opaque
+    colour of its own and makes hover/running/flash strictly additive.
+    """
+    tr, tg, tb, ta = _parse_color(tint)
+    br, bg, bb, _ = _parse_color(base)
+    return "#%02x%02x%02x" % (
+        round(tr * ta + br * (1 - ta)),
+        round(tg * ta + bg * (1 - ta)),
+        round(tb * ta + bb * (1 - ta)))
+
+
+def _parse_color(value: str) -> tuple[int, int, int, float]:
+    """'#rrggbb' | 'rgb(...)' | 'rgba(...)' -> (r, g, b, a)."""
+    s = value.strip()
+    if s.startswith("rgb"):
+        inner = s[s.index("(") + 1: s.index(")")]
+        parts = [p.strip() for p in inner.split(",")]
+        a = float(parts[3]) if len(parts) > 3 else 1.0
+        return int(parts[0]), int(parts[1]), int(parts[2]), a
+    r, g, b = _hex_to_rgb(s)
+    return r, g, b, 1.0
+
+
 def glass_fill(t: dict, base: str, sheen_stop: float = 0.13) -> str:
     """The one frosted-glass gradient every translucent surface in the app
     shares: a top sheen highlight falling into a flat base tone. Cards, the
@@ -126,12 +161,19 @@ SPACE = {
 
 # Semantic radii — named by the surface they belong to, so a card and a
 # dialog can never drift a pixel apart by accident.
+#
+# v11: the card step drops 16 -> 14 and the panel step 20 -> 18. Apple's own
+# surfaces sit in a 10-14 band at card scale; at 16-20 the corner starts
+# reading as a "bubble" rather than a machined edge, which is a large part of
+# why the old grid looked boxy-but-soft at the same time. The scale still
+# rises monotonically (chip < control < plaque < card < panel) so the
+# hierarchy is unchanged — it is the whole ramp that tightens, not one step.
 RADIUS = {
     "chip":    8,    # pills, badges, small tags
     "control": 10,   # buttons, inputs
     "plaque":  12,   # icon wells, nav entries, list rows
-    "card":    16,   # GlassCard, action surfaces
-    "panel":   20,   # sidebar, content frame, dialog panels
+    "card":    14,   # GlassCard, action surfaces
+    "panel":   18,   # sidebar, content frame, dialog panels
     # No "shell" entry: the window's own corners are rounded by DWM
     # (apply_native_rounding), not by QSS. A radius painted here would only
     # carve wedges out of the opaque shell and expose the bare window
@@ -139,20 +181,65 @@ RADIUS = {
 }
 
 
+#: Alpha of the tint a card's running / flash state blends onto the card
+#: tier (see card_qss). Named rather than inlined three times because the
+#: text ramp is SOLVED AGAINST IT: text_faint is pinned to clear AA on the
+#: worst surface it can land on, and the worst surface in the whole app is
+#: a state-tinted card. Raising this number without re-solving text_faint
+#: silently pushes the card's history caption under AA.
+STATE_TINT = 0.10
+
+
 def bevel_alphas(t: dict) -> tuple[float, float]:
-    """(light_alpha, dark_alpha) for animations.paint_bevel_frame, tuned per
-    mode. Qt QSS has no box-shadow, so cards can't cast a real drop shadow;
-    in LIGHT mode a white card on porcelain therefore leans on a deeper
-    bottom-right edge (dark_alpha up) to read as a contact shadow lifting it
-    off the page — the painted stand-in for the shadow QSS can't give. Dark
-    mode keeps the original balanced glass bevel."""
+    """(light_alpha, dark_alpha) for animations.paint_bevel_frame — the 1px
+    diagonal edge: a top-left highlight falling to a bottom-right shade.
+
+    v11 rebalances both modes because the SEPARATION JOB MOVED. Cards used
+    to be pulled off the canvas by luminance (the v10 dark card measured
+    1.46:1 against its well), so the bevel only had to hint at an edge. The
+    Apple/obsidian palette deliberately gives that up — #FFFFFF on #F2F2F7
+    is 1.13:1 and #16181D on the obsidian well is 1.09:1 — and buys the
+    elevation back with a crisp hairline plus a soft cast shadow instead
+    (see shadow_alphas). That is the real macOS construction, and it is why
+    the old light dark_alpha of 0.34 has to come DOWN: at that weight the
+    single-pixel edge now reads as a dirty smudge sitting outside the
+    #E5E5EA hairline rather than as contact with the page.
+    """
     if t["name"] == "light":
-        # near-white cards make a top-left WHITE highlight moot, so spend the
-        # bevel entirely on a firmer bottom-right contact shadow — the 1px
-        # stand-in for the drop shadow QSS can't cast, lifting the card off
-        # the deeper v8 slate canvas.
-        return (0.0, 0.34)
-    return (0.14, 0.20)
+        # No white highlight — a white card on a near-white page has nothing
+        # to highlight against. The whole (small) budget goes to the
+        # bottom-right contact edge, under the soft shadow that does the
+        # actual lifting.
+        return (0.0, 0.09)
+    # Dark keeps a real top-left highlight: on obsidian this IS the
+    # "delicate border highlight" the redesign asks for — the lit top edge
+    # that tells the eye a surface is raised rather than cut out.
+    return (0.10, 0.22)
+
+
+def shadow_alphas(t: dict) -> tuple[float, int]:
+    """(alpha, spread_px) for animations.paint_drop_shadow — the soft cast
+    shadow under an elevated surface, and v11's primary elevation cue.
+
+    The design target is CSS `0 4px 16px rgba(0,0,0,0.04)`. Qt QSS has no
+    box-shadow and QGraphicsDropShadowEffect is forbidden here (it forces an
+    offscreen re-render per widget per frame — the exact cost animations.py
+    exists to avoid), so the shadow is PAINTED, and painted INSIDE the
+    widget rect because a layout clips a child to its own geometry: there is
+    no canvas outside the card to cast onto. What the eye actually reads
+    from a drop shadow is the darkening gradient hugging the lower edge, and
+    that is reproducible from the inside — see paint_drop_shadow.
+
+    Alpha is therefore the alpha of the DARKEST band nearest the edge, not
+    the CSS layer alpha; the falloff spends it across `spread` pixels, so
+    the integrated weight lands close to the 0.04 the spec asks for while
+    staying visible on a real display.
+    """
+    if t["name"] == "light":
+        return (0.055, 6)
+    # Obsidian needs a firmer cast: a black shadow on a near-black canvas
+    # has far less room to register than one on porcelain.
+    return (0.26, 6)
 
 
 # ============================================================
@@ -303,44 +390,58 @@ _DARK = {
     "name":        "dark",
     "font":        "Segoe UI",
 
-    # ---- v9 "Spectrum" surfaces --------------------------------------
-    # The v7/v8 obsidian floor (#070809, near-black) was the whole "too
-    # dark, lifeless" problem: cards barely cleared the canvas, so the app
-    # read as one flat dark sheet with no elevation. v9 lifts the floor into
-    # a refined BLUE-GRAPHITE deep-space register — every neutral now carries
-    # a little blue chroma (the Linear/Vercel "alive dark" tell, vs. dead
-    # gray) — and, crucially, opens a real perceptual GAP between the canvas
-    # and the card tier so surfaces genuinely float.
+    # ---- v11 "Deep Obsidian" surfaces --------------------------------
+    # v9/v10 chased elevation by LUMINANCE: lift the card until it visibly
+    # out-brightens its well (the v10 pair measured 1.46:1). It worked, but
+    # it forced the card tier up to #2b3145 — a mid slate, not a dark
+    # surface — so the mode read as washed graphite rather than a deep
+    # obsidian, and every card looked like a lit panel floating on grey.
+    #
+    # v11 inverts the construction to the one Apple and Linear actually
+    # use: the surfaces sit CLOSE in luminance (#16181D on a #0B0D11 well is
+    # 1.09:1) and elevation comes from EDGES — a lit top hairline, a soft
+    # cast shadow beneath, and a hover glow (bevel_alphas / shadow_alphas /
+    # card_qss). That is what buys a genuinely deep canvas without
+    # flattening it: the darkness is real, and the cards still float.
     # ("bg", a translucent twin of bg_solid, was removed in v1.0: the shell
     # has painted an OPAQUE gradient over every pixel since the layered-
     # window path was dropped, so nothing had read it in either mode for
     # several versions.)
-    "bg_solid":    "#10121b",
-    # shell gradient — a lit deep-space fall: a lifted indigo top settling
-    # into a rich near-black-blue floor (not cold near-black).
-    "bg_grad_top":    "#1c2131",
-    "bg_grad_bottom": "#0a0b11",
-    # v10 ELEVATION: the content well is now genuinely RECESSED (0.34 →
-    # 0.55) rather than a near-invisible 1.03:1 tint over the canvas. This
-    # is the move that finally makes cards float: measured card-vs-well
-    # separation goes 1.20:1 → 1.46:1 WITHOUT brightening the card enough
-    # to wreck the text ramp sitting on it (the naive "lighten the card"
-    # fix forced text_muted and text_faint so high they collapsed into one
-    # tone). Depth is bought by digging the hole, not raising the object.
-    "overlay":     "rgba(4, 5, 10, 0.55)",
-    "panel":       "rgba(255, 255, 255, 0.045)",
-    "panel_line":  "rgba(255, 255, 255, 0.078)",
-    "card":        "rgba(43, 49, 69, 0.94)",
-    # hero/featured tier — a clear further step (1.31:1) above the card.
-    "card_hi":     "rgba(59, 66, 96, 0.96)",
-    "card_hover":  "rgba(125, 155, 255, 0.10)",
-    "card_line":   "rgba(255, 255, 255, 0.10)",
-    "card_sheen":  "rgba(255, 255, 255, 0.06)",   # top stop of the glass gradient
+    "bg_solid":    "#0d0e12",
+    # shell gradient — a shallow obsidian fall. Deliberately narrow (a ~1.35
+    # luminance span, where v10 spent 3.4): a steep gradient on a canvas
+    # this dark reads as a vignette artifact, not as light.
+    "bg_grad_top":    "#14171f",
+    "bg_grad_bottom": "#0a0b0f",
+    # The content well still recesses below the canvas — depth is cheaper to
+    # buy by digging than by lifting — but it no longer has to do the whole
+    # job alone, so it can be gentler (0.55 -> 0.45) and keep the floor a
+    # true obsidian rather than crushing it to black.
+    "overlay":     "rgba(5, 6, 10, 0.45)",
+    "panel":       "rgba(255, 255, 255, 0.038)",
+    "panel_line":  "rgba(255, 255, 255, 0.075)",
+    # THE card tier: #16181D exactly, opaque. Opaque and not translucent
+    # because a card must look identical on the well, inside a dialog and
+    # over the console — a translucent card tinted itself differently in
+    # each, which is the other half of the old "lacks depth" complaint.
+    "card":        "rgba(22, 24, 29, 1.0)",
+    # hero/featured tier — a small, deliberate step (1.08:1). It reads
+    # because it sits next to the card, not because it out-brightens it.
+    "card_hi":     "rgba(28, 31, 38, 1.0)",
+    # hover: a cool indigo lift, paired with the accent border and the glow
+    # frame in card_qss — the "subtle glowing accent on hover" the redesign
+    # asks for, kept low so a pointer sweep lights the grid rather than
+    # flashing it.
+    "card_hover":  "rgba(125, 155, 255, 0.075)",
+    # The delicate border highlight. On obsidian a hairline this quiet is
+    # legible precisely BECAUSE the surfaces around it are quiet.
+    "card_line":   "rgba(255, 255, 255, 0.088)",
+    "card_sheen":  "rgba(255, 255, 255, 0.045)",  # top stop of the glass gradient
     # Dialogs and toasts sit OVER dense text (card grids, the console):
     # fully/near-fully opaque, or the content underneath bleeds through
     # and reads as overlapping text.
-    "dialog_bg":   "rgba(20, 23, 33, 1.0)",
-    "toast_bg":    "rgba(28, 32, 45, 0.99)",
+    "dialog_bg":   "rgba(24, 26, 32, 1.0)",
+    "toast_bg":    "rgba(30, 33, 40, 0.99)",
 
     # brand — Aurora tri-tone, tuned a touch more electric/vivid for v9:
     # indigo (primary) → violet → magenta.
@@ -348,26 +449,36 @@ _DARK = {
     "accent2":     "#a184ff",
     "accent3":     "#e784ff",
 
-    # ---- v10 TEXT RAMP -----------------------------------------------
-    # Rebuilt from a measurement, not by eye. The two lowest steps carry
-    # real 10-13px copy (captions, meta pills, card descriptions), and on
-    # the composited card surface the old values measured 3.00:1
-    # (text_faint) and 3.98:1 (text_muted) — both under AA for body text.
-    # Simply lifting them collapsed the ramp into three indistinguishable
-    # tones, so the whole thing is rebuilt EVENLY IN CIE L*: the floor is
-    # pinned at 4.55:1 on the card and the remaining three steps are spaced
-    # perceptually up to the brightest. Four visibly distinct tones, every
+    # ---- TEXT RAMP (v10 construction, re-measured for v11) -----------
+    # Built EVENLY IN CIE L* rather than by eye, with the floor pinned just
+    # clear of AA on the card and the three steps above it spaced
+    # perceptually up to the brightest — four visibly distinct tones, every
     # one of them legible.
-    "text":        "#eef1f6",   # 11.76:1 on card
-    "text_soft":   "#d3d6dd",   #  9.14:1
-    "text_muted":  "#b4b9c5",   #  6.80:1
-    "text_faint":  "#8f97a8",   #  4.55:1  <- the floor
+    #
+    # v11 also changes WHAT THE FLOOR IS MEASURED AGAINST. Pinning it on the
+    # resting card was never sufficient: text_faint carries the card's
+    # history caption, which still has to be legible while that same card is
+    # hovered, running, or flashing a verdict — and every one of those states
+    # tints the surface toward the ink. Measured on the old rule, the caption
+    # fell to 4.40:1 hovered and 3.79:1 mid-run. The floor is now solved
+    # against the WORST surface text_faint can land on (a state-tinted card,
+    # see STATE_TINT), so the guarantee holds in every state rather than only
+    # at rest. The three steps above it are unchanged.
+    "text":        "#eef1f6",   # 15.69:1 on card
+    "text_soft":   "#d3d6dd",   # 12.20:1
+    "text_muted":  "#b4b9c5",   #  9.04:1
+    "text_faint":  "#858d9d",   #  5.32:1 on card, 4.58:1 worst-case <- floor
 
-    # ---- v10 MODULE ACCENTS ------------------------------------------
-    # The six sidebar/category colours, now real tokens (see
-    # resolve_accent). Solved to clear 4.5:1 as text on the card and 3:1
-    # as a glyph in their own plaque well, with saturation held as high as
-    # those floors allow so the set still reads as a spectrum.
+    # ---- MODULE ACCENTS ----------------------------------------------
+    # The six sidebar/category colours as real tokens (see resolve_accent).
+    # Solved to clear 4.5:1 as text on the card and 3:1 as a glyph in their
+    # own plaque well, with saturation held as high as those floors allow so
+    # the set still reads as a spectrum.
+    #
+    # v11 keeps every value: the obsidian card only ever RAISES them (they
+    # now measure 6.16-10.00:1 as text and 4.64-6.80:1 in-plaque, against
+    # floors of 4.5 and 3). Re-saturating to spend that headroom would have
+    # meant re-solving the whole set to chase contrast it already has.
     "module": {
         "software":     "#5e96ff",
         "optimization": "#fba913",
@@ -389,14 +500,14 @@ _DARK = {
     "danger_line": "rgba(248, 81, 73, 0.30)",
 
     # chrome
-    "scroll":      "rgba(255, 255, 255, 0.13)",
+    "scroll":      "rgba(255, 255, 255, 0.14)",
     "scroll_hov":  "rgba(124, 147, 255, 0.50)",
     "shimmer_track": (255, 255, 255, 12),      # QColor args for painted widgets
     "titlebar_hover": "rgba(255, 255, 255, 0.06)",
     "close_hover":    "#c42b1c",               # native Win11 caption red
     # modal backdrop — dense enough that the card grid underneath is
     # fully masked while a dialog is open (QColor args, painted widget)
-    "scrim":          (5, 7, 10, 195),
+    "scrim":          (3, 4, 7, 200),
 }
 
 # ============================================================
@@ -412,62 +523,78 @@ _LIGHT = {
     "name":        "light",
     "font":        "Segoe UI",
 
-    # ---- v9.1 "Porcelain Glass" — soothing premium light -------------
-    # The prior light mode read as a harsh, flat white void: canvas, content
-    # veil and cards all sat within a few % of pure white, so nothing
-    # separated and the brightness fatigued the eye. v9.1 rebuilds it as a
-    # layered PORCELAIN GLASS stack — a soft, cool off-white canvas with a
-    # real top-to-bottom gradient for depth, a distinctly deeper content
-    # veil, frosted panels, and clean off-white cards lifted by firm
-    # hairlines + a painted contact shadow. Nothing is pure #ffffff except
-    # the hero tier, so the whole mode reads as paper under studio light,
-    # not a lightbox.
-    "bg_solid":    "#dee4ef",   # see the note on the dark side's dropped "bg"
-    # v10: the canvas floor drops further (#c8d2e3 → #b6c2da). In light
-    # mode elevation CANNOT come from brightening the card — a near-white
-    # card on a near-white page has nowhere to go (pure #ffffff over the
-    # old card measured 1.02:1, i.e. invisible). Depth has to come from
-    # darkening everything the card sits on, so the canvas deepens and the
-    # card stays the brightest thing on screen by a real margin.
-    "bg_grad_top":    "#f2f5fb",
-    "bg_grad_bottom": "#b6c2da",
-    "overlay":     "rgba(255, 255, 255, 0.24)",
-    # frosted panels (sidebar / dock) — a soft white glass, clearly a step
-    # above the tinted content veil, clearly below the crisp cards.
-    "panel":       "rgba(255, 255, 255, 0.62)",
-    "panel_line":  "rgba(28, 38, 56, 0.11)",
-    # clean off-white cards — the crisp top layer, separated by a firm
-    # hairline + painted contact shadow rather than blinding brightness.
-    "card":        "rgba(255, 255, 255, 0.97)",
+    # ---- v11 "macOS SF" — system grey + pure white elevation ---------
+    # v9.1/v10 fought the "harsh white void" by DARKENING THE PAGE: the
+    # canvas floor fell to #b6c2da so a near-white card would have somewhere
+    # to rise from. That solved the flatness and created a new problem — a
+    # heavily tinted blue-slate page that no longer read as light mode, with
+    # cards sitting in a cold gradient rather than on paper.
+    #
+    # v11 takes the actual macOS construction instead. The page is the
+    # system grey #F2F2F7; cards are PURE WHITE; and the ~1.13:1 gap between
+    # them is not asked to carry the elevation at all — a crisp #E5E5EA
+    # hairline plus a soft cast shadow does that (shadow_alphas). This is
+    # why the mode can be bright and still have depth: on macOS the white is
+    # the figure and the grey is the ground, and the shadow is what
+    # separates them.
+    "bg_solid":    "#f2f2f7",   # see the note on the dark side's dropped "bg"
+    # A whisper of a gradient — a few points either side of #F2F2F7, enough
+    # that the page has air without becoming a tinted backdrop again.
+    "bg_grad_top":    "#f7f7fa",
+    "bg_grad_bottom": "#e9e9f0",
+    # The content well settles to the system grey exactly, so the card grid
+    # sits on #F2F2F7 whatever the gradient is doing behind it.
+    "overlay":     "rgba(242, 242, 247, 0.55)",
+    # frosted sidebar / dock — a soft white glass a step above the grey
+    # page, a step below the pure-white cards. macOS sidebar material.
+    "panel":       "rgba(255, 255, 255, 0.60)",
+    # Apple's separator grey, at the weight the system uses for chrome
+    # hairlines rather than content borders.
+    "panel_line":  "rgba(60, 60, 67, 0.13)",
+    # PURE WHITE elevated surfaces — the redesign's explicit call, and the
+    # thing that makes the mode read as macOS rather than as a grey app
+    # with pale boxes. Separation is the hairline + cast shadow, not tone.
+    "card":        "rgba(255, 255, 255, 1.0)",
     # NOTE: the hero tier is pure white and therefore CANNOT out-lighten
     # the card. In light mode it earns its distinction from the painted
     # aurora edge + contact shadow (widgets.GlassCard._paint_featured),
     # not from luminance — chasing a lighter-than-white card is the one
     # elevation move this mode can never make.
     "card_hi":     "rgba(255, 255, 255, 1.0)",
-    "card_hover":  "rgba(74, 92, 224, 0.06)",
-    # A firm, clean hairline — the "clean borders" the redesign calls for;
-    # cards lean on this + the painted contact shadow (bevel_alphas) to
-    # separate, so it can't be timid.
-    "card_line":   "rgba(28, 38, 56, 0.16)",
-    "card_sheen":  "rgba(255, 255, 255, 0.85)",   # top stop of the glass gradient
+    "card_hover":  "rgba(74, 92, 224, 0.045)",
+    # #E5E5EA — Apple's ultra-thin system separator. 1.26:1 against the
+    # white card: crisp enough to draw the card's outline exactly, quiet
+    # enough that a grid of them doesn't read as a table of boxes.
+    "card_line":   "#e5e5ea",
+    "card_sheen":  "rgba(255, 255, 255, 0.9)",    # top stop of the glass gradient
     # Same opacity rule as dark: overlays never let text bleed through.
-    "dialog_bg":   "rgba(248, 250, 253, 1.0)",
-    "toast_bg":    "rgba(252, 253, 255, 0.99)",
+    "dialog_bg":   "rgba(255, 255, 255, 1.0)",
+    "toast_bg":    "rgba(255, 255, 255, 0.99)",
 
     # brand — Aurora tri-tone, ink-saturated for paper: indigo → violet → magenta
     "accent":      "#4a5ce0",
     "accent2":     "#7a4fd0",
     "accent3":     "#c24fd0",
 
-    # v10 text ramp — same L*-even construction as dark (see the note in
-    # _DARK). text_faint measured 3.94:1 before and carries 10px captions;
-    # it is now pinned at 4.55:1 with the three steps above it spaced
-    # perceptually down to near-ink.
-    "text":        "#15191f",   # 17.51:1 on card
-    "text_soft":   "#2b323c",   # 12.85:1
-    "text_muted":  "#454f5f",   #  8.21:1
-    "text_faint":  "#67778e",   #  4.55:1  <- the floor
+    # Text ramp — same L*-even construction as dark (see the note in
+    # _DARK), with the floor pinned just clear of AA and the three steps
+    # above it spaced perceptually down to near-ink.
+    #
+    # v11 re-measures against the pure-white card. The top three steps hold
+    # unchanged — this ramp was solved for near-white in the first place, so
+    # the macOS palette is the surface it always wanted.
+    #
+    # text_faint moves, for the same reason it moves in dark: the floor is
+    # now solved against the WORST surface it can land on rather than the
+    # resting card (see the note in _DARK). Pure white flatters it — 4.56:1,
+    # a pass by six hundredths — and every other surface in the mode is
+    # DARKER than the card, so the old value failed on all of them: 4.34:1
+    # on the sidebar, 4.05:1 on the content well, 3.53:1 on a card flashing
+    # an error. Solved against the worst case it clears AA everywhere.
+    "text":        "#15191f",   # 17.64:1 on card
+    "text_soft":   "#2b323c",   # 12.93:1
+    "text_muted":  "#454f5f",   #  8.28:1
+    "text_faint":  "#5d6c81",   #  5.35:1 on card, 4.56:1 worst-case <- floor
 
     # v10 module accents, ink-saturated for paper. Same solve as dark: 4.5:1
     # as text on the card, 3:1 as a glyph in the plaque well. Amber is the
@@ -487,19 +614,28 @@ _LIGHT = {
         "automation":   "#7064d8",
     },
 
-    # status — GitHub-light grade
-    "ok":          "#1a7f37",
-    "warn":        "#9a6700",
-    "err":         "#cf222e",
+    # status — GitHub-light grade, nudged a few points darker in v11 so each
+    # tone clears AA against a chip tinted in ITS OWN hue. The app has a
+    # dozen such chips (applied / impact / recommendation / inline status /
+    # state pill), and a 0.12 tint of a colour under text of that same
+    # colour subtracts contrast from exactly the thing the chip exists to
+    # make legible — measured, the old values landed at 4.17-4.40:1. The
+    # shift is invisible side by side and buys the whole family compliance.
+    # (report_badge_qss and strip_status_qss avoid the trap differently, by
+    # refusing a fill at all; both notes explain why that was necessary
+    # there, where the text runs down to 11px.)
+    "ok":          "#197a35",
+    "warn":        "#916100",
+    "err":         "#cb212d",
     "danger_line": "rgba(207, 34, 46, 0.35)",
 
-    "scroll":      "rgba(22, 28, 38, 0.16)",
+    "scroll":      "rgba(60, 60, 67, 0.20)",
     "scroll_hov":  "rgba(74, 92, 224, 0.55)",
-    "shimmer_track": (22, 28, 38, 16),
-    "titlebar_hover": "rgba(22, 28, 38, 0.06)",
+    "shimmer_track": (60, 60, 67, 18),
+    "titlebar_hover": "rgba(60, 60, 67, 0.08)",
     "close_hover":    "#c42b1c",               # native Win11 caption red
     # modal backdrop — dark scrims read premium in light mode too
-    "scrim":          (18, 24, 33, 130),
+    "scrim":          (18, 24, 33, 120),
 }
 
 _MODES = {"dark": _DARK, "light": _LIGHT}
@@ -632,30 +768,36 @@ def card_qss(t: dict, accent: str, danger: bool = False,
         return "GlassCard { background: transparent; border: none; }"
     line = t["danger_line"] if danger else t["card_line"]
     hover_line = alpha(t["err"], 0.55) if danger else alpha(accent, 0.55)
-    # Frosted-glass base: a subtle top sheen via qlineargradient (QSS-native,
-    # cached, radius-safe — per-side highlight borders artifact on rounded
-    # corners). State rules AFTER base/hover: QSS is last-match-wins at
-    # equal specificity, and a verdict flash must outrank a stale hover.
+    # v11: every state fill is BLENDED onto the card tier rather than
+    # declared as a bare tint (see blend()), so hover/running/flash add
+    # colour to an elevated surface instead of replacing it with a
+    # see-through one. Frosted-glass base on top: a subtle top sheen via
+    # qlineargradient (QSS-native, cached, radius-safe — per-side highlight
+    # borders artifact on rounded corners). State rules AFTER base/hover:
+    # QSS is last-match-wins at equal specificity, and a verdict flash must
+    # outrank a stale hover.
+    card = t["card"]
+    hover_fill = blend(card, t["card_hover"])
     return f"""
         GlassCard {{
-            background-color: {glass_fill(t, t['card'])};
+            background-color: {glass_fill(t, card)};
             border: 1px solid {line};
             border-radius: {RADIUS['card']}px;
         }}
         GlassCard:hover {{
-            background-color: {t['card_hover']};
+            background-color: {glass_fill(t, hover_fill)};
             border: 1px solid {hover_line};
         }}
         GlassCard[running="true"] {{
-            background-color: {alpha(t['accent'], 0.10)};
+            background-color: {glass_fill(t, blend(card, alpha(t['accent'], STATE_TINT)))};
             border: 1px solid {t['accent']};
         }}
         GlassCard[flash="ok"] {{
-            background-color: {alpha(t['ok'], 0.10)};
+            background-color: {glass_fill(t, blend(card, alpha(t['ok'], STATE_TINT)))};
             border: 1px solid {alpha(t['ok'], 0.85)};
         }}
         GlassCard[flash="err"] {{
-            background-color: {alpha(t['err'], 0.10)};
+            background-color: {glass_fill(t, blend(card, alpha(t['err'], STATE_TINT)))};
             border: 1px solid {alpha(t['err'], 0.85)};
         }}
     """
@@ -1067,22 +1209,10 @@ def report_badge_qss(t: dict, color: str) -> str:
     """
 
 
-def code_field_qss(t: dict) -> str:
-    """A one-line, read-only command shown for the user to copy. Monospaced
-    and dropped onto the recessed console floor so it reads as a terminal
-    snippet — something to run elsewhere — rather than as editable input.
-    Selectable text is set on the widget itself, not here."""
-    return f"""
-        QLabel {{
-            color: {t['text_soft']};
-            background: {t['bg_solid']};
-            border: 1px solid {t['card_line']};
-            border-radius: {RADIUS['control']}px;
-            padding: 7px 11px;
-            font-family: 'Cascadia Mono','Consolas','Courier New',monospace;
-            font-size: 12px;
-        }}
-    """
+# (code_field_qss was removed in v11 alongside its only caller,
+# widgets.CopyRow — the activation report's copyable `slmgr` commands. The
+# dialog now points at Microsoft's own documentation instead of offering
+# terminal snippets, so nothing renders a code field anywhere in the app.)
 
 
 def report_subcard_title_qss(t: dict) -> str:

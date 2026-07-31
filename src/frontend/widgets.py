@@ -39,8 +39,8 @@ from PySide6.QtWidgets import (
 
 from frontend.animations import (
     GlowController, RippleController, ShimmerBar, paint_aurora_edge,
-    paint_bevel_frame, paint_glow_frame, paint_nav_indicator,
-    paint_ripple_frame, paint_top_sheen, squircle_path,
+    paint_bevel_frame, paint_drop_shadow, paint_glow_frame,
+    paint_nav_indicator, paint_ripple_frame, paint_top_sheen, squircle_path,
 )
 from frontend import theme as TH
 # Update Center / Startup Manager (v6.3) run their own background scans and
@@ -987,17 +987,21 @@ class GlassCard(QFrame):
     _ICON_GROW_PX = 2   # subtle hover "pop" — see _sync_icon_scale()
     _PLAQUE = 42        # icon plaque footprint (v9.1: tighter, denser card)
 
-    # v10 height envelope, DERIVED from the card's anatomy rather than
-    # guessed. With the header-row layout the arithmetic is:
-    #   padding 12+12  +  plaque row 42  +  gap 8  +  desc 3x15  = 119
-    #   ... plus the optional meta footer (gap 8 + pill 20)       = 147
-    # Because ClampedLabel caps each block at an exact line count, 152 is a
+    # Height envelope, DERIVED from the card's anatomy rather than guessed.
+    # With the v11 SYMMETRIC padding (16 on all four sides — see the layout
+    # below) the arithmetic is:
+    #   padding 16+16  +  plaque row 42  +  gap 8  +  desc 3x15  = 127
+    #   ... plus the optional meta footer (gap 8 + pill 20)       = 155
+    # Because ClampedLabel caps each block at an exact line count, 156 is a
     # ceiling the content genuinely cannot exceed — which is what makes a
     # maximum safe at all. (Pre-v10 the cap was 146 and content simply
     # overflowed it invisibly; the minimum was 112, itself below the 119 a
-    # three-line description needs, so the minimum could clip too.)
-    CARD_MIN_H = 120
-    CARD_MAX_H = 152
+    # three-line description needed, so the minimum could clip too.)
+    #
+    # Both numbers move with the padding: the whole point of deriving them
+    # is that a padding change can't silently start clipping content.
+    CARD_MIN_H = 128
+    CARD_MAX_H = 156
 
     def __init__(self, item: dict, accent: str, t: dict,
                  featured: bool = False, locked: bool = False):
@@ -1081,10 +1085,16 @@ class GlassCard(QFrame):
         # width (~312px at the same grid width, +22%), which is what finally
         # lets ordinary copy render complete.
         lay = QVBoxLayout(self)
-        # symmetric, on-scale padding (was 15/13/16/13 — asymmetric by
-        # accident, which is what made cards read subtly misaligned in a grid)
-        lay.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
-                               TH.SPACE["lg"], TH.SPACE["md"])
+        # v11: TRULY symmetric padding — one scale step on all four sides.
+        # v10 already fixed the accidental 15/13/16/13, but it landed on
+        # 16/12/16/12, so the horizontal and vertical insets still differed
+        # and the content block sat in a subtly wider-than-tall well. At
+        # card scale that asymmetry is exactly what reads as "boxy": the
+        # glyph and title crowd the top edge while the sides breathe. Equal
+        # insets let the content sit centred in its own surface, which is
+        # the single cheapest thing that makes a card look considered.
+        lay.setContentsMargins(TH.SPACE["lg"], TH.SPACE["lg"],
+                               TH.SPACE["lg"], TH.SPACE["lg"])
         lay.setSpacing(TH.SPACE["sm"])
 
         # -- icon plaque (v7) — a Fluent glyph in an accent-tinted well ----
@@ -1213,6 +1223,7 @@ class GlassCard(QFrame):
         self._glow.set_accent(plaque_accent)
         # painted-material state, read in paintEvent
         self._bevel = TH.bevel_alphas(t)
+        self._shadow = TH.shadow_alphas(t)
         self._feat_base = TH.to_qcolor(t["card_hi"])
         self._feat_sheen = TH.to_qcolor(t["card_sheen"])
         self._aur1 = QColor(t["accent"])
@@ -1380,19 +1391,24 @@ class GlassCard(QFrame):
         super().paintEvent(e)  # QSS glass background/border first (transparent if featured)
         self._sync_icon_scale()
         p = QPainter(self)
+        radius = TH.RADIUS["card"]
         if self._featured:
             self._paint_featured(p)
         else:
-            paint_bevel_frame(p, self.rect(), 16, *self._bevel)
-            paint_top_sheen(p, self.rect(), 16, strength=0.55)
+            # Shadow FIRST, under the edge treatments: it is the surface's
+            # cast, so a bevel highlight or sheen must sit on top of it.
+            paint_drop_shadow(p, self.rect(), radius, *self._shadow)
+            paint_bevel_frame(p, self.rect(), radius, *self._bevel)
+            paint_top_sheen(p, self.rect(), radius, strength=0.55)
         if self._press_tint > 0.01:
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(0, 0, 0, int(40 * self._press_tint)))
-            p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 15, 15)
-        paint_ripple_frame(p, self.rect(), 16, self._glow.color,
+            p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1),
+                              radius - 1, radius - 1)
+        paint_ripple_frame(p, self.rect(), radius, self._glow.color,
                            self._ripple.progress, self._ripple.origin)
-        paint_glow_frame(p, self.rect(), 16, self._glow.color,
+        paint_glow_frame(p, self.rect(), radius, self._glow.color,
                          self._glow.intensity, self._glow.cursor)
         # Keyboard focus ring — painted LAST so it sits above the hover
         # glow and stays unambiguous even on a card the pointer is also
@@ -1405,7 +1421,7 @@ class GlassCard(QFrame):
             ring.setAlphaF(0.95)
             p.setPen(QPen(ring, 2.0))
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5),
-                              15, 15)
+                              radius - 1, radius - 1)
         p.end()
 
 
@@ -1642,12 +1658,20 @@ class AmbientGlow(QWidget):
         p = QPainter(layer)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        # v10: pulled well back in light mode (was 0.30/0.27/0.24). Those
-        # peaks were tuned against the older, lighter porcelain canvas; once
-        # the elevation pass deepened the canvas gradient so cards could
-        # actually float, the same multiply strength turned the whole page a
-        # hazy lavender. The wash should tint the paper, not dye it.
-        peaks = (0.16, 0.14, 0.12) if self._light else (0.17, 0.12, 0.11)
+        # v11: light mode pulled back again, and this time to a whisper
+        # (0.16/0.14/0.12 -> 0.055/0.05/0.045). The v10 note already had the
+        # right rule — "tint the paper, not dye it" — but the numbers still
+        # dyed it: measured off a real render, the multiply wash dragged the
+        # canvas to #ECEAF4, a visible lavender where the palette specifies
+        # the neutral system grey #F2F2F7. A light mode whose defining
+        # colour is "system grey" cannot have a coloured cloud drifting
+        # across it; at these peaks the orbs read as faint movement in the
+        # page rather than as a hue applied to it.
+        #
+        # Dark is untouched: there the wash SCREENS onto an obsidian canvas
+        # that has room to receive it, which is the whole reason the two
+        # modes use opposite blend modes in the first place.
+        peaks = (0.055, 0.05, 0.045) if self._light else (0.17, 0.12, 0.11)
         colors = (self._c1, self._c3, self._c2)   # indigo, magenta, violet
         amp_x, amp_y = w * 0.06, h * 0.06
         for i, (bx, by, dspd, dph, bspd, bph) in enumerate(self._orb_motion):
@@ -1832,14 +1856,34 @@ class DepthCard(QFrame):
     like `QFrame#insight` still match (Qt resolves by base class + object
     name, and DepthCard IS a QFrame)."""
 
-    def __init__(self, radius: int = 14, parent: QWidget | None = None):
+    def __init__(self, radius: int = 14, parent: QWidget | None = None,
+                 t: dict | None = None):
         super().__init__(parent)
         self._radius = radius
+        # v11: these surfaces cast the same shadow the cards do, so the hero
+        # banner and status strip sit on the page instead of being drawn on
+        # it. `t` is optional because DepthCard predates the depth tokens and
+        # some call sites build it before a theme is at hand; without one it
+        # falls back to the neutral bevel it has always painted.
+        self._bevel: tuple[float, float] | None = None
+        self._shadow: tuple[float, int] | None = None
+        if t is not None:
+            self.set_theme(t)
+
+    def set_theme(self, t: dict):
+        self._bevel = TH.bevel_alphas(t)
+        self._shadow = TH.shadow_alphas(t)
+        self.update()
 
     def paintEvent(self, e):
         super().paintEvent(e)
         p = QPainter(self)
-        paint_bevel_frame(p, self.rect(), self._radius)
+        if self._shadow is not None:
+            paint_drop_shadow(p, self.rect(), self._radius, *self._shadow)
+        if self._bevel is not None:
+            paint_bevel_frame(p, self.rect(), self._radius, *self._bevel)
+        else:
+            paint_bevel_frame(p, self.rect(), self._radius)
         p.end()
 
 
@@ -1857,6 +1901,14 @@ class ConfirmDialog(PulseDialog):
 
         head = QLabel(f"{item['icon']}  {item['title']}")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
+        # Wrap, like every other dialog heading in the app. Without it the
+        # label's minimum width is its ENTIRE single line, which a fixed
+        # 440px panel cannot always satisfy: measured, "⚡  Ultimate Power
+        # Plan" at the 18px/700 dialog role needs 444px, so the layout was
+        # 4px over-constrained and Qt resolved it by pushing the content
+        # past the panel edge. Long operation titles are normal here, so the
+        # heading has to adapt to the panel rather than the other way round.
+        head.setWordWrap(True)
         lay.addWidget(head)
 
         body = QLabel(item["desc"])
@@ -2358,66 +2410,6 @@ class ReportSubCard(QFrame):
         return self.add(report_note(self._t, text, tone))
 
 
-class CopyRow(QFrame):
-    """A read-only command shown beside a Copy button (v1.0).
-
-    Pulse never RUNS the command — it puts the exact text on the clipboard
-    and the user runs it themselves, wherever they choose. That is the whole
-    point of the affordance: the command is visible in full before it is
-    copied, and nothing executes behind the dialog.
-
-    The Copy button flips to 'Copied!' for a moment on success. The flip is
-    a label change only — the button keeps its size and accent so the row
-    acknowledges the click without appearing to change state.
-    """
-
-    _RESET_MS = 1500
-
-    def __init__(self, t: dict, command: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        self._command = command
-        self.setStyleSheet("background: transparent;")
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(TH.SPACE["sm"])
-
-        field = QLabel(command)
-        field.setStyleSheet(TH.code_field_qss(t))
-        # Selectable so a user on a locked-down machine, or one who simply
-        # distrusts a copy button, can still read and lift the text by hand.
-        field.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        field.setCursor(Qt.CursorShape.IBeamCursor)
-        row.addWidget(field, 1)
-
-        # NEUTRAL, not accent-tinted, and that is a contrast decision rather
-        # than a stylistic one: the `information` accent is a mid-blue that
-        # clears AA as button text against a dark fill OR a light one, but
-        # not both — so an accent Copy button would be legible in exactly
-        # one theme. The code field is the row's focus anyway; Copy is a
-        # utility beside it and wears the same neutral chrome as Close.
-        self._btn = QPushButton("Copy")
-        self._btn.setFixedHeight(34)
-        self._btn.setMinimumWidth(84)
-        self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn.setStyleSheet(TH.dialog_cancel_qss(t))
-        self._btn.clicked.connect(self._copy)
-        row.addWidget(self._btn, 0)
-
-        # One reusable timer, restarted on each copy, so rapid clicks don't
-        # stack callbacks that would each try to reset the label.
-        self._reset = QTimer(self)
-        self._reset.setSingleShot(True)
-        self._reset.timeout.connect(lambda: self._btn.setText("Copy"))
-
-    def _copy(self):
-        clipboard = QApplication.clipboard()
-        if clipboard is not None:
-            clipboard.setText(self._command)
-        self._btn.setText("Copied!")
-        self._reset.start(self._RESET_MS)
-
-
 class HealthReportDialog(PulseDialog):
     """The Health & Drift Report (v10.3): run the probe, read it, export it.
 
@@ -2656,18 +2648,24 @@ class ActivationStatusDialog(PulseDialog):
     #: no further part in whatever they do there.
     SETTINGS_URI = "ms-settings:activation"
 
-    #: READ-ONLY inspection commands offered as copyable text (v1.0). These
-    #: REPORT licence state; none of them changes it. `slmgr /xpr` prints
-    #: the activation type and expiry in one line and `slmgr /dlv` the full
-    #: licence detail — both run as a standard user, matching this module's
-    #: no-elevation-required contract. Pulse copies the text to the
-    #: clipboard; it never runs these itself, and it deliberately offers no
-    #: activation command, no downloaded script and no elevated shell to
-    #: paste one into. (label, command) pairs.
-    INSPECT_COMMANDS = (
-        ("Windows licence type & expiry", "slmgr /xpr"),
-        ("Windows full licence detail", "slmgr /dlv"),
-    )
+    #: Microsoft's own activation documentation — the single external
+    #: reference this dialog offers (v11).
+    #:
+    #: It replaces two blocks that used to close the report: a set of
+    #: copyable `slmgr` commands and three paragraphs of hand-written
+    #: activation advice. Both were well-intentioned and both were the wrong
+    #: shape for this dialog. The commands invited a reader to open a
+    #: terminal to re-read facts the dialog had just shown them, and the
+    #: advice was a snapshot of Microsoft's licensing rules maintained here,
+    #: in a Windows utility, where it can only drift out of date. One
+    #: authoritative link is smaller, always current, and honest about whose
+    #: answer it is.
+    #:
+    #: It points at Microsoft. A licence is bought or already owned and then
+    #: applied through Microsoft's surfaces; Pulse reports state and hands
+    #: off, and that contract does not survive linking anywhere else.
+    DOCS_URL = ("https://support.microsoft.com/windows/"
+                "activate-windows-c39005d4-95ee-b91e-b399-2820fda32227")
 
     def __init__(self, parent: QWidget, ps1_path: str, t: dict):
         super().__init__(parent)
@@ -2738,9 +2736,13 @@ class ActivationStatusDialog(PulseDialog):
 
         close = button("Close", TH.dialog_cancel_qss(t), self.reject, 88)
 
-        self._refresh_btn = button("Re-check", TH.dialog_cancel_qss(t),
-                                   self._start, 100)
-        self._refresh_btn.setEnabled(False)
+        # The one external reference, and a quieter CTA than the Settings
+        # hand-off beside it: reading the documentation is the optional step,
+        # opening Activation is the one that actually changes anything.
+        docs = button("Official Activation Docs",
+                      TH.dialog_secondary_go_qss(t, accent), self._open_docs, 190)
+        docs.setToolTip(
+            "Opens Microsoft's activation documentation in your browser.")
 
         windows = button("Windows Activation Settings",
                          TH.dialog_go_qss(t, accent), self._open_settings, 200)
@@ -2748,16 +2750,15 @@ class ActivationStatusDialog(PulseDialog):
             "Opens Settings › System › Activation, where Windows licence "
             "state is changed.")
 
-        return [close, self._refresh_btn, windows]
+        return [close, docs, windows]
 
     # -- data -------------------------------------------------
     def _start(self):
         if not self._ps1:
             self._status.setText("Engine unavailable — core.ps1 was not found.")
             return
-        if self._worker is not None:      # a re-check is already in flight
+        if self._worker is not None:      # a read is already in flight
             return
-        self._refresh_btn.setEnabled(False)
         self._status.setText("Reading the licensing service…")
         thread = QThread(self)
         # 120s: the probe returns in about a second on a healthy machine,
@@ -2792,13 +2793,21 @@ class ActivationStatusDialog(PulseDialog):
         if self._thread is not None:
             self._thread.deleteLater()
             self._thread = None
-        self._refresh_btn.setEnabled(True)
 
     def _open_settings(self):
         if not QDesktopServices.openUrl(QUrl(self.SETTINGS_URI)):
             self._status.setText(
                 "Windows could not open the Activation settings page. "
                 "Open Settings › System › Activation manually.")
+
+    def _open_docs(self):
+        """Hand the documentation URL to the user's default browser. Same
+        posture as the Settings hand-off: Pulse opens it visibly and has no
+        further part in it — no embedded browser, nothing fetched here."""
+        if not QDesktopServices.openUrl(QUrl(self.DOCS_URL)):
+            self._status.setText(
+                "Could not open your browser. The activation documentation "
+                f"is at {self.DOCS_URL}")
 
     # -- rendering --------------------------------------------
     def _add(self, widget: QWidget):
@@ -2930,52 +2939,12 @@ class ActivationStatusDialog(PulseDialog):
                 card.row("OEM firmware licence", "Not present",
                          label_width=self._LABEL_W)
 
-        # -- inspection commands + guide ----------------------
-        # Static, so they render on every pass but do not depend on the
-        # report. They close the dialog because they are what a reader does
-        # NEXT with the facts above, not more facts.
-        self._add(self._inspect_card())
-        self._add(self._guide_card())
-
-    def _inspect_card(self) -> ReportSubCard:
-        """Read-only commands the reader can copy and run to inspect licence
-        state for themselves — the "inspector" half of the dialog. Every
-        command here REPORTS; none activates, and the dialog offers no
-        activation command, no downloaded script and no elevated shell.
-        `slmgr /xpr` and `/dlv` both run as a standard user."""
-        card = self._card("Inspect it yourself")
-        card.note(
-            "These read-only commands print the same licence facts shown "
-            "above. Copy one into a terminal to check the machine directly — "
-            "none of them changes activation state.")
-        for label, command in self.INSPECT_COMMANDS:
-            card.add(report_note(self._t, label))
-            card.add(CopyRow(self._t, command))
-        return card
-
-    def _guide_card(self) -> ReportSubCard:
-        """The "guide" half: the legitimate routes to a licensed machine,
-        stated plainly. No product keys, no third-party tools — the honest
-        answer to "how do I fix an unlicensed state", which is that a
-        licence is bought or already owned and then applied through
-        Microsoft's own surfaces."""
-        card = self._card("How activation works")
-        card.note(
-            "Windows — a licence is either a product key you bought or a "
-            "digital licence linked to your Microsoft account. Open "
-            "Settings › System › Activation to enter a key or sign in to the "
-            "account that holds the licence; after a hardware change, the "
-            "Activation troubleshooter re-links it.")
-        card.note(
-            "Office — activates against the Microsoft account that owns the "
-            "licence or Microsoft 365 subscription. Sign in to that account "
-            "in any Office app, or redeem a purchased key at setup.office.com.")
-        card.note(
-            "Work or school device — volume-licensed Windows and Office are "
-            "activated by your organisation, often through the KMS host shown "
-            "above. If either reports unlicensed here, your IT administrator "
-            "is the right contact rather than a key entered by hand.")
-        return card
+        # v11: the report ENDS with the facts. The two static blocks that
+        # used to trail it — copyable `slmgr` commands and a hand-written
+        # explanation of how activation works — are gone, and the reader is
+        # pointed at Microsoft's own documentation from the action bar
+        # instead (see DOCS_URL). A read-only report should stop when it
+        # runs out of things it actually measured.
 
     def showEvent(self, e):
         super().showEvent(e)
