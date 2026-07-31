@@ -207,6 +207,72 @@ class TestStateProbe:
                     "report 'unknown' forever")
 
 
+class TestAppIcons:
+    """The Software Management brand-icon contract.
+
+    Icons are fetched at BUILD time by tools/fetch_app_icons.py and read
+    from disk at runtime. That split is the whole security argument — an
+    elevated, privacy-focused utility must not reach the network to draw
+    its own UI — and nothing but this test prevents a future "just fetch
+    the missing one" from erasing it.
+    """
+
+    @staticmethod
+    def _runtime_source() -> str:
+        return open(os.path.join(_ROOT, "src/utils/appicons.py"),
+                    encoding="utf-8").read()
+
+    def test_runtime_never_reaches_the_network(self):
+        code = re.sub(r'""".*?"""', "", self._runtime_source(), flags=re.S)
+        forbidden = ["urllib", "requests", "http://", "https://", "socket",
+                     "QNetworkAccessManager", "urlopen"]
+        found = sorted({name for name in forbidden if name in code})
+        assert not found, (
+            f"src/utils/appicons.py references {found} — icon resolution is "
+            "offline by contract; fetching belongs in tools/fetch_app_icons.py")
+
+    def test_manifest_matches_the_shipped_assets(self):
+        """Every manifest entry names a file that exists, so a row can
+        never resolve to a missing asset and silently fall through to the
+        neutral glyph while claiming a brand mark."""
+        manifest_path = os.path.join(_ROOT, "assets/appicons/manifest.json")
+        assert os.path.isfile(manifest_path), "brand-icon manifest is missing"
+        import json
+        manifest = json.load(open(manifest_path, encoding="utf-8"))
+        assert manifest, "manifest is empty"
+        missing = sorted(
+            app_id for app_id, entry in manifest.items()
+            if not os.path.isfile(
+                os.path.join(_ROOT, "assets/appicons", entry.get("file", ""))))
+        assert not missing, f"manifest entries with no asset file: {missing}"
+
+    def test_no_letter_monogram_fallback_survives(self):
+        """The defect this system replaced: a bare initial rendered in a
+        tile where a logo belonged ("E" for Epic Games). If a monogram
+        path ever returns, this fails rather than shipping it again."""
+        code = self._runtime_source()
+        assert "_monogram_pixmap" not in code
+        assert "initial" not in code.lower().split('"""')[-1]
+
+    def test_every_mapped_app_is_a_real_catalog_entry(self):
+        """tools/fetch_app_icons.py's map is keyed by winget AppId. A key
+        that matches no catalog app is a typo that silently downloads an
+        asset nothing will ever read."""
+        tool = open(os.path.join(_ROOT, "tools/fetch_app_icons.py"),
+                    encoding="utf-8").read()
+        body = tool[tool.index("ICON_MAP"):tool.index("def _get(")]
+        mapped = set(re.findall(r'^\s{4}"([^"]+)":', body, re.M))
+        assert len(mapped) > 30, "ICON_MAP did not parse"
+
+        menu = _menu_source()
+        dev_hub_ids = set(re.findall(r'^\s+\("([^"]+)",', menu, re.M))
+        app_ids = set(re.findall(r'\("([^"]+)",\s*"[^"]*",', menu))
+        catalog = dev_hub_ids | app_ids
+        orphans = sorted(mapped - catalog)
+        assert not orphans, (
+            f"ICON_MAP names app id(s) no catalog entry uses: {orphans}")
+
+
 _CATALOGS = os.path.join(_ROOT, "src/backend/modules/01-Catalogs.ps1")
 
 

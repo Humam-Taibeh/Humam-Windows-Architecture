@@ -1,0 +1,167 @@
+{
+ "7zip.7zip": {
+  "file": "7zip.7zip.svg",
+  "hex": "#000000",
+  "title": "7Zip"
+ },
+ "9NKSQCEZVDDB": {
+  "file": "9NKSQCEZVDDB.svg",
+  "hex": "#25D366",
+  "title": "WhatsApp"
+ },
+ "9PKTQ5699M62": {
+  "file": "9PKTQ5699M62.svg",
+  "hex": "#3693F3",
+  "title": "iCloud"
+ },
+ "Apache.NetBeans": {
+  "file": "Apache.NetBeans.svg",
+  "hex": "#1B6AC6",
+  "title": "Apache NetBeans IDE"
+ },
+ "Apple.iTunes": {
+  "file": "Apple.iTunes.svg",
+  "hex": "#FB5BC5",
+  "title": "iTunes"
+ },
+ "Brave.Brave": {
+  "file": "Brave.Brave.svg",
+  "hex": "#FB542B",
+  "title": "Brave"
+ },
+ "Bruno.Bruno": {
+  "file": "Bruno.Bruno.svg",
+  "hex": "#F4AA41",
+  "title": "Bruno"
+ },
+ "DBeaver.DBeaver.Community": {
+  "file": "DBeaver.DBeaver.Community.svg",
+  "hex": "#382923",
+  "title": "DBeaver"
+ },
+ "Discord.Discord": {
+  "file": "Discord.Discord.svg",
+  "hex": "#5865F2",
+  "title": "Discord"
+ },
+ "Docker.DockerDesktop": {
+  "file": "Docker.DockerDesktop.svg",
+  "hex": "#2496ED",
+  "title": "Docker"
+ },
+ "EclipseAdoptium.Temurin.21.JDK": {
+  "file": "EclipseAdoptium.Temurin.21.JDK.svg",
+  "hex": "#FF1464",
+  "title": "Eclipse Adoptium"
+ },
+ "EpicGames.EpicGamesLauncher": {
+  "file": "EpicGames.EpicGamesLauncher.svg",
+  "hex": "#313131",
+  "title": "Epic Games"
+ },
+ "Git.Git": {
+  "file": "Git.Git.svg",
+  "hex": "#F05032",
+  "title": "Git"
+ },
+ "Google.Chrome": {
+  "file": "Google.Chrome.svg",
+  "hex": "#4285F4",
+  "title": "Google Chrome"
+ },
+ "Guru3D.Afterburner": {
+  "file": "Guru3D.Afterburner.svg",
+  "hex": "#FF0000",
+  "title": "MSI"
+ },
+ "JetBrains.IntelliJIDEA.Community": {
+  "file": "JetBrains.IntelliJIDEA.Community.svg",
+  "hex": "#000000",
+  "title": "IntelliJ IDEA"
+ },
+ "JetBrains.PyCharm.Community": {
+  "file": "JetBrains.PyCharm.Community.svg",
+  "hex": "#000000",
+  "title": "PyCharm"
+ },
+ "MSYS2.MSYS2": {
+  "file": "MSYS2.MSYS2.svg",
+  "hex": "#A42E2B",
+  "title": "GNU"
+ },
+ "Microsoft.DotNet.DesktopRuntime.8": {
+  "file": "Microsoft.DotNet.DesktopRuntime.8.svg",
+  "hex": "#512BD4",
+  "title": ".NET"
+ },
+ "Microsoft.VCRedist.2015+.x64": {
+  "file": "Microsoft.VCRedist.2015+.x64.svg",
+  "hex": "#00599C",
+  "title": "C++"
+ },
+ "Mozilla.Firefox": {
+  "file": "Mozilla.Firefox.svg",
+  "hex": "#FF7139",
+  "title": "Firefox Browser"
+ },
+ "Notion.Notion": {
+  "file": "Notion.Notion.svg",
+  "hex": "#000000",
+  "title": "Notion"
+ },
+ "Ollama.Ollama": {
+  "file": "Ollama.Ollama.svg",
+  "hex": "#000000",
+  "title": "Ollama"
+ },
+ "OpenJS.NodeJS.LTS": {
+  "file": "OpenJS.NodeJS.LTS.svg",
+  "hex": "#5FA04E",
+  "title": "Node.js"
+ },
+ "Oracle.JavaRuntimeEnvironment": {
+  "file": "Oracle.JavaRuntimeEnvironment.svg",
+  "hex": "#F80000",
+  "title": "Oracle"
+ },
+ "Postman.Postman": {
+  "file": "Postman.Postman.svg",
+  "hex": "#FF6C37",
+  "title": "Postman"
+ },
+ "Python.Python.3.12": {
+  "file": "Python.Python.3.12.svg",
+  "hex": "#3776AB",
+  "title": "Python"
+ },
+ "RockstarGames.Launcher": {
+  "file": "RockstarGames.Launcher.svg",
+  "hex": "#FCAF17",
+  "title": "Rockstar Games"
+ },
+ "Spotify.Spotify": {
+  "file": "Spotify.Spotify.svg",
+  "hex": "#1ED760",
+  "title": "Spotify"
+ },
+ "Telegram.TelegramDesktop": {
+  "file": "Telegram.TelegramDesktop.svg",
+  "hex": "#26A5E4",
+  "title": "Telegram"
+ },
+ "TheDocumentFoundation.LibreOffice": {
+  "file": "TheDocumentFoundation.LibreOffice.svg",
+  "hex": "#18A303",
+  "title": "LibreOffice"
+ },
+ "Valve.Steam": {
+  "file": "Valve.Steam.svg",
+  "hex": "#000000",
+  "title": "Steam"
+ },
+ "VideoLAN.VLC": {
+  "file": "VideoLAN.VLC.svg",
+  "hex": "#FF8800",
+  "title": "VLC media player"
+ }
+}

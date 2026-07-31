@@ -5221,9 +5221,10 @@ class DevHubRow(QFrame):
 
         row = QHBoxLayout()
         row.setSpacing(10)
-        # v1.0: instant visual recognition — the app's real shell icon when
-        # it is installed on this machine, a deterministic monogram plaque
-        # when it isn't (see utils.appicons for why nothing is fetched).
+        # Instant visual recognition: the app's own icon when it is
+        # installed here, its official brand mark from the bundled asset
+        # set otherwise. The app_id is what keys the brand lookup, so it
+        # rides along with the name (see utils.appicons).
         self._icon = QLabel()
         self._icon.setFixedSize(28, 28)
         self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -5259,8 +5260,10 @@ class DevHubRow(QFrame):
         self.setStyleSheet(TH.dev_hub_row_qss(t))
         self.checkbox.setStyleSheet(TH.checkbox_qss(t, t["accent"]))
         self.options_btn.setStyleSheet(TH.icon_ghost_button_qss(t, t["accent"]))
-        # theme-dependent only for monograms; shell icons come back cached
-        self._icon.setPixmap(appicons.app_icon(self._app_name, 28, t))
+        # brand marks are recoloured per theme (appicons' contrast guard);
+        # shell icons are theme-independent and come straight from cache
+        self._icon.setPixmap(
+            appicons.app_icon(self._app_name, 28, t, app_id=self.app_id))
         if self._hint_label is not None:
             self._hint_label.setStyleSheet(TH.label_qss(t, "caption"))
 
