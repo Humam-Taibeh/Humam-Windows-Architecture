@@ -2358,6 +2358,66 @@ class ReportSubCard(QFrame):
         return self.add(report_note(self._t, text, tone))
 
 
+class CopyRow(QFrame):
+    """A read-only command shown beside a Copy button (v1.0).
+
+    Pulse never RUNS the command — it puts the exact text on the clipboard
+    and the user runs it themselves, wherever they choose. That is the whole
+    point of the affordance: the command is visible in full before it is
+    copied, and nothing executes behind the dialog.
+
+    The Copy button flips to 'Copied!' for a moment on success. The flip is
+    a label change only — the button keeps its size and accent so the row
+    acknowledges the click without appearing to change state.
+    """
+
+    _RESET_MS = 1500
+
+    def __init__(self, t: dict, command: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._command = command
+        self.setStyleSheet("background: transparent;")
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(TH.SPACE["sm"])
+
+        field = QLabel(command)
+        field.setStyleSheet(TH.code_field_qss(t))
+        # Selectable so a user on a locked-down machine, or one who simply
+        # distrusts a copy button, can still read and lift the text by hand.
+        field.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        field.setCursor(Qt.CursorShape.IBeamCursor)
+        row.addWidget(field, 1)
+
+        # NEUTRAL, not accent-tinted, and that is a contrast decision rather
+        # than a stylistic one: the `information` accent is a mid-blue that
+        # clears AA as button text against a dark fill OR a light one, but
+        # not both — so an accent Copy button would be legible in exactly
+        # one theme. The code field is the row's focus anyway; Copy is a
+        # utility beside it and wears the same neutral chrome as Close.
+        self._btn = QPushButton("Copy")
+        self._btn.setFixedHeight(34)
+        self._btn.setMinimumWidth(84)
+        self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn.setStyleSheet(TH.dialog_cancel_qss(t))
+        self._btn.clicked.connect(self._copy)
+        row.addWidget(self._btn, 0)
+
+        # One reusable timer, restarted on each copy, so rapid clicks don't
+        # stack callbacks that would each try to reset the label.
+        self._reset = QTimer(self)
+        self._reset.setSingleShot(True)
+        self._reset.timeout.connect(lambda: self._btn.setText("Copy"))
+
+    def _copy(self):
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(self._command)
+        self._btn.setText("Copied!")
+        self._reset.start(self._RESET_MS)
+
+
 class HealthReportDialog(PulseDialog):
     """The Health & Drift Report (v10.3): run the probe, read it, export it.
 
@@ -2596,14 +2656,18 @@ class ActivationStatusDialog(PulseDialog):
     #: no further part in whatever they do there.
     SETTINGS_URI = "ms-settings:activation"
 
-    #: Office's counterpart, and the reason the action bar is a PAIR. Office
-    #: licences are not administered from ms-settings:activation at all —
-    #: they live against the Microsoft account that owns the subscription,
-    #: so "Open Windows Activation Settings" was a dead end for exactly the
-    #: half of this report a reader most often arrives with a problem in.
-    #: Same principle as SETTINGS_URI: Microsoft's own surface, opened
-    #: visibly, with Pulse taking no part in what happens there.
-    OFFICE_ACCOUNT_URL = "https://account.microsoft.com/services"
+    #: READ-ONLY inspection commands offered as copyable text (v1.0). These
+    #: REPORT licence state; none of them changes it. `slmgr /xpr` prints
+    #: the activation type and expiry in one line and `slmgr /dlv` the full
+    #: licence detail — both run as a standard user, matching this module's
+    #: no-elevation-required contract. Pulse copies the text to the
+    #: clipboard; it never runs these itself, and it deliberately offers no
+    #: activation command, no downloaded script and no elevated shell to
+    #: paste one into. (label, command) pairs.
+    INSPECT_COMMANDS = (
+        ("Windows licence type & expiry", "slmgr /xpr"),
+        ("Windows full licence detail", "slmgr /dlv"),
+    )
 
     def __init__(self, parent: QWidget, ps1_path: str, t: dict):
         super().__init__(parent)
@@ -2645,11 +2709,9 @@ class ActivationStatusDialog(PulseDialog):
         lay.addWidget(self._scroll, 1)
 
         # -- action bar ---------------------------------------
-        # Two destinations, because the report has two subjects and they
-        # are administered in different places. Both are secondary-weight
-        # against nothing: this dialog has no primary action of its own —
-        # it changes nothing — so the two hand-offs share the emphasis
-        # rather than one of them pretending to be the thing to do.
+        # One hand-off, and it changes nothing Pulse controls: this dialog
+        # REPORTS, so its only action opens Windows' own Activation page and
+        # steps back. The Re-check and Close controls sit beside it.
         row = QHBoxLayout()
         row.setSpacing(TH.SPACE["sm"])
         row.addStretch()
@@ -2662,10 +2724,7 @@ class ActivationStatusDialog(PulseDialog):
     def _action_buttons(self, t: dict, accent: str) -> list[QPushButton]:
         """Built in one place so every button in the bar gets the same
         height, cursor and sizing rule. Widths are natural (a minimum plus
-        the label) rather than fixed — the fixed 258px on the old Settings
-        button was already the widest thing in the dialog, and a second
-        hand-off beside it would have forced a horizontal scrollbar at the
-        dialog's smaller responsive sizes."""
+        the label) rather than fixed."""
         def button(text: str, style: str, slot, minimum: int) -> QPushButton:
             btn = QPushButton(text)
             btn.setFixedHeight(36)
@@ -2683,20 +2742,13 @@ class ActivationStatusDialog(PulseDialog):
                                    self._start, 100)
         self._refresh_btn.setEnabled(False)
 
-        office = button("Office Account & Licensing",
-                        TH.dialog_secondary_go_qss(t, accent),
-                        self._open_office_account, 196)
-        office.setToolTip(
-            "Opens your Microsoft account's services and subscriptions page, "
-            "where Office licences are assigned and managed.")
-
         windows = button("Windows Activation Settings",
                          TH.dialog_go_qss(t, accent), self._open_settings, 200)
         windows.setToolTip(
             "Opens Settings › System › Activation, where Windows licence "
             "state is changed.")
 
-        return [close, self._refresh_btn, office, windows]
+        return [close, self._refresh_btn, windows]
 
     # -- data -------------------------------------------------
     def _start(self):
@@ -2747,12 +2799,6 @@ class ActivationStatusDialog(PulseDialog):
             self._status.setText(
                 "Windows could not open the Activation settings page. "
                 "Open Settings › System › Activation manually.")
-
-    def _open_office_account(self):
-        if not QDesktopServices.openUrl(QUrl(self.OFFICE_ACCOUNT_URL)):
-            self._status.setText(
-                "Windows could not open your browser. Go to "
-                f"{self.OFFICE_ACCOUNT_URL} manually to manage Office licences.")
 
     # -- rendering --------------------------------------------
     def _add(self, widget: QWidget):
@@ -2854,9 +2900,10 @@ class ActivationStatusDialog(PulseDialog):
             if detail:
                 card.row("Installation", detail, label_width=self._LABEL_W)
             card.note(
-                "Office is installed but reports no licence. Office licences "
-                "are held against the Microsoft account that owns the "
-                "subscription — check it under Office Account & Licensing.",
+                "Office is installed but reports no licence. An Office "
+                "licence is held against the Microsoft account that owns the "
+                "subscription — signing into that account in any Office app "
+                "restores it. See the guide below.",
                 "warn")
         else:
             self._card("Microsoft Office", ("Not installed", "")).note(
@@ -2882,6 +2929,53 @@ class ActivationStatusDialog(PulseDialog):
             elif firmware is False:
                 card.row("OEM firmware licence", "Not present",
                          label_width=self._LABEL_W)
+
+        # -- inspection commands + guide ----------------------
+        # Static, so they render on every pass but do not depend on the
+        # report. They close the dialog because they are what a reader does
+        # NEXT with the facts above, not more facts.
+        self._add(self._inspect_card())
+        self._add(self._guide_card())
+
+    def _inspect_card(self) -> ReportSubCard:
+        """Read-only commands the reader can copy and run to inspect licence
+        state for themselves — the "inspector" half of the dialog. Every
+        command here REPORTS; none activates, and the dialog offers no
+        activation command, no downloaded script and no elevated shell.
+        `slmgr /xpr` and `/dlv` both run as a standard user."""
+        card = self._card("Inspect it yourself")
+        card.note(
+            "These read-only commands print the same licence facts shown "
+            "above. Copy one into a terminal to check the machine directly — "
+            "none of them changes activation state.")
+        for label, command in self.INSPECT_COMMANDS:
+            card.add(report_note(self._t, label))
+            card.add(CopyRow(self._t, command))
+        return card
+
+    def _guide_card(self) -> ReportSubCard:
+        """The "guide" half: the legitimate routes to a licensed machine,
+        stated plainly. No product keys, no third-party tools — the honest
+        answer to "how do I fix an unlicensed state", which is that a
+        licence is bought or already owned and then applied through
+        Microsoft's own surfaces."""
+        card = self._card("How activation works")
+        card.note(
+            "Windows — a licence is either a product key you bought or a "
+            "digital licence linked to your Microsoft account. Open "
+            "Settings › System › Activation to enter a key or sign in to the "
+            "account that holds the licence; after a hardware change, the "
+            "Activation troubleshooter re-links it.")
+        card.note(
+            "Office — activates against the Microsoft account that owns the "
+            "licence or Microsoft 365 subscription. Sign in to that account "
+            "in any Office app, or redeem a purchased key at setup.office.com.")
+        card.note(
+            "Work or school device — volume-licensed Windows and Office are "
+            "activated by your organisation, often through the KMS host shown "
+            "above. If either reports unlicensed here, your IT administrator "
+            "is the right contact rather than a key entered by hand.")
+        return card
 
     def showEvent(self, e):
         super().showEvent(e)

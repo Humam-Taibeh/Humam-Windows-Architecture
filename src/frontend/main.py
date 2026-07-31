@@ -261,7 +261,6 @@ class WelcomePage(QWidget):
 
     def __init__(self, t: dict, engine_ok: bool, is_admin: bool):
         super().__init__()
-        self._chip_meta: list[tuple[QLabel, bool]] = []
         self._tel_icons: list[QLabel] = []
         self._tel_values: list[QLabel] = []
         self._tel_captions: list[QLabel] = []
@@ -270,22 +269,27 @@ class WelcomePage(QWidget):
         self._cols = 0
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(30, 18, 30, 20)
-        root.setSpacing(15)
+        root.setContentsMargins(28, 16, 28, 18)
+        root.setSpacing(TH.SPACE["md"])
 
-        # ============ 1. HERO BANNER — unified identity masthead ==========
+        # ============ 1. HERO BANNER — identity masthead ==================
+        # v1.0: a clean identity band. The Engine/Admin status chips that
+        # used to crowd its right edge moved down into the status strip, so
+        # every system fact now lives in one place and the masthead reads as
+        # a calm wordmark rather than a banner competing with its own
+        # metadata. Shorter, too (116 → 96), reclaiming vertical canvas.
         self._hero = DepthCard(radius=22)
         self._hero.setObjectName("heroBanner")
-        self._hero.setFixedHeight(116)
+        self._hero.setFixedHeight(96)
         hb = QHBoxLayout(self._hero)
-        hb.setContentsMargins(30, 0, 26, 0)
-        hb.setSpacing(20)
+        hb.setContentsMargins(28, 0, 28, 0)
+        hb.setSpacing(TH.SPACE["lg"])
 
-        self._logo = BreathingIcon("✦", size=64, accent=t["accent"])
+        self._logo = BreathingIcon("✦", size=58, accent=t["accent"])
         hb.addWidget(self._logo, 0, Qt.AlignmentFlag.AlignVCenter)
 
         id_col = QVBoxLayout()
-        id_col.setSpacing(4)
+        id_col.setSpacing(3)
         id_col.addStretch()
         self._name = QLabel(APP_NAME)
         id_col.addWidget(self._name)
@@ -294,44 +298,39 @@ class WelcomePage(QWidget):
         id_col.addStretch()
         hb.addLayout(id_col)
         hb.addStretch()
-
-        chip_col = QVBoxLayout()
-        chip_col.setSpacing(9)
-        chip_col.addStretch()
-        for icon, text, ok in (
-            ("🧠", "Engine Ready" if engine_ok else "Engine Missing", engine_ok),
-            ("🔑", "Administrator" if is_admin else "Not Elevated", is_admin),
-        ):
-            chip = QLabel(f"{icon}  {text}")
-            self._chip_meta.append((chip, ok))
-            chip_col.addWidget(chip, 0, Qt.AlignmentFlag.AlignRight)
-        chip_col.addStretch()
-        hb.addLayout(chip_col)
         root.addWidget(self._hero)
 
-        # ============ 2. SYSTEM TELEMETRY RIBBON ==========================
-        # The three OS/CPU/RAM readouts, folded from floating tiles into one
-        # cohesive glass strip with hairline dividers — a real system-status
-        # bar rather than scattered mini-cards.
+        # ============ 2. SYSTEM STATUS STRIP ==============================
+        # One horizontal bar carrying every system fact: the OS/CPU/RAM
+        # metrics (each glyph in its own brand-accent plaque) on the left,
+        # and the engine/admin state pills on the right. Folding the hero's
+        # old chip column in here is what makes it a true status bar instead
+        # of a metrics ribbon with the status living somewhere else.
         self._telemetry = DepthCard(radius=16)
         self._telemetry.setObjectName("telemetry")
-        self._telemetry.setFixedHeight(62)
+        self._telemetry.setFixedHeight(66)
         tb = QHBoxLayout(self._telemetry)
-        tb.setContentsMargins(10, 8, 10, 8)
+        tb.setContentsMargins(TH.SPACE["md"], TH.SPACE["sm"],
+                              TH.SPACE["md"], TH.SPACE["sm"])
         tb.setSpacing(0)
         insights = _system_insights()
         for i, (icon, value, caption) in enumerate(insights):
             if i > 0:
                 div = QFrame()
                 div.setFixedWidth(1)
-                div.setFixedHeight(30)
+                div.setFixedHeight(32)
                 self._tel_divs.append(div)
                 tb.addWidget(div, 0, Qt.AlignmentFlag.AlignVCenter)
 
             cell = QHBoxLayout()
-            cell.setContentsMargins(18, 0, 18, 0)
-            cell.setSpacing(12)
+            cell.setContentsMargins(TH.SPACE["lg"], 0, TH.SPACE["lg"], 0)
+            cell.setSpacing(TH.SPACE["md"])
+            # The glyph now sits in a tinted plaque (see telemetry_plaque_qss)
+            # rather than floating bare — the single biggest "premium" cue,
+            # matching the card and sidebar icon wells.
             icon_lbl = QLabel(icon)
+            icon_lbl.setFixedSize(34, 34)
+            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._tel_icons.append(icon_lbl)
             cell.addWidget(icon_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -353,11 +352,25 @@ class WelcomePage(QWidget):
             self._tel_captions.append(caption_lbl)
             text_col.addWidget(caption_lbl)
             cell.addLayout(text_col)
-            cell.addStretch()
-            tb.addLayout(cell, 1)
-        root.addWidget(self._telemetry)
+            # Natural width per metric (stretch 0), so the pills below can
+            # own the right end instead of the three cells splaying to fill
+            # the whole bar (the old spread-out, empty-feeling ribbon).
+            tb.addLayout(cell, 0)
 
-        root.addSpacing(2)
+        tb.addStretch(1)
+
+        # -- engine / admin state pills, right-anchored -------
+        self._status_pills: list[tuple[QLabel, bool]] = []
+        for text, ok in (
+            ("Engine Ready" if engine_ok else "Engine Missing", engine_ok),
+            ("Administrator" if is_admin else "Not Elevated", is_admin),
+        ):
+            pill = QLabel(text)
+            pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._status_pills.append((pill, ok))
+            tb.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
+            tb.addSpacing(TH.SPACE["sm"])
+        root.addWidget(self._telemetry)
 
         # ============ 3. QUICK ACTIONS ====================================
         head = QHBoxLayout()
@@ -448,13 +461,24 @@ class WelcomePage(QWidget):
         for col in range(self.ACTION_MAX_COLS):
             self._grid.setColumnStretch(col, 1 if col < cols else 0)
         n_rows = (len(self._action_cards) + cols - 1) // cols
+        # v1.0: content rows take NO stretch, and one trailing row takes it
+        # all. The old version stretched every content row equally, so on a
+        # tall window two rows of cards were flung to opposite ends with a
+        # canyon of empty space between them — the "excessive empty space"
+        # the redesign called out. Anchoring the cards to the top with even
+        # gutters and pushing all slack below reads as a filled, deliberate
+        # grid instead.
         for row in range(max(self._grid.rowCount(), n_rows) + 1):
-            self._grid.setRowStretch(row, 1 if row < n_rows else 0)
+            self._grid.setRowStretch(row, 1 if row == n_rows else 0)
         for i, card in enumerate(self._action_cards):
             self._grid.addWidget(card, i // cols, i % cols)
 
     # Column counts are driven by ResponsiveGridHost.resized (see the grid
     # construction above), so no resizeEvent/showEvent width guessing here.
+
+    #: The three brand accents, one per metric plaque, so the status strip
+    #: carries the Aurora tri-tone the same way the module grid does.
+    _TEL_ACCENTS = ("accent", "accent2", "accent3")
 
     def apply_theme(self, t: dict):
         self._logo.apply_theme(t)
@@ -466,12 +490,15 @@ class WelcomePage(QWidget):
             "letter-spacing: 2px; background: transparent; border: none;")
         self._tag.setStyleSheet(
             TH.label_qss(t, "tagline") + "font-size: 12px; letter-spacing: 1px;")
-        for chip, ok in self._chip_meta:
-            chip.setStyleSheet(TH.chip_qss(t, ok))
 
         self._telemetry.setStyleSheet(TH.telemetry_qss(t))
-        for lbl in self._tel_icons:
-            lbl.setStyleSheet("font-size: 17px; background: transparent; border: none;")
+        for i, lbl in enumerate(self._tel_icons):
+            accent = t[self._TEL_ACCENTS[i % len(self._TEL_ACCENTS)]]
+            # The plaque QSS owns the well; the emoji glyph rides on top,
+            # sized here. Kept as one stylesheet so the plaque's own
+            # background is not clobbered by a second setStyleSheet call.
+            lbl.setStyleSheet(TH.telemetry_plaque_qss(t, accent)
+                              + "QLabel { font-size: 17px; }")
         for lbl in self._tel_values:
             lbl.setStyleSheet(
                 f"color: {t['text']}; font-size: 15px; font-weight: 600;"
@@ -480,6 +507,8 @@ class WelcomePage(QWidget):
             lbl.setStyleSheet(TH.label_qss(t, "caption"))
         for div in self._tel_divs:
             div.setStyleSheet(f"background: {t['panel_line']}; border: none;")
+        for pill, ok in self._status_pills:
+            pill.setStyleSheet(TH.strip_status_qss(t, ok))
 
         self._section.setStyleSheet(TH.label_qss(t, "section"))
         self._rule.setStyleSheet(TH.hub_group_rule_qss(t, t["accent"]))

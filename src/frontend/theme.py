@@ -997,14 +997,9 @@ def scroll_area_qss(t: dict) -> str:
     """
 
 
-def chip_qss(t: dict, ok: bool = True) -> str:
-    color = t["text_soft"] if ok else t["err"]
-    border = t["card_line"] if ok else t["danger_line"]
-    return f"""
-        color: {color}; font-size: 12px; font-weight: 500;
-        background: {t['card']}; border: 1px solid {border};
-        border-radius: {RADIUS['plaque']}px; padding: 8px 18px;
-    """
+# (chip_qss was removed in v1.0: its only caller was the hero banner's
+# Engine/Admin chip column, which folded into the system status strip —
+# strip_status_qss now owns that pill.)
 
 
 def badge_qss(t: dict) -> str:
@@ -1069,6 +1064,24 @@ def report_badge_qss(t: dict, color: str) -> str:
         border: 1px solid {alpha(color, 0.55)};
         border-radius: {RADIUS['chip']}px;
         padding: 3px 11px; letter-spacing: 0.6px;
+    """
+
+
+def code_field_qss(t: dict) -> str:
+    """A one-line, read-only command shown for the user to copy. Monospaced
+    and dropped onto the recessed console floor so it reads as a terminal
+    snippet — something to run elsewhere — rather than as editable input.
+    Selectable text is set on the widget itself, not here."""
+    return f"""
+        QLabel {{
+            color: {t['text_soft']};
+            background: {t['bg_solid']};
+            border: 1px solid {t['card_line']};
+            border-radius: {RADIUS['control']}px;
+            padding: 7px 11px;
+            font-family: 'Cascadia Mono','Consolas','Courier New',monospace;
+            font-size: 12px;
+        }}
     """
 
 
@@ -1555,7 +1568,13 @@ _LABEL_ROLES = {
     "tagline":  ("12px", "400", "text_muted", ""),
     "status":   ("11px", "500", "text_muted", ""),
     "faint":    ("12px", "400", "text_faint", ""),
-    "section":  ("10px", "700", "text_faint", "letter-spacing: 4px;"),
+    # v1.0: lifted off the text_faint FLOOR to text_muted. Section headers
+    # (MODULES, RECENT, QUICK ACTIONS) are the spine of the visual
+    # hierarchy, and at the dimmest step they read as barely-there — the
+    # "low-contrast hierarchy" the v1.0 pass called out. text_muted keeps
+    # them quiet (they are still 10px, 700-weight, wide-tracked labels) but
+    # legible, and lifts every section header in the app at once.
+    "section":  ("10px", "700", "text_muted", "letter-spacing: 4px;"),
     "brand":    ("11px", "600", "text_muted", "letter-spacing: 2px;"),
     "caption":  ("10px", "500", "text_faint", "letter-spacing: 1px;"),
 }
@@ -1579,15 +1598,65 @@ def hero_banner_qss(t: dict) -> str:
 
 
 def telemetry_qss(t: dict) -> str:
-    """The Welcome dashboard's system-snapshot ribbon (OS · CPU · RAM) —
-    one cohesive panel replacing the three floating insight tiles. A
-    subordinate panel tone (a step below the hero banner) so the vertical
-    hierarchy reads banner → telemetry → module launchpad."""
+    """The Welcome dashboard's system status strip (OS · CPU · RAM, then the
+    engine/admin pills). v1.0 lifts it from the old flat `panel` fill — the
+    "flat/dull" surface the redesign called out — onto the same frosted
+    CARD material the module cards wear, with a top sheen, so it reads as a
+    real status bar with elevation rather than a recessed tray. The hero
+    banner stays dominant by size and radius, so the vertical hierarchy is
+    still banner → strip → launchpad."""
     return f"""
         QFrame#telemetry {{
-            background: {t['panel']};
-            border: 1px solid {t['panel_line']};
+            background: {glass_fill(t, t['card'])};
+            border: 1px solid {t['card_line']};
             border-radius: {RADIUS['card']}px;
+        }}
+    """
+
+
+def telemetry_plaque_qss(t: dict, accent: str) -> str:
+    """The small tinted well behind each metric glyph in the status strip
+    (v1.0). The same jewel-plaque language the cards and sidebar use
+    (icon_plaque_qss), shrunk to strip scale — a soft vertical accent
+    gradient and a firm hairline — so the OS/CPU/RAM glyphs read as part of
+    one system rather than as three bare emoji floating in a bar. The three
+    metrics carry the three brand accents, which is where the strip picks up
+    its 'glassmorphism accents'."""
+    fill = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+            f"stop:0 {alpha(accent, 0.22)}, stop:1 {alpha(accent, 0.11)})")
+    return f"""
+        QLabel {{
+            background: {fill};
+            border: 1px solid {alpha(accent, 0.38)};
+            border-radius: {RADIUS['plaque']}px;
+        }}
+    """
+
+
+def strip_status_qss(t: dict, ok: bool) -> str:
+    """An Engine/Admin state pill living at the right end of the status strip
+    (v1.0), relocated from the hero's own chip column so the masthead can be
+    a clean identity band and every system fact sits in one place.
+
+    Transparent fill with a toned border, NOT a tint of its own tone: a pill
+    tinted in its own hue subtracts contrast from the text it carries (the
+    measured badge-tint trap), and these run down to 11px. Contrast is then
+    tone-against-the-strip, which the palette already solves in both modes.
+
+    The not-ok state is `warn` (amber), not `err` (red), for two reasons
+    that agree: "Not Elevated" and "Engine Missing" are heads-up states the
+    user acts on, not the failure of an operation the red tone is reserved
+    for; and the sidebar's own unelevated CTA is already amber, so the two
+    read as one signal. It is also the one that clears AA — the red measured
+    3.98:1 on this brighter card-glass strip in dark mode."""
+    color = t["ok"] if ok else t["warn"]
+    return f"""
+        QLabel {{
+            color: {color}; font-size: 11px; font-weight: 700;
+            background: transparent;
+            border: 1px solid {alpha(color, 0.50)};
+            border-radius: {RADIUS['chip']}px;
+            padding: 4px 12px;
         }}
     """
 
