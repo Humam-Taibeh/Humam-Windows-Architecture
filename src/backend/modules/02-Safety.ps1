@@ -174,6 +174,106 @@ function Restore-OriginalRegValue {
     }
 }
 
+# ============================================================
+#  PER-TWEAK REVERTS (v1.0)
+#
+#  Each Restore-*Tweak function is ONE tweak's inverse: restore the
+#  backed-up original values (or safe Windows factory defaults when no
+#  original was captured), report honestly, return $true/$false.
+#
+#  SINGLE SOURCE OF TRUTH, deliberately: these are the factored bodies of
+#  the old Reset-AllTweaksToDefaults blocks, and that function now
+#  COMPOSES them. They also back the GUI's per-card "Revert to Default"
+#  toggle (30-GuiDispatcher.ps1's Revert* cases). Two definitions of "how
+#  do I undo Dark Mode" would drift; the bulk reset and the card toggle
+#  must be the same code or the two surfaces will eventually disagree.
+#
+#  Each block gates its "reverted" success line on Restore-OriginalRegValue's
+#  ACTUAL per-call result instead of printing unconditionally - previously
+#  every block announced success even when every underlying restore had
+#  failed (Restore-OriginalRegValue already writes its own Write-ErrorX per
+#  failed value, so a silent $false here was immediately followed by a
+#  contradictory green "reverted" banner).
+#
+#  NO Ask-User in any of these: confirmation belongs to the caller (the
+#  bulk reset asks once for the whole pass; the GUI's choice dialog IS the
+#  per-card confirmation).
+# ============================================================
+function Restore-DarkModeTweak {
+    $Ok  = Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "AppsUseLightTheme" -DefaultIfMissing "1"
+    $Ok  = (Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "SystemUsesLightTheme" -DefaultIfMissing "1") -and $Ok
+    if ($Ok) { Write-Success "Dark Mode reverted." } else { Write-ErrorX "Dark Mode reset incomplete - see the error(s) above." }
+    return $Ok
+}
+
+function Restore-MouseAccelTweak {
+    $Ok  = Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -DefaultIfMissing "1" -Type String
+    $Ok  = (Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -DefaultIfMissing "6" -Type String) -and $Ok
+    $Ok  = (Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -DefaultIfMissing "10" -Type String) -and $Ok
+    if ($Ok) { Write-Success "Mouse acceleration reverted." } else { Write-ErrorX "Mouse acceleration reset incomplete - see the error(s) above." }
+    return $Ok
+}
+
+function Restore-TaskbarTweak {
+    if (-not $Script:IsWin11) {
+        Write-Info "Taskbar layout revert applies to Windows 11 only - nothing to do on this build."
+        return $true
+    }
+    $Ok  = Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarAl" -DefaultIfMissing "1"
+    $Ok  = (Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarDa" -DefaultIfMissing "1") -and $Ok
+    $Ok  = (Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarMn" -DefaultIfMissing "1") -and $Ok
+    if ($Ok) { Write-Success "Taskbar layout reverted." } else { Write-ErrorX "Taskbar layout reset incomplete - see the error(s) above." }
+    return $Ok
+}
+
+function Restore-ClassicContextMenuTweak {
+    if (-not $Script:IsWin11) {
+        Write-Info "Context menu revert applies to Windows 11 only - nothing to do on this build."
+        return $true
+    }
+    Remove-RegKey -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}"
+    Write-Success "Windows 11 context menu reverted to modern default."
+    return $true
+}
+
+function Restore-GameModeTweak {
+    $Ok  = Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\Software\Microsoft\GameBar" -Name "AllowAutoGameMode" -DefaultIfMissing "0"
+    $Ok  = (Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -DefaultIfMissing "0") -and $Ok
+    $Ok  = (Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -DefaultIfMissing "1") -and $Ok
+    if ($Ok) { Write-Success "Game Mode / Game Bar settings reverted." } else { Write-ErrorX "Game Mode reset incomplete - see the error(s) above." }
+    return $Ok
+}
+
+function Restore-TelemetryTweak {
+    # Policy value only, matching what the bulk reset has always restored.
+    # DiagTrack's service state is service-snapshot territory - that undo
+    # lives in Safety > Restore Services, and duplicating it here would
+    # give the same service two competing restore paths.
+    if (Restore-OriginalRegValue -TweakKey "Telemetry" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "AllowTelemetry" -DefaultIfMissing "3") {
+        Write-Success "Telemetry policy value reverted."
+        return $true
+    }
+    Write-ErrorX "Telemetry policy reset failed - see the error above."
+    return $false
+}
+
+function Restore-AdvertisingIDTweak {
+    if (Restore-OriginalRegValue -TweakKey "AdvertisingID" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name "Enabled" -DefaultIfMissing "1") {
+        Write-Success "Advertising ID reverted."
+        return $true
+    }
+    Write-ErrorX "Advertising ID reset failed - see the error above."
+    return $false
+}
+
+function Restore-ActivityHistoryTweak {
+    $Ok  = Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableActivityFeed" -DefaultIfMissing "1"
+    $Ok  = (Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "PublishUserActivities" -DefaultIfMissing "1") -and $Ok
+    $Ok  = (Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "UploadUserActivities" -DefaultIfMissing "1") -and $Ok
+    if ($Ok) { Write-Success "Activity History sync reverted." } else { Write-ErrorX "Activity History reset incomplete - see the error(s) above." }
+    return $Ok
+}
+
 function Reset-AllTweaksToDefaults {
     Write-Banner "RESET ALL TWEAKS TO WINDOWS DEFAULTS"
     Write-ModulePreview -Items @(
@@ -186,68 +286,18 @@ function Reset-AllTweaksToDefaults {
         return
     }
 
-    # Each block below now gates its "reverted" success line on
-    # Restore-OriginalRegValue's ACTUAL per-call result instead of printing
-    # unconditionally - previously every block announced success even when
-    # every underlying restore had failed (Restore-OriginalRegValue already
-    # writes its own Write-ErrorX per failed value, so a silent $false here
-    # was immediately followed by a contradictory green "reverted" banner).
-    Invoke-WithRetry -OperationName "Reset Dark Mode" -Action {
-        $Ok  = Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "AppsUseLightTheme" -DefaultIfMissing "1"
-        $Ok  = (Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "SystemUsesLightTheme" -DefaultIfMissing "1") -and $Ok
-        if ($Ok) { Write-Success "Dark Mode reverted." } else { Write-ErrorX "Dark Mode reset incomplete - see the error(s) above." }
-    } | Out-Null
-
-    Invoke-WithRetry -OperationName "Reset Mouse Acceleration" -Action {
-        $Ok  = Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -DefaultIfMissing "1" -Type String
-        $Ok  = (Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -DefaultIfMissing "6" -Type String) -and $Ok
-        $Ok  = (Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -DefaultIfMissing "10" -Type String) -and $Ok
-        if ($Ok) { Write-Success "Mouse acceleration reverted." } else { Write-ErrorX "Mouse acceleration reset incomplete - see the error(s) above." }
-    } | Out-Null
-
+    # Composed from the per-tweak Restore-* functions above, so this pass
+    # and the GUI's per-card revert toggle are the SAME code path.
+    Invoke-WithRetry -OperationName "Reset Dark Mode" -Action { Restore-DarkModeTweak } | Out-Null
+    Invoke-WithRetry -OperationName "Reset Mouse Acceleration" -Action { Restore-MouseAccelTweak } | Out-Null
     if ($Script:IsWin11) {
-        Invoke-WithRetry -OperationName "Reset Taskbar" -Action {
-            $Ok  = Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarAl" -DefaultIfMissing "1"
-            $Ok  = (Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarDa" -DefaultIfMissing "1") -and $Ok
-            $Ok  = (Restore-OriginalRegValue -TweakKey "Taskbar" -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarMn" -DefaultIfMissing "1") -and $Ok
-            if ($Ok) { Write-Success "Taskbar layout reverted." } else { Write-ErrorX "Taskbar layout reset incomplete - see the error(s) above." }
-        } | Out-Null
+        Invoke-WithRetry -OperationName "Reset Taskbar" -Action { Restore-TaskbarTweak } | Out-Null
     }
-
-    Invoke-WithRetry -OperationName "Reset Game Mode" -Action {
-        $Ok  = Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\Software\Microsoft\GameBar" -Name "AllowAutoGameMode" -DefaultIfMissing "0"
-        $Ok  = (Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -DefaultIfMissing "0") -and $Ok
-        $Ok  = (Restore-OriginalRegValue -TweakKey "GameMode" -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -DefaultIfMissing "1") -and $Ok
-        if ($Ok) { Write-Success "Game Mode / Game Bar settings reverted." } else { Write-ErrorX "Game Mode reset incomplete - see the error(s) above." }
-    } | Out-Null
-
-    Invoke-WithRetry -OperationName "Reset Classic Context Menu" -Action {
-        Remove-RegKey -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}"
-        Write-Success "Windows 11 context menu reverted to modern default."
-    } | Out-Null
-
-    Invoke-WithRetry -OperationName "Reset Telemetry" -Action {
-        if (Restore-OriginalRegValue -TweakKey "Telemetry" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "AllowTelemetry" -DefaultIfMissing "3") {
-            Write-Success "Telemetry policy value reverted."
-        } else {
-            Write-ErrorX "Telemetry policy reset failed - see the error above."
-        }
-    } | Out-Null
-
-    Invoke-WithRetry -OperationName "Reset Advertising ID" -Action {
-        if (Restore-OriginalRegValue -TweakKey "AdvertisingID" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name "Enabled" -DefaultIfMissing "1") {
-            Write-Success "Advertising ID reverted."
-        } else {
-            Write-ErrorX "Advertising ID reset failed - see the error above."
-        }
-    } | Out-Null
-
-    Invoke-WithRetry -OperationName "Reset Activity History" -Action {
-        $Ok  = Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableActivityFeed" -DefaultIfMissing "1"
-        $Ok  = (Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "PublishUserActivities" -DefaultIfMissing "1") -and $Ok
-        $Ok  = (Restore-OriginalRegValue -TweakKey "ActivityHistory" -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "UploadUserActivities" -DefaultIfMissing "1") -and $Ok
-        if ($Ok) { Write-Success "Activity History sync reverted." } else { Write-ErrorX "Activity History reset incomplete - see the error(s) above." }
-    } | Out-Null
+    Invoke-WithRetry -OperationName "Reset Game Mode" -Action { Restore-GameModeTweak } | Out-Null
+    Invoke-WithRetry -OperationName "Reset Classic Context Menu" -Action { Restore-ClassicContextMenuTweak } | Out-Null
+    Invoke-WithRetry -OperationName "Reset Telemetry" -Action { Restore-TelemetryTweak } | Out-Null
+    Invoke-WithRetry -OperationName "Reset Advertising ID" -Action { Restore-AdvertisingIDTweak } | Out-Null
+    Invoke-WithRetry -OperationName "Reset Activity History" -Action { Restore-ActivityHistoryTweak } | Out-Null
 
     Write-Success "Reset-All-Tweaks pass complete."
     Write-Warn "A restart or sign-out is recommended so every reverted setting takes full effect."

@@ -35,6 +35,13 @@ _PROGRAMMATIC = {
     # that runs its own PowerShellTask — widgets.ActivationStatusDialog —
     # rather than through main.py's single-task pipeline.
     "ActivationStatus",
+    # v1.0 two-way toggles: reached from the re-apply/revert choice dialog
+    # via main._REVERT_TASKS (whose literal strings are what
+    # test_programmatic_tasks_are_actually_referenced reads), never from a
+    # card's own `task` value.
+    "RevertDarkMode", "RevertDisableMouseAccel", "RevertMinimalistTaskbar",
+    "RevertClassicContextMenu", "RevertGameMode", "RevertDisableTelemetry",
+    "RevertDisableAdvertisingID", "RevertDisableActivityHistory",
 }
 
 
@@ -200,6 +207,82 @@ class TestStateProbe:
                     "report 'unknown' forever")
 
 
+_CATALOGS = os.path.join(_ROOT, "src/backend/modules/01-Catalogs.ps1")
+
+
+def _backend_admin_tasks() -> set[str]:
+    """$Script:AdminRequiredTasks, the backend's own elevation gate."""
+    src = open(_CATALOGS, encoding="utf-8-sig").read()
+    start = src.index("$Script:AdminRequiredTasks")
+    body = src[start:src.index(")", start)]
+    return set(re.findall(r'"([A-Za-z0-9_]+)"', body))
+
+
+class TestRevertToggles:
+    """The v1.0 two-way toggle contract. A revert is the inverse of one
+    specific apply, and the two must agree about elevation and about
+    existing at all — a card offering 'Revert to Default' that dead-ends
+    in an access-denied (or in no dispatcher case) is worse than no
+    toggle, because the user has been told the undo exists."""
+
+    @staticmethod
+    def _revert_map() -> dict[str, str]:
+        main = open(os.path.join(_ROOT, "src/frontend/main.py"),
+                    encoding="utf-8").read()
+        start = main.index("_REVERT_TASKS: dict[str, str] = {")
+        body = main[start:main.index("}", start)]
+        return dict(re.findall(r'"([A-Za-z0-9_]+)"\s*:\s*"([A-Za-z0-9_]+)"',
+                               body))
+
+    def test_the_map_was_parsed(self):
+        assert len(self._revert_map()) >= 8
+
+    def test_every_revert_has_a_dispatcher_case(self):
+        missing = sorted(set(self._revert_map().values()) - _dispatcher_cases())
+        assert not missing, f"revert tasks with no dispatcher case: {missing}"
+
+    def test_every_apply_counterpart_is_a_real_gui_task(self):
+        gui = {t for t in _gui_tasks() if not t.startswith("@")}
+        orphans = sorted(set(self._revert_map()) - gui)
+        assert not orphans, (
+            f"_REVERT_TASKS keys that are not GUI tasks: {orphans} — the "
+            "toggle would never trigger")
+
+    def test_revert_admin_gating_matches_apply(self):
+        """A revert writes the same hives its apply wrote, so it needs the
+        same rights. Mismatch in either direction is a bug: under-gating
+        reaches HKLM and fails with access-denied instead of prompting to
+        elevate; over-gating raises a UAC prompt to undo an HKCU setting
+        the session already owns."""
+        backend = _backend_admin_tasks()
+        wrong = []
+        for apply_task, revert_task in sorted(self._revert_map().items()):
+            if (apply_task in backend) != (revert_task in backend):
+                wrong.append(
+                    f"{apply_task}={'admin' if apply_task in backend else 'user'} "
+                    f"but {revert_task}="
+                    f"{'admin' if revert_task in backend else 'user'}")
+        assert not wrong, (
+            "revert/apply elevation mismatch in $Script:AdminRequiredTasks "
+            "(01-Catalogs.ps1):\n  " + "\n  ".join(wrong))
+
+    def test_reverts_are_not_offered_for_irreversible_tasks(self):
+        """The exclusion list is a safety property, not an oversight. A
+        removal is undone by REINSTALLING (its own deliberate action, with
+        its own download), the hibernation pair are each other's inverse
+        already, a power plan switch is a choice rather than a tweak, and
+        NetworkOptimization is transient with nothing to restore."""
+        forbidden = {
+            "RemoveEdge", "RemoveOneDrive", "RemoveWindowsOld",
+            "RemoveBloatware", "DisableHibernation", "EnableHibernation",
+            "UltimatePowerPlan", "NetworkOptimization", "ApplyAllPrivacy",
+        }
+        offered = sorted(forbidden & set(self._revert_map()))
+        assert not offered, (
+            f"click-to-revert offered for irreversible/inapplicable "
+            f"task(s): {offered}")
+
+
 def test_local_actions_are_marked_with_an_at_sign():
     local = {t for t in _gui_tasks() if t.startswith("@")}
     assert local, "the '@' convention for GUI-local actions has vanished"
@@ -265,6 +348,33 @@ def test_activation_module_is_read_only():
         f"13-Activation.ps1 contains state-changing or remote-code call(s): "
         f"{found}. This module is a read-only report; activation is Windows' "
         "own job, reached through the Settings deep link in the dialog.")
+
+
+def test_activation_dialog_hands_off_to_settings_only():
+    """The frontend half of the activation contract (v1.0). The dialog's
+    one actionable hand-off is Windows' own Settings page, opened as a URI
+    through QDesktopServices — never a spawned process, never a script.
+    Pinned because this is the zero-bloat promise most tempting to erode:
+    'just run slmgr for the user' is one convenient commit away.
+    """
+    from frontend.widgets import ActivationStatusDialog
+
+    assert ActivationStatusDialog.SETTINGS_URI == "ms-settings:activation"
+    assert ActivationStatusDialog.DOCS_URL.startswith(
+        "https://support.microsoft.com/")
+
+    # The dialog's implementation must not grow a process spawn. Scoped to
+    # the class body so the rest of widgets.py (which legitimately spawns
+    # PowerShell workers) stays out of scope.
+    widgets_src = open(os.path.join(_ROOT, "src/frontend/widgets.py"),
+                       encoding="utf-8").read()
+    start = widgets_src.index("class ActivationStatusDialog")
+    end = widgets_src.index("\nclass ", start + 1)
+    body = widgets_src[start:end]
+    for spawn in ("subprocess.", "os.system", "os.startfile", "Popen("):
+        assert spawn not in body, (
+            f"ActivationStatusDialog gained a process spawn ({spawn!r}) — "
+            "its contract is report + ms-settings hand-off only")
 
 
 _BACKEND_DIR = os.path.join(_ROOT, "src/backend")

@@ -527,6 +527,75 @@ function Invoke-GuiTask {
                     -FailureMessage "Activity History settings could not be changed."
                 break
             }
+
+            # ========================================================
+            #  TWO-WAY TOGGLES (v1.0) — per-tweak reverts
+            #
+            #  Each case is the inverse of the tweak case above it, backed
+            #  by 02-Safety.ps1's Restore-*Tweak functions — the SAME code
+            #  the bulk "Reset All Tweaks" composes, so the card toggle and
+            #  the bulk reset can never disagree about what "revert" means.
+            #  Reached from the GUI's re-apply/revert choice dialog
+            #  (main._REVERT_TASKS); confirmation happened there, and the
+            #  restore targets backed-up original values, so no restore
+            #  point is minted for what is itself an undo.
+            # ========================================================
+            "RevertDarkMode" {
+                Write-Log "GUI-TASK: reverting Dark Mode to original values."
+                Complete-GuiTask -Action { Restore-DarkModeTweak } `
+                    -SuccessMessage "Dark Mode reverted to your original values (or Windows defaults)." `
+                    -FailureMessage "Dark Mode could not be fully reverted."
+                break
+            }
+            "RevertDisableMouseAccel" {
+                Write-Log "GUI-TASK: reverting mouse acceleration settings."
+                Complete-GuiTask -Action { Restore-MouseAccelTweak } `
+                    -SuccessMessage "Mouse acceleration reverted to your original values (or Windows defaults)." `
+                    -FailureMessage "Mouse acceleration could not be fully reverted."
+                break
+            }
+            "RevertMinimalistTaskbar" {
+                Write-Log "GUI-TASK: reverting taskbar layout."
+                Complete-GuiTask -Action { Restore-TaskbarTweak } `
+                    -SuccessMessage "Taskbar layout reverted. Sign out or restart Explorer to see the change." `
+                    -FailureMessage "The taskbar layout could not be fully reverted."
+                break
+            }
+            "RevertClassicContextMenu" {
+                Write-Log "GUI-TASK: reverting to the modern context menu."
+                Complete-GuiTask -Action { Restore-ClassicContextMenuTweak } `
+                    -SuccessMessage "Windows 11 context menu reverted to the modern default. Sign out or restart Explorer to see the change." `
+                    -FailureMessage "The context menu could not be reverted."
+                break
+            }
+            "RevertGameMode" {
+                Write-Log "GUI-TASK: reverting Game Mode / Game Bar settings."
+                Complete-GuiTask -Action { Restore-GameModeTweak } `
+                    -SuccessMessage "Game Mode and Game Bar settings reverted to your original values." `
+                    -FailureMessage "Game Mode settings could not be fully reverted."
+                break
+            }
+            "RevertDisableTelemetry" {
+                Write-Log "GUI-TASK: reverting the telemetry policy value."
+                Complete-GuiTask -Action { Restore-TelemetryTweak } `
+                    -SuccessMessage "Telemetry policy reverted to your original value. Service start types can be restored via Safety > Restore Services." `
+                    -FailureMessage "The telemetry policy could not be reverted."
+                break
+            }
+            "RevertDisableAdvertisingID" {
+                Write-Log "GUI-TASK: reverting the Advertising ID setting."
+                Complete-GuiTask -Action { Restore-AdvertisingIDTweak } `
+                    -SuccessMessage "Advertising ID reverted to your original setting." `
+                    -FailureMessage "The Advertising ID setting could not be reverted."
+                break
+            }
+            "RevertDisableActivityHistory" {
+                Write-Log "GUI-TASK: reverting Activity History policy values."
+                Complete-GuiTask -Action { Restore-ActivityHistoryTweak } `
+                    -SuccessMessage "Activity History settings reverted to your original values." `
+                    -FailureMessage "Activity History settings could not be fully reverted."
+                break
+            }
             "ApplyAllPrivacy" {
                 Complete-GuiTask -Action {
                     Remove-Bloatware

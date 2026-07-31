@@ -438,5 +438,14 @@ $Script:AdminRequiredTasks = @(
     "NetworkOptimization","UltimatePowerPlan","RemoveOneDrive","RemoveEdge",
     "CreateRestorePoint","DriverBackup","RestoreServices","RestoreEdge","RestoreOneDrive","ApplyAllPrivacy",
     "ResetTweaks","InstallOfficeODT","InstallOfficeODTAuto",
-    "StartupDisableItem","StartupEnableItem"
+    "StartupDisableItem","StartupEnableItem",
+    # v1.0 two-way toggles. Only the two that write HKLM POLICY keys are
+    # listed - a revert needs exactly the rights its apply-counterpart
+    # needed, and the other six restore HKCU values an unelevated session
+    # owns. Listing those would raise a needless UAC prompt to undo a
+    # per-user setting; omitting these two would let the restore reach
+    # HKLM and fail with access-denied instead of being blocked cleanly.
+    # tests/test_contract.py::test_revert_admin_gating_matches_apply pins
+    # the pairing so the two lists cannot drift apart.
+    "RevertDisableTelemetry","RevertDisableActivityHistory"
 )

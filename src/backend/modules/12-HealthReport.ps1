@@ -133,12 +133,19 @@ function Get-PulseHealthReport {
     $tweaks = $null
     try { $tweaks = Get-PulseTweakState } catch { $tweaks = $null }
 
+    # v1.0: the probe emits verdict STRINGS ("applied"/"default"/"mixed"/
+    # $null) rather than booleans — matched explicitly, because in
+    # PowerShell any non-empty string is truthy and a bare `elseif
+    # ($value)` would have counted "default" as applied. "mixed" counts
+    # toward notApplied for the summary: a partially-reverted tweak is
+    # drift, which is exactly what that number exists to surface (the
+    # per-row table below still shows it as its own MODIFIED state).
     $applied = 0; $notApplied = 0; $unknown = 0
     if ($tweaks) {
         foreach ($key in $tweaks.Keys) {
             $value = $tweaks[$key]
             if ($null -eq $value) { $unknown++ }
-            elseif ($value) { $applied++ }
+            elseif ($value -eq "applied") { $applied++ }
             else { $notApplied++ }
         }
     }

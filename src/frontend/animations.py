@@ -79,6 +79,11 @@ class GlowController(QObject):
         self._intensity = 0.0
         self._cursor = QPointF()
         self.color = QColor(accent)
+        # Per-mode glow weights (theme.glow_alphas) — owned here so every
+        # paint site reads the same pair it already reads color/intensity
+        # from. Defaults match dark mode; apply_theme overwrites both.
+        self.halo_alpha = 0.38
+        self.edge_alpha = 0.90
 
         self._anim = QVariantAnimation(self)
         self._anim.setDuration(HOVER_MS)
@@ -100,6 +105,13 @@ class GlowController(QObject):
     def set_accent(self, accent: str):
         """Live theme switch — next repaint uses the new color."""
         self.color = QColor(accent)
+        self._widget.update()
+
+    def set_alphas(self, halo: float, edge: float):
+        """Live theme switch for the glow weights — call alongside
+        set_accent with theme.glow_alphas(t)."""
+        self.halo_alpha = halo
+        self.edge_alpha = edge
         self._widget.update()
 
     # -- internals --------------------------------------------
@@ -128,12 +140,18 @@ class GlowController(QObject):
 
 def paint_glow_frame(painter: QPainter, rect, radius: int,
                      color: QColor, intensity: float,
-                     cursor: QPointF | None = None):
+                     cursor: QPointF | None = None,
+                     halo_alpha: float = 0.38, edge_alpha: float = 0.90):
     """Paint a radial-gradient border glow centered on the cursor.
 
     Two gradient strokes on a rounded rect — no offscreen buffers, no
     effects, safe to call on every repaint. Cost is negligible even with
     a full grid of cards hovered rapidly.
+
+    halo_alpha / edge_alpha are per-mode weights (theme.glow_alphas);
+    call sites that own a GlowController pass its `.halo_alpha` /
+    `.edge_alpha` so a theme switch retunes every glow at once. Defaults
+    are the dark-mode pair.
     """
     if intensity <= 0.01:
         return
@@ -148,7 +166,7 @@ def paint_glow_frame(painter: QPainter, rect, radius: int,
     # pass 1: soft outer halo
     halo = QRadialGradient(center, reach)
     c = QColor(color)
-    c.setAlphaF(0.38 * intensity)
+    c.setAlphaF(halo_alpha * intensity)
     halo.setColorAt(0.0, c)
     c2 = QColor(color)
     c2.setAlphaF(0.0)
@@ -159,7 +177,7 @@ def paint_glow_frame(painter: QPainter, rect, radius: int,
     # pass 2: crisp inner edge
     edge = QRadialGradient(center, reach * 0.8)
     e1 = QColor(color)
-    e1.setAlphaF(0.90 * intensity)
+    e1.setAlphaF(edge_alpha * intensity)
     edge.setColorAt(0.0, e1)
     e2 = QColor(color)
     e2.setAlphaF(0.10 * intensity)

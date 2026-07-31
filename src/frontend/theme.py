@@ -242,6 +242,26 @@ def shadow_alphas(t: dict) -> tuple[float, int]:
     return (0.26, 6)
 
 
+def glow_alphas(t: dict) -> tuple[float, float]:
+    """(halo_alpha, edge_alpha) for animations.paint_glow_frame — the
+    cursor-tracking hover sweep: a soft outer halo plus a crisp inner edge.
+
+    Split per mode in v1.0 for the same reason bevel_alphas is: the two
+    canvases receive colored light differently. On obsidian the halo IS the
+    benchmark effect — a low bloom around the cursor that reads as light
+    landing on a dark surface — so dark keeps the original weights. On the
+    macOS-light card the same halo fails: the light accents are
+    ink-saturated (they must be, to clear AA on white), and 0.38 of an ink
+    pigment over #FFFFFF reads as a colored smear on paper, not as light.
+    Light mode therefore spends its budget on the crisp edge — the hairline
+    lighting up, macOS's own hover language — and keeps only a whisper of
+    halo.
+    """
+    if t["name"] == "light":
+        return (0.22, 0.80)
+    return (0.38, 0.90)
+
+
 # ============================================================
 #  ICON SYSTEM — monochrome Fluent line-icons (v7)
 # ============================================================
@@ -858,15 +878,43 @@ def card_meta_pill_qss(t: dict, accent: str = "") -> str:
     """
 
 
-def applied_chip_qss(t: dict) -> str:
-    """The 'APPLIED' chip on a card whose tweak the backend probe reports
-    as currently in effect (v10). Uses the `ok` token — this is a
-    confirmation of system state, not an alert — and stays small and quiet
-    so a page of applied tweaks reads as reassuring rather than shouty."""
+def state_chip_qss(t: dict, verdict: str) -> str:
+    """The tri-state badge on a probed card (v1.0, extending v10's binary
+    'APPLIED' chip to the full verdict set the probe now reports):
+
+        applied  -> `ok` tone   — a confirmation of system state, not an
+                                  alert; small and quiet so a page of
+                                  applied tweaks reads as reassuring.
+        mixed    -> `warn` tone — MODIFIED: partially applied, partially
+                                  reverted, or edited outside Pulse. Amber,
+                                  not red: it is a heads-up, not a failure.
+        default  -> neutral     — shown only on the two-way toggle cards
+                                  (main._REVERT_TASKS), where "at Windows
+                                  defaults" is the answer to a question the
+                                  card genuinely poses. Outline-only: a
+                                  resting state must not compete with the
+                                  two toned verdicts beside it.
+
+    The toned pair keeps the 0.12 self-tint the v11 status tokens were
+    re-solved for (see the `ok`/`warn`/`err` note in _LIGHT)."""
+    if verdict == "applied":
+        color = t["ok"]
+    elif verdict in ("mixed", "due"):
+        # ACTION DUE shares MODIFIED's amber: both mean "this needs your
+        # attention", neither means an operation failed. Red stays reserved
+        # for failure, which is what makes it legible when it appears.
+        color = t["warn"]
+    else:
+        return f"""
+            color: {t['text_faint']}; font-size: 9px; font-weight: 700;
+            background: transparent;
+            border: 1px solid {t['panel_line']};
+            border-radius: {RADIUS['chip']}px; padding: 2px 8px; letter-spacing: 1px;
+        """
     return f"""
-        color: {t['ok']}; font-size: 9px; font-weight: 700;
-        background: {alpha(t['ok'], 0.12)};
-        border: 1px solid {alpha(t['ok'], 0.38)};
+        color: {color}; font-size: 9px; font-weight: 700;
+        background: {alpha(color, 0.12)};
+        border: 1px solid {alpha(color, 0.38)};
         border-radius: {RADIUS['chip']}px; padding: 2px 8px; letter-spacing: 1px;
     """
 
@@ -933,6 +981,73 @@ def filter_input_qss(t: dict, accent: str) -> str:
         QLineEdit:focus {{
             border: 1px solid {alpha(accent, 0.65)};
             background: {t['card']};
+        }}
+    """
+
+
+def sidebar_search_qss(t: dict) -> str:
+    """The sidebar's global-search affordance — a button dressed as a quiet
+    input field (the Linear / Raycast sidebar-search pattern): ghost fill,
+    hairline border, placeholder-toned label. It OPENS the Ctrl+K palette
+    rather than filtering in place, so it stays a discoverable 36px
+    doorway instead of a second search implementation for the palette to
+    disagree with."""
+    return f"""
+        QPushButton {{
+            background: {t['panel']};
+            color: {t['text_faint']};
+            border: 1px solid {t['panel_line']};
+            border-radius: {RADIUS['control']}px;
+            padding: 0 12px;
+            font-size: 12px;
+            text-align: left;
+        }}
+        QPushButton:hover {{
+            border: 1px solid {alpha(t['accent'], 0.45)};
+            color: {t['text_muted']};
+            background: {t['card_hover']};
+        }}
+    """
+
+
+def filter_combo_qss(t: dict, accent: str) -> str:
+    """The category header's STATUS filter (v1.0), replacing the free-text
+    box that used to compete with the global search doorway.
+
+    Same quiet-until-engaged material as the old input (this refines a page
+    you are already on), plus the two things a QComboBox needs to not look
+    like stock Qt: a borderless drop-arrow cell, and an explicitly themed
+    popup — the dropdown list is a separate top-level widget and inherits
+    NOTHING from the field, so without QAbstractItemView styling it renders
+    in the platform palette, which on a dark canvas is a white sheet."""
+    return f"""
+        QComboBox {{
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']};
+            border-radius: {RADIUS['control']}px;
+            color: {t['text']};
+            font-size: 12px;
+            padding: 0 10px;
+        }}
+        QComboBox:hover {{ border: 1px solid {alpha(accent, 0.45)}; }}
+        QComboBox:focus {{ border: 1px solid {alpha(accent, 0.65)}; }}
+        QComboBox::drop-down {{ border: none; width: 22px; }}
+        QComboBox::down-arrow {{
+            image: none;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid {t['text_faint']};
+            margin-right: 8px;
+        }}
+        QComboBox QAbstractItemView {{
+            background: {t['dialog_bg']};
+            border: 1px solid {t['card_line']};
+            border-radius: {RADIUS['control']}px;
+            color: {t['text']};
+            padding: 4px;
+            outline: none;
+            selection-background-color: {alpha(accent, 0.22)};
+            selection-color: {t['text']};
         }}
     """
 

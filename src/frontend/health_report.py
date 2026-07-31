@@ -62,13 +62,19 @@ def tweak_rows(report: dict) -> list[tuple[str, str, str]]:
     tweaks = report.get("tweaks") or {}
     if not isinstance(tweaks, dict):
         return []
-    rank = {"not-applied": 0, "unknown": 1, "applied": 2}
+    # v1.0: the probe reports verdict strings; "mixed" (partially applied /
+    # edited outside Pulse) outranks even not-applied in the sort — a tweak
+    # in a state Pulse never wrote is the row a technician reads first.
+    # Legacy booleans still normalise, so an old exported JSON re-renders.
+    rank = {"modified": 0, "not-applied": 1, "unknown": 2, "applied": 3}
     rows = []
     for task, value in tweaks.items():
         if value is None:
             state = "unknown"
-        elif value:
+        elif value in ("applied", True):
             state = "applied"
+        elif value == "mixed":
+            state = "modified"
         else:
             state = "not-applied"
         rows.append((TWEAK_LABELS.get(task, task), state, task))
@@ -190,7 +196,7 @@ def to_html(report: dict) -> str:
         if startup.get("total") is not None else "Unavailable")
 
     state_labels = {"applied": "Applied", "not-applied": "Not applied",
-                    "unknown": "Unknown"}
+                    "modified": "Modified", "unknown": "Unknown"}
     tweak_html = "".join(
         f"<tr><th>{esc(label)}</th>"
         f"<td><span class='pill {state}'>{state_labels[state]}</span></td></tr>"
@@ -236,6 +242,7 @@ def to_html(report: dict) -> str:
     font-size: 12px; font-weight: 600; }}
   .applied {{ background: #e4f5ea; color: #1a7f37; }}
   .not-applied {{ background: #fdeaea; color: #b42318; }}
+  .modified {{ background: #fdf3e0; color: #915f00; }}
   .unknown {{ background: #eef1f6; color: #667085; }}
   ul {{ margin: 6px 0 0; padding-left: 20px; }}
   li {{ margin: 4px 0; }}
@@ -254,6 +261,7 @@ def to_html(report: dict) -> str:
     .totals div {{ background: #212734; }}
     .applied {{ background: #16301f; color: #56d07f; }}
     .not-applied {{ background: #3a1c1c; color: #f28b82; }}
+    .modified {{ background: #33270f; color: #e3b341; }}
     .unknown {{ background: #262c39; color: #98a1b5; }}
     .ok-note {{ color: #56d07f; }}
   }}

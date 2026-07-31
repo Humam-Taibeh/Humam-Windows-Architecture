@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     11-StateProbe.ps1 - read-only "is this tweak currently applied?" probe.
@@ -8,7 +8,7 @@
     already in effect. Every card was fire-and-forget: the only way to
     answer "did I already do this?" was to run the operation again and
     read the log. This module answers it directly, so the GUI can show an
-    "Applied" state on the cards whose effect is readable.
+    applied-state badge on the cards whose effect is readable.
 
     HARD CONTRACT - this file is READ-ONLY:
       * It MUST NOT write to the registry, touch services, create restore
@@ -24,18 +24,29 @@
         reported as $null rather than escalating; an unelevated Pulse
         still gets a useful answer for every HKCU-based tweak.
 
-    States returned per key: $true (applied) / $false (not applied) /
-    $null (unknown - unreadable on this machine or in this session).
+    VERDICTS (v1.0 - the tri-state badge contract). Each key now carries
+    one of FOUR values rather than the old boolean triple, because a
+    multi-value tweak has a state a boolean cannot express - two of its
+    three registry values matching is neither "applied" nor "not":
+        "applied"  every readable check matches the tweak's values
+        "default"  every readable check differs (the system default /
+                   reverted state)
+        "mixed"    some readable checks match and some differ - the tweak
+                   was partially applied, partially reverted, or edited
+                   outside Pulse. The GUI renders this as MODIFIED.
+        $null      nothing could be read at all - unknown, and rendered
+                   as nothing, never as a guess.
 #>
 
-function Test-RegValueEquals {
-    <# $true when EVERY (Path, Name, Value) triple matches, $false when any
-       readable one differs, $null when nothing could be read at all (the
-       key doesn't exist / access denied) - so "unknown" never masquerades
-       as "not applied", which would show a misleading un-Applied card. #>
+function Get-RegVerdict {
+    <# The verdict for a set of (Path, Name, Value) triples - see the
+       header's VERDICTS block. Unreadable entries are skipped rather than
+       counted, so "unknown" never masquerades as "default", which would
+       show a misleading un-applied card. #>
     param([Parameter(Mandatory)][array]$Checks)
 
-    $readAny = $false
+    $Matched = 0
+    $Differed = 0
     foreach ($check in $Checks) {
         $value = $null
         try {
@@ -53,11 +64,12 @@ function Test-RegValueEquals {
             continue     # unreadable entry - fall through to the next one
         }
         if ($null -eq $value) { continue }
-        $readAny = $true
-        if ([string]$value -ne [string]$check.Value) { return $false }
+        if ([string]$value -eq [string]$check.Value) { $Matched++ } else { $Differed++ }
     }
-    if (-not $readAny) { return $null }
-    return $true
+    if ($Matched -eq 0 -and $Differed -eq 0) { return $null }
+    if ($Differed -eq 0) { return "applied" }
+    if ($Matched -eq 0) { return "default" }
+    return "mixed"
 }
 
 function Get-PulseTweakState {
@@ -68,13 +80,13 @@ function Get-PulseTweakState {
     $state = [ordered]@{}
 
     # -- Global Dark Mode ------------------------------------------------
-    $state["DarkMode"] = Test-RegValueEquals -Checks @(
+    $state["DarkMode"] = Get-RegVerdict -Checks @(
         @{ Path = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"; Name = "AppsUseLightTheme";   Value = 0 },
         @{ Path = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"; Name = "SystemUsesLightTheme"; Value = 0 }
     )
 
     # -- Mouse acceleration ----------------------------------------------
-    $state["DisableMouseAccel"] = Test-RegValueEquals -Checks @(
+    $state["DisableMouseAccel"] = Get-RegVerdict -Checks @(
         @{ Path = "HKCU:\Control Panel\Mouse"; Name = "MouseSpeed";      Value = 0 },
         @{ Path = "HKCU:\Control Panel\Mouse"; Name = "MouseThreshold1"; Value = 0 },
         @{ Path = "HKCU:\Control Panel\Mouse"; Name = "MouseThreshold2"; Value = 0 }
@@ -82,20 +94,22 @@ function Get-PulseTweakState {
 
     # -- Minimalist taskbar (Windows 11 only) ----------------------------
     if ($Script:OSBuild -ge 22000) {
-        $state["MinimalistTaskbar"] = Test-RegValueEquals -Checks @(
+        $state["MinimalistTaskbar"] = Get-RegVerdict -Checks @(
             @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"; Name = "TaskbarAl"; Value = 0 },
             @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"; Name = "TaskbarDa"; Value = 0 }
         )
         # Classic context menu: the tweak is the PRESENCE of the CLSID
         # InprocServer32 key with an empty default value, so absence is a
-        # definite "not applied" rather than an unknown.
+        # definite "default" rather than an unknown. A key that exists with
+        # a non-empty default is neither state - "mixed" is the honest word
+        # for a half-formed tweak.
         $classic = Resolve-UserRegPath "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
         try {
             if (Test-Path $classic -ErrorAction Stop) {
                 $default = (Get-ItemProperty -Path $classic -ErrorAction Stop).'(default)'
-                $state["ClassicContextMenu"] = ($default -eq "")
+                $state["ClassicContextMenu"] = if ($default -eq "") { "applied" } else { "mixed" }
             } else {
-                $state["ClassicContextMenu"] = $false
+                $state["ClassicContextMenu"] = "default"
             }
         } catch {
             $state["ClassicContextMenu"] = $null
@@ -106,23 +120,29 @@ function Get-PulseTweakState {
     }
 
     # -- Game Mode & Game DVR --------------------------------------------
-    $state["GameMode"] = Test-RegValueEquals -Checks @(
+    $state["GameMode"] = Get-RegVerdict -Checks @(
         @{ Path = "HKCU:\Software\Microsoft\GameBar";     Name = "AutoGameModeEnabled"; Value = 1 },
         @{ Path = "HKCU:\System\GameConfigStore";         Name = "GameDVR_Enabled";     Value = 0 }
     )
 
     # -- Advertising ID ---------------------------------------------------
-    $state["DisableAdvertisingID"] = Test-RegValueEquals -Checks @(
+    $state["DisableAdvertisingID"] = Get-RegVerdict -Checks @(
         @{ Path = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\AdvertisingInfo"; Name = "Enabled"; Value = 0 }
     )
 
     # -- Activity history (HKLM policy; readable unelevated) -------------
-    $state["DisableActivityHistory"] = Test-RegValueEquals -Checks @(
+    $state["DisableActivityHistory"] = Get-RegVerdict -Checks @(
         @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System"; Name = "EnableActivityFeed"; Value = 0 }
     )
 
     # -- Telemetry: policy value AND the DiagTrack service ---------------
-    $telemetryPolicy = Test-RegValueEquals -Checks @(
+    # The policy is the tweak's primary switch; the service is its second
+    # half. Policy applied but service still running is the textbook
+    # "mixed" - half the tweak is in effect. Policy at default reads as
+    # "default" regardless of the service: DiagTrack's start type varies
+    # across editions and other tools, and letting it alone flag MODIFIED
+    # would badge machines Pulse never touched.
+    $telemetryPolicy = Get-RegVerdict -Checks @(
         @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"; Name = "AllowTelemetry"; Value = 0 }
     )
     $diagTrackOff = $null
@@ -135,8 +155,10 @@ function Get-PulseTweakState {
     }
     if ($null -eq $telemetryPolicy) {
         $state["DisableTelemetry"] = $null
+    } elseif ($telemetryPolicy -eq "applied") {
+        $state["DisableTelemetry"] = if ($diagTrackOff) { "applied" } else { "mixed" }
     } else {
-        $state["DisableTelemetry"] = ($telemetryPolicy -and $diagTrackOff)
+        $state["DisableTelemetry"] = "default"
     }
 
     # -- Hibernation (mutually exclusive pair) ---------------------------
@@ -144,8 +166,8 @@ function Get-PulseTweakState {
     # failed probe is reported as unknown rather than "off".
     try {
         $hiberOn = Test-Path "$env:SystemDrive\hiberfil.sys" -ErrorAction Stop
-        $state["DisableHibernation"] = (-not $hiberOn)
-        $state["EnableHibernation"] = $hiberOn
+        $state["DisableHibernation"] = if ($hiberOn) { "default" } else { "applied" }
+        $state["EnableHibernation"] = if ($hiberOn) { "applied" } else { "default" }
     } catch {
         $state["DisableHibernation"] = $null
         $state["EnableHibernation"] = $null
@@ -157,7 +179,7 @@ function Get-PulseTweakState {
         if ([string]::IsNullOrWhiteSpace($active)) {
             $state["UltimatePowerPlan"] = $null
         } else {
-            $state["UltimatePowerPlan"] = ($active -match "Pulse|Ultimate Performance|Humam Ultimate")
+            $state["UltimatePowerPlan"] = if ($active -match "Pulse|Ultimate Performance|Humam Ultimate") { "applied" } else { "default" }
         }
     } catch {
         $state["UltimatePowerPlan"] = $null
@@ -188,12 +210,12 @@ function Get-PulseTweakState {
 
     # -- Edge / OneDrive: absent means removed ---------------------------
     try {
-        $state["RemoveEdge"] = (-not (Test-MicrosoftEdgeInstalled))
+        $state["RemoveEdge"] = if (Test-MicrosoftEdgeInstalled) { "default" } else { "applied" }
     } catch {
         $state["RemoveEdge"] = $null
     }
     try {
-        $state["RemoveOneDrive"] = (-not (Test-OneDriveInstalled))
+        $state["RemoveOneDrive"] = if (Test-OneDriveInstalled) { "default" } else { "applied" }
     } catch {
         $state["RemoveOneDrive"] = $null
     }
@@ -202,7 +224,7 @@ function Get-PulseTweakState {
     # Test-Path on the folder itself needs no elevation even though
     # ENUMERATING it does, so this stays honest for an unelevated session.
     try {
-        $state["RemoveWindowsOld"] = (-not (Test-Path "$env:SystemDrive\Windows.old" -ErrorAction Stop))
+        $state["RemoveWindowsOld"] = if (Test-Path "$env:SystemDrive\Windows.old" -ErrorAction Stop) { "default" } else { "applied" }
     } catch {
         $state["RemoveWindowsOld"] = $null
     }
@@ -213,13 +235,16 @@ function Get-PulseTweakState {
     # $Script:BloatApps is empty. A machine where the catalog was never
     # applied but the packages were never present either reads as applied,
     # which is the truthful answer to "is this bloatware on my system?".
+    # Deliberately binary (never "mixed"): the probe cannot distinguish
+    # "half removed" from "half never installed", and MODIFIED would claim
+    # a knowledge of history it does not have.
     try {
         if (-not $Script:BloatApps) {
             $state["RemoveBloatware"] = $null      # catalog missing - can't judge
         } else {
             $installed = @(Get-AppxPackage -ErrorAction Stop | Select-Object -ExpandProperty Name -ErrorAction Stop)
             $remaining = @($Script:BloatApps | Where-Object { $installed -contains $_ })
-            $state["RemoveBloatware"] = ($remaining.Count -eq 0)
+            $state["RemoveBloatware"] = if ($remaining.Count -eq 0) { "applied" } else { "default" }
         }
     } catch {
         # Appx subsystem unavailable / policy-locked / Server Core
@@ -230,21 +255,25 @@ function Get-PulseTweakState {
     # ApplyAllPrivacy runs Remove-Bloatware, Disable-Telemetry,
     # Disable-AdvertisingID and Disable-ActivityHistory (see
     # 30-GuiDispatcher.ps1), so it has no state of its own to read; it is
-    # applied exactly when all four are. Three-state logic is preserved
-    # rather than collapsed: one definite $false means the pass is
-    # definitely incomplete, but an unreadable component means UNKNOWN —
-    # never let a $null quietly count as "not applied" and show a card as
+    # applied exactly when all four are. Verdict composition preserves the
+    # three-state honesty and adds the mixed case: any part at default
+    # while another is applied means the pass is PARTIALLY in effect —
+    # "mixed" — whereas an unreadable component still means UNKNOWN; never
+    # let a $null quietly count as "default" and show the pass as
     # un-applied when the truth is that we could not tell.
     $privacyParts = @(
         $state["RemoveBloatware"], $state["DisableTelemetry"],
         $state["DisableAdvertisingID"], $state["DisableActivityHistory"]
     )
-    if ($privacyParts -contains $false) {
-        $state["ApplyAllPrivacy"] = $false
-    } elseif ($privacyParts | Where-Object { $null -eq $_ }) {
+    $partNull    = @($privacyParts | Where-Object { $null -eq $_ })
+    $partApplied = @($privacyParts | Where-Object { $_ -eq "applied" })
+    $partOff     = @($privacyParts | Where-Object { $_ -eq "default" -or $_ -eq "mixed" })
+    if ($partOff.Count -gt 0) {
+        $state["ApplyAllPrivacy"] = if ($partApplied.Count -gt 0 -or ($privacyParts -contains "mixed")) { "mixed" } else { "default" }
+    } elseif ($partNull.Count -gt 0) {
         $state["ApplyAllPrivacy"] = $null
     } else {
-        $state["ApplyAllPrivacy"] = $true
+        $state["ApplyAllPrivacy"] = "applied"
     }
 
     # -- NOT PROBED: NetworkOptimization ---------------------------------
@@ -255,7 +284,7 @@ function Get-PulseTweakState {
     # "the stack is at defaults", and the reset only takes effect after a
     # reboot anyway. Any probe for it would be a guess dressed up as a
     # fact, which is precisely what this module's contract forbids — so
-    # the card correctly shows no chip at all.
+    # the card correctly shows no badge at all.
 
     return $state
 }

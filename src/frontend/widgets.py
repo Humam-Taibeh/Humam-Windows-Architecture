@@ -25,9 +25,9 @@ from PySide6.QtCore import (
     QRect, QRectF, Qt, QThread, QTime, QTimer, QUrl, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
-    QColor, QDesktopServices, QFont, QFontMetrics, QLinearGradient, QPainter,
-    QPainterPath, QPen, QPixmap, QRadialGradient, QTextCursor, QTextLayout,
-    QTextOption,
+    QBrush, QColor, QCursor, QDesktopServices, QFont, QFontMetrics,
+    QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient,
+    QTextCursor, QTextLayout, QTextOption,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFrame,
@@ -43,6 +43,9 @@ from frontend.animations import (
     paint_nav_indicator, paint_ripple_frame, paint_top_sheen, squircle_path,
 )
 from frontend import theme as TH
+# Data-only module (no widget imports), so this cannot cycle: the palette
+# shares search_haystack with the category-page filter (see _refilter).
+from frontend.menu_structure import search_haystack
 # Update Center / Startup Manager (v6.3) run their own background scans and
 # per-item actions independently of main.py's single-task console pipeline
 # (both are modal dialogs that fully cover it anyway) - the one deliberate
@@ -50,7 +53,7 @@ from frontend import theme as TH
 # native (threading process ownership through main.py) would either block
 # the dialog's own loading UI or duplicate PowerShellTask's cancellation-
 # safe process/thread bookkeeping here.
-from utils import resources  # noqa: E402
+from utils import appicons, resources  # noqa: E402
 from utils.helpers import PowerShellTask, TaskResult  # noqa: E402
 
 
@@ -569,6 +572,7 @@ class NavButton(QPushButton):
         # so a hovered nav entry lit up in the wrong colour).
         self._accent = QColor(TH.resolve_accent(t, self._accent_key))
         self._glow.set_accent(TH.resolve_accent(t, self._accent_key))
+        self._glow.set_alphas(*TH.glow_alphas(t))
         self._accent2 = QColor(t["accent2"])
         self._glyph_char, self._glyph_fluent = TH.glyph(self._glyph_key)
         self._icon_font = TH.icon_font(16) if self._glyph_fluent else None
@@ -622,7 +626,9 @@ class NavButton(QPushButton):
         paint_ripple_frame(p, self.rect(), 13, self._glow.color,
                            self._ripple.progress, self._ripple.origin)
         paint_glow_frame(p, self.rect(), 13, self._glow.color,
-                         self._glow.intensity, self._glow.cursor)
+                         self._glow.intensity, self._glow.cursor,
+                         halo_alpha=self._glow.halo_alpha,
+                         edge_alpha=self._glow.edge_alpha)
         if self.property("selected"):
             paint_nav_indicator(p, self.rect(), self._glow.color, self._accent2)
         p.end()
@@ -1020,7 +1026,10 @@ class GlassCard(QFrame):
         # Pulse — a small lock glyph in the head signals "needs Administrator"
         # up front (the click then opens the inline elevate prompt).
         self._locked = locked
-        self._applied: bool | None = None
+        # verdict string ("applied" / "mixed" / "default") or None — see
+        # set_applied; legacy booleans are normalised there.
+        self._applied: str | None = None
+        self._tokens = t
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         # v10 ACCESSIBILITY: cards were QFrames with mouse handlers only —
         # no focus policy, no key handling — so the entire operation grid,
@@ -1218,9 +1227,12 @@ class GlassCard(QFrame):
             # the lead pill on the featured card carries the accent tint
             tint = plaque_accent if (self._featured and i == 0) else ""
             pill.setStyleSheet(TH.card_meta_pill_qss(t, tint))
-        self._applied_chip.setStyleSheet(TH.applied_chip_qss(t))
+        self._tokens = t
+        self._applied_chip.setStyleSheet(
+            TH.state_chip_qss(t, self._applied or "applied"))
         self._history_pill.setStyleSheet(TH.card_history_pill_qss(t))
         self._glow.set_accent(plaque_accent)
+        self._glow.set_alphas(*TH.glow_alphas(t))
         # painted-material state, read in paintEvent
         self._bevel = TH.bevel_alphas(t)
         self._shadow = TH.shadow_alphas(t)
@@ -1230,20 +1242,57 @@ class GlassCard(QFrame):
         self._aur2 = QColor(t["accent2"])
         self._aur3 = QColor(t["accent3"])
 
-    def set_applied(self, applied: bool | None):
-        """Reflect the backend's read-only applied-state probe.
+    #: Badge text + tooltip per probe verdict. None (unknown) renders
+    #: nothing — a card with no badge means "we're not claiming anything",
+    #: which is honest, whereas a wrong badge would actively mislead.
+    _STATE_BADGES = {
+        "applied": ("APPLIED",
+                    "This setting is currently active on your system."),
+        "mixed": ("MODIFIED",
+                  "This setting is partially applied — some of its values "
+                  "match, some don't. It may have been changed outside "
+                  "Pulse. Click the card to re-apply or revert it."),
+        "default": ("DEFAULT",
+                    "This setting is at its Windows default. Click the "
+                    "card to apply the tweak."),
+        # ROUTINE tasks only (menu_structure's `recurring` key). These have
+        # no durable state to probe, so they report timing instead: overdue
+        # or never run reads ACTION DUE, and the card's own "Ran 3d ago"
+        # caption carries the detail.
+        "due": ("ACTION DUE",
+                "This routine hasn't been run recently. Running it "
+                "periodically keeps the system healthy."),
+    }
 
-        Three states, deliberately: True shows the chip, False hides it,
-        and None (unknown — unreadable key, unsupported Windows build, or
-        a task the probe doesn't cover) ALSO hides it. Never guess: a card
-        with no chip means "we're not claiming anything", which is honest,
-        whereas a wrong 'Applied' badge would actively mislead someone into
-        skipping a tweak they still need."""
-        self._applied = applied
-        show = applied is True
-        self._applied_chip.setVisible(show)
-        self._applied_chip.setToolTip(
-            "This setting is currently active on your system." if show else "")
+    def set_applied(self, verdict: str | bool | None):
+        """Reflect the backend's read-only state probe (v1.0 tri-state).
+
+        `verdict` is "applied" / "mixed" / "default" / None — legacy
+        booleans normalise (True→applied, False→None) so pre-v1.0 callers
+        and stored data keep meaning what they meant. main._on_tweak_state
+        decides WHICH cards get a DEFAULT badge (only the two-way toggle
+        set) by passing None for everything else, so this widget stays a
+        pure renderer with no policy of its own."""
+        if verdict is True:
+            verdict = "applied"
+        elif verdict is False:
+            verdict = None
+        self._applied = verdict
+        badge = self._STATE_BADGES.get(verdict)
+        self._applied_chip.setVisible(badge is not None)
+        if badge is not None:
+            self._applied_chip.setText(badge[0])
+            self._applied_chip.setToolTip(badge[1])
+            self._applied_chip.setStyleSheet(
+                TH.state_chip_qss(self._tokens, verdict))
+        else:
+            self._applied_chip.setToolTip("")
+
+    def state(self) -> str:
+        """The card's current badge state ("applied" / "mixed" / "default"
+        / "due" / ""), read by CategoryPage's status filter so the filter
+        and the badge can never disagree about what a card is."""
+        return self._applied or ""
 
     def set_history(self, entry: dict | None):
         """Show this task's last-run caption, or nothing at all.
@@ -1409,7 +1458,9 @@ class GlassCard(QFrame):
         paint_ripple_frame(p, self.rect(), radius, self._glow.color,
                            self._ripple.progress, self._ripple.origin)
         paint_glow_frame(p, self.rect(), radius, self._glow.color,
-                         self._glow.intensity, self._glow.cursor)
+                         self._glow.intensity, self._glow.cursor,
+                         halo_alpha=self._glow.halo_alpha,
+                         edge_alpha=self._glow.edge_alpha)
         # Keyboard focus ring — painted LAST so it sits above the hover
         # glow and stays unambiguous even on a card the pointer is also
         # over. A solid 2px accent ring rather than Qt's dotted default,
@@ -1452,6 +1503,12 @@ class AmbientGlow(QWidget):
 
     _INTERVAL_MS = 36          # ~28 fps — slow motion reads smooth, CPU low
     _N_PARTICLES = 42
+    # v1.0 pointer-biased drift: the orb field leans almost imperceptibly
+    # toward the cursor. GAIN is the fraction of the widget dimension one
+    # full lean can move an orb (the bias itself caps at ±0.5, so the real
+    # maximum offset is GAIN/2 ≈ 2% — ~29px on a 1440px window). Set to
+    # 0.0 to neuter the behaviour entirely; nothing else changes.
+    _POINTER_GAIN = 0.04
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
@@ -1479,12 +1536,20 @@ class AmbientGlow(QWidget):
         self._build_particles()
 
         # Independent drift/breathe parameters per orb: (base_x_frac,
-        # base_y_frac, drift_speed, drift_phase, breathe_speed, breathe_phase)
+        # base_y_frac, drift_speed, drift_phase, breathe_speed,
+        # breathe_phase, parallax). Parallax is the orb's share of the
+        # pointer bias — mixed signs so the field shears gently around the
+        # cursor instead of sliding as one rigid sheet, which is what sells
+        # depth at a 2% displacement.
         self._orb_motion = [
-            (0.16, -0.06, 0.055, 0.0, 0.42, 0.0),
-            (1.02,  0.28, 0.041, 2.1, 0.37, 1.3),
-            (0.70,  1.06, 0.048, 4.0, 0.31, 3.4),
+            (0.16, -0.06, 0.055, 0.0, 0.42, 0.0,  1.0),
+            (1.02,  0.28, 0.041, 2.1, 0.37, 1.3, -0.65),
+            (0.70,  1.06, 0.048, 4.0, 0.31, 3.4,  0.45),
         ]
+        # Smoothed pointer bias, each axis in [-0.5, 0.5]; eased toward the
+        # cursor in _tick and back to neutral when it leaves the window.
+        self._bias_x = 0.0
+        self._bias_y = 0.0
 
         self._timer = QTimer(self)
         self._timer.setInterval(self._INTERVAL_MS)
@@ -1564,6 +1629,24 @@ class AmbientGlow(QWidget):
     def _tick(self):
         dt = self._INTERVAL_MS / 1000.0
         self._t += dt
+        # Pointer bias: one QCursor.pos() read per tick (microseconds), no
+        # event filters — the glow is mouse-transparent, so polling here is
+        # the only way to see the cursor at all. The target eases via an
+        # exponential lerp (~0.6 s time constant at 28 fps): the field
+        # drifts after the cursor, never chases it. Outside the window the
+        # target is neutral, so the lean releases just as gently. The bias
+        # is consumed by _build_layer at its own 100 ms cadence.
+        tx = ty = 0.0
+        w, h = self.width(), self.height()
+        if w > 0 and h > 0:
+            pos = self.mapFromGlobal(QCursor.pos())
+            fx = pos.x() / w - 0.5
+            fy = pos.y() / h - 0.5
+            if -0.55 <= fx <= 0.55 and -0.55 <= fy <= 0.55:
+                tx = max(-0.5, min(0.5, fx))
+                ty = max(-0.5, min(0.5, fy))
+        self._bias_x += (tx - self._bias_x) * 0.055
+        self._bias_y += (ty - self._bias_y) * 0.055
         for pt in self._particles:
             pt["y"] -= pt["spd"] * dt
             if pt["y"] < -0.03:
@@ -1674,9 +1757,15 @@ class AmbientGlow(QWidget):
         peaks = (0.055, 0.05, 0.045) if self._light else (0.17, 0.12, 0.11)
         colors = (self._c1, self._c3, self._c2)   # indigo, magenta, violet
         amp_x, amp_y = w * 0.06, h * 0.06
-        for i, (bx, by, dspd, dph, bspd, bph) in enumerate(self._orb_motion):
+        for i, (bx, by, dspd, dph, bspd, bph, par) in enumerate(self._orb_motion):
             dx = math.sin(self._t * dspd * math.tau + dph) * amp_x
             dy = math.cos(self._t * dspd * math.tau * 0.8 + dph) * amp_y
+            # pointer lean — pre-smoothed in _tick, scaled per orb. At the
+            # 100 ms layer cadence the largest possible step this adds is
+            # ~2px on a blob with a ~500px falloff: invisible, same
+            # argument as the drift itself (see _LAYER_MS note above).
+            dx += self._bias_x * w * self._POINTER_GAIN * par
+            dy += self._bias_y * h * self._POINTER_GAIN * par
             cx = bx * w + dx - diameter / 2.0
             cy = by * h + dy - diameter / 2.0
             breathe = 1.0 + 0.16 * math.sin(self._t * bspd * math.tau + bph)
@@ -1888,6 +1977,99 @@ class DepthCard(QFrame):
 
 
 # ============================================================
+#  METER BAR — painted utilisation meter for the dashboard band
+# ============================================================
+class MeterBar(QWidget):
+    """One utilisation meter in the dashboard's System Pulse card: a
+    caption-toned label, a right-aligned live value, and a slim accent
+    track beneath.
+
+    Doctrine-compliant by construction: the page's 2 s timer calls
+    set_value(); nothing here owns a timer, and everything is painted —
+    a value change repaints one ~34px strip with zero QSS churn (the
+    ShimmerBar argument, at 1/55th the frequency). The fill takes the
+    brand accent→accent2 gradient until utilisation crosses the warn/err
+    thresholds, where it switches to the status tone — the same
+    "unmistakable but never neon" grade the status tokens define.
+    """
+
+    HEIGHT = 34
+    WARN_AT = 0.82
+    ERR_AT = 0.92
+
+    def __init__(self, label: str, t: dict, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedHeight(self.HEIGHT)
+        self._label = label
+        self._frac: float | None = None
+        self._text = "—"
+        self.set_theme(t)
+
+    def set_theme(self, t: dict):
+        self._c_label = QColor(t["text_faint"])
+        self._c_value = QColor(t["text"])
+        self._c_track = QColor(*t["shimmer_track"])
+        self._c_fill1 = QColor(t["accent"])
+        self._c_fill2 = QColor(t["accent2"])
+        self._c_warn = QColor(t["warn"])
+        self._c_err = QColor(t["err"])
+        self.update()
+
+    def set_value(self, frac: float | None, text: str):
+        """frac in [0,1] drives the bar; None renders an empty track (the
+        honest 'no reading' state — never a guessed 0% fill)."""
+        if frac == self._frac and text == self._text:
+            return
+        self._frac = frac
+        self._text = text or "—"
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w = self.width()
+
+        f = QFont(self.font())
+        f.setPixelSize(10)
+        f.setWeight(QFont.Weight.DemiBold)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
+        p.setFont(f)
+        p.setPen(self._c_label)
+        p.drawText(QRectF(0, 0, w * 0.55, 18),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   self._label)
+
+        f2 = QFont(self.font())
+        f2.setPixelSize(12)
+        f2.setWeight(QFont.Weight.DemiBold)
+        p.setFont(f2)
+        p.setPen(self._c_value)
+        p.drawText(QRectF(w * 0.35, 0, w * 0.65, 18),
+                   Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                   self._text)
+
+        track = QRectF(0, self.HEIGHT - 9, w, 5)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._c_track)
+        p.drawRoundedRect(track, 2.5, 2.5)
+
+        if self._frac is not None and self._frac > 0.0:
+            fill = QRectF(track)
+            fill.setWidth(max(5.0, track.width() * min(1.0, self._frac)))
+            if self._frac >= self.ERR_AT:
+                p.setBrush(self._c_err)
+            elif self._frac >= self.WARN_AT:
+                p.setBrush(self._c_warn)
+            else:
+                grad = QLinearGradient(fill.topLeft(), fill.topRight())
+                grad.setColorAt(0.0, self._c_fill1)
+                grad.setColorAt(1.0, self._c_fill2)
+                p.setBrush(QBrush(grad))
+            p.drawRoundedRect(fill, 2.5, 2.5)
+        p.end()
+
+
+# ============================================================
 #  CONFIRM DIALOG — frameless glass confirmation
 # ============================================================
 class ConfirmDialog(PulseDialog):
@@ -1942,6 +2124,80 @@ class ConfirmDialog(PulseDialog):
         go.clicked.connect(self.accept)
         row.addWidget(go)
         lay.addLayout(row)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+
+class RevertChoiceDialog(PulseDialog):
+    """The two-way toggle's decision point (v1.0). Opened instead of a
+    plain confirm when a revertible tweak's card is clicked while the
+    probe reports it applied (or modified): the one question a click on
+    an already-applied toggle genuinely poses is "re-apply it, or put it
+    back?", and neither answer deserves to be the buried option.
+
+    `choice` after Accepted: "apply" or "revert". This dialog REPLACES the
+    item's own confirm step for the re-apply path — asking "are you sure?"
+    twice for one click is how confirmation fatigue is manufactured."""
+
+    def __init__(self, parent: QWidget, item: dict, t: dict, verdict: str):
+        super().__init__(parent)
+        self.choice: str | None = None
+        accent = t["accent"]
+        panel = _dialog_chrome(self, t, accent, width=470)
+
+        lay = dialog_body(panel, "sm")
+
+        head = QLabel(f"{item['icon']}  {item['title']}")
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
+        head.setWordWrap(True)
+        lay.addWidget(head)
+
+        if verdict == "mixed":
+            status = ("This tweak is PARTIALLY applied — some of its values "
+                      "match, some don't (it may have been changed outside "
+                      "Pulse).")
+        else:
+            status = "This tweak is currently applied on your system."
+        body = QLabel(
+            f"{status}\n\nRe-apply it to enforce Pulse's values again, or "
+            "revert it to your original settings (or Windows defaults if no "
+            "original was captured).")
+        body.setWordWrap(True)
+        body.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(body)
+
+        lay.addSpacing(8)
+        row = QHBoxLayout()
+        row.setSpacing(TH.SPACE["sm"])
+        row.addStretch()
+
+        cancel = QPushButton("Cancel")
+        cancel.setFixedSize(96, 36)
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.setStyleSheet(TH.dialog_cancel_qss(t))
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+
+        revert = QPushButton("Revert to Default")
+        revert.setFixedSize(150, 36)
+        revert.setCursor(Qt.CursorShape.PointingHandCursor)
+        revert.setStyleSheet(TH.dialog_secondary_go_qss(t, accent))
+        revert.clicked.connect(lambda: self._pick("revert"))
+        row.addWidget(revert)
+
+        apply_btn = QPushButton("Re-apply")
+        apply_btn.setFixedSize(110, 36)
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_btn.setStyleSheet(TH.dialog_go_qss(t, accent))
+        apply_btn.clicked.connect(lambda: self._pick("apply"))
+        row.addWidget(apply_btn)
+        lay.addLayout(row)
+
+    def _pick(self, choice: str):
+        self.choice = choice
+        self.accept()
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -3785,6 +4041,7 @@ class RecentOperationRow(QPushButton):
     def apply_theme(self, t: dict):
         self._accent = QColor(TH.resolve_accent(t, self._accent_key))
         self._glow.set_accent(TH.resolve_accent(t, self._accent_key))
+        self._glow.set_alphas(*TH.glow_alphas(t))
         self._dot_color = QColor(t["ok"] if self._outcome == "ok" else t["err"])
         self.setStyleSheet(TH.recent_row_qss(t))
         self._glyph_char, fluent = TH.glyph(self._glyph_key)
@@ -3810,7 +4067,9 @@ class RecentOperationRow(QPushButton):
         cy = self.height() / 2.0
         p.drawEllipse(QPointF(self.width() - 14, cy), self._DOT / 2, self._DOT / 2)
         paint_glow_frame(p, self.rect(), TH.RADIUS["chip"], self._glow.color,
-                         self._glow.intensity, self._glow.cursor)
+                         self._glow.intensity, self._glow.cursor,
+                         halo_alpha=self._glow.halo_alpha,
+                         edge_alpha=self._glow.edge_alpha)
         p.end()
 
 
@@ -4192,7 +4451,7 @@ class CommandPalette(PulseDialog):
         lay.setSpacing(8)
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Type to search Pulse tasks…")
+        self._search.setPlaceholderText("Search apps, tweaks and tools…")
         self._search.setStyleSheet(TH.command_input_qss(t))
         self._search.setFixedHeight(46)
         self._search.textChanged.connect(self._refilter)
@@ -4214,7 +4473,13 @@ class CommandPalette(PulseDialog):
         query = text.strip().lower()
         scored = []
         for item, category in self._entries:
-            haystack = f"{item['title']} {item.get('desc', '')} {category}".lower()
+            # search_haystack, not a local title+desc string: the palette
+            # promises "any app, tweak or tool", and the haystack is where
+            # catalog app names and Dev Hub tools are folded in. Sharing it
+            # with the category-page filter keeps the two surfaces honest
+            # with each other — findable in one place means findable in
+            # both.
+            haystack = f"{search_haystack(item)} {category.lower()}"
             score = _fuzzy_score(query, haystack)
             if query and score is None:
                 continue
@@ -4948,6 +5213,7 @@ class DevHubRow(QFrame):
         super().__init__()
         self.app_id = app_id
         self.requires_id = requires_id
+        self._app_name = app_name
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 10, 14, 10)
@@ -4955,6 +5221,14 @@ class DevHubRow(QFrame):
 
         row = QHBoxLayout()
         row.setSpacing(10)
+        # v1.0: instant visual recognition — the app's real shell icon when
+        # it is installed on this machine, a deterministic monogram plaque
+        # when it isn't (see utils.appicons for why nothing is fetched).
+        self._icon = QLabel()
+        self._icon.setFixedSize(28, 28)
+        self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon.setStyleSheet("background: transparent; border: none;")
+        row.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
         self.checkbox = QCheckBox(app_name)
         self.checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         # Dev Hub is manual-first (False); curated app packs arrive
@@ -4985,6 +5259,8 @@ class DevHubRow(QFrame):
         self.setStyleSheet(TH.dev_hub_row_qss(t))
         self.checkbox.setStyleSheet(TH.checkbox_qss(t, t["accent"]))
         self.options_btn.setStyleSheet(TH.icon_ghost_button_qss(t, t["accent"]))
+        # theme-dependent only for monograms; shell icons come back cached
+        self._icon.setPixmap(appicons.app_icon(self._app_name, 28, t))
         if self._hint_label is not None:
             self._hint_label.setStyleSheet(TH.label_qss(t, "caption"))
 

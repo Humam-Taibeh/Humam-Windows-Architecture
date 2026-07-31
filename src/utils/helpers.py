@@ -31,6 +31,9 @@ import os
 import subprocess
 import sys
 import threading
+
+if sys.platform == "win32":
+    import ctypes.wintypes  # FILETIME for SystemPulseSampler
 from dataclasses import dataclass
 
 from PySide6.QtCore import (
@@ -1022,3 +1025,135 @@ class ToastManager(QObject):
     def reposition(self):
         for toast, pos in zip(self._toasts, self._target_positions()):
             toast.slide_to(pos)
+
+
+# ============================================================
+#  CHASSIS GUARD — battery presence for the Ultimate Power Plan
+# ============================================================
+def has_battery() -> bool | None:
+    """True when Windows reports a system battery — the signal that this
+    machine is a laptop/tablet where the Ultimate Power Plan's never-sleep
+    AC timeouts are the wrong medicine (06-Tweaks.ps1's own AC-only note:
+    a machine on battery that never sleeps is a flat battery, and in a
+    bag, a hot one).
+
+    GetSystemPowerStatus is one kernel32 call: BatteryFlag bit 128 means
+    NO system battery; 255 means the state is unknown. Unknown and every
+    failure return None — the guard then stays silent rather than warning
+    desktop users on a driver quirk. A None here never blocks anything:
+    the caller treats only a definite True as 'warn first'.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        class _SYSTEM_POWER_STATUS(ctypes.Structure):
+            _fields_ = [
+                ("ACLineStatus", ctypes.c_ubyte),
+                ("BatteryFlag", ctypes.c_ubyte),
+                ("BatteryLifePercent", ctypes.c_ubyte),
+                ("SystemStatusFlag", ctypes.c_ubyte),
+                ("BatteryLifeTime", ctypes.c_uint32),
+                ("BatteryFullLifeTime", ctypes.c_uint32),
+            ]
+
+        status = _SYSTEM_POWER_STATUS()
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+            return None
+        if status.BatteryFlag == 255:
+            return None
+        return not bool(status.BatteryFlag & 128)
+    except (OSError, AttributeError):
+        return None
+
+
+# ============================================================
+#  SYSTEM PULSE — live utilisation snapshot for the dashboard
+# ============================================================
+class SystemPulseSampler:
+    """CPU / memory / system-drive utilisation for the dashboard's System
+    Pulse card. Raw kernel32 reads — no psutil dependency, no WMI, no
+    process spawn — so the 2 s dashboard timer costs microseconds a tick,
+    the same budget discipline as main._system_insights().
+
+    CPU is a DELTA measure over GetSystemTimes (idle vs total FILETIME
+    ticks since the previous sample), so the FIRST call cannot produce a
+    figure and honestly returns None for it; the meter renders an em dash
+    until the second tick. Memory and disk are absolute reads and are
+    available immediately. Every field degrades to None on any failure —
+    a dashboard decoration must never be able to break the dashboard.
+    """
+
+    def __init__(self):
+        self._prev: tuple[int, int] | None = None
+
+    @staticmethod
+    def _filetime(ft) -> int:
+        return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+
+    def sample(self) -> dict:
+        out = {"cpu": None, "mem": None, "mem_text": "",
+               "disk": None, "disk_text": ""}
+        if sys.platform != "win32":
+            return out
+        k32 = ctypes.windll.kernel32
+
+        # -- CPU: 1 - (idle delta / total delta) ----------------------
+        try:
+            idle = ctypes.wintypes.FILETIME()
+            kern = ctypes.wintypes.FILETIME()
+            user = ctypes.wintypes.FILETIME()
+            if k32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kern),
+                                  ctypes.byref(user)):
+                i = self._filetime(idle)
+                # kernel time INCLUDES idle time, so kernel+user is total
+                total = self._filetime(kern) + self._filetime(user)
+                if self._prev is not None:
+                    di = i - self._prev[0]
+                    dt = total - self._prev[1]
+                    if dt > 0:
+                        out["cpu"] = max(0.0, min(1.0, 1.0 - di / dt))
+                self._prev = (i, total)
+        except (OSError, AttributeError):
+            pass
+
+        # -- Memory: dwMemoryLoad is already a percentage -------------
+        try:
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_uint32),
+                    ("dwMemoryLoad", ctypes.c_uint32),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+
+            stat = _MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+            if k32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                out["mem"] = stat.dwMemoryLoad / 100.0
+                used = (stat.ullTotalPhys - stat.ullAvailPhys) / (1024 ** 3)
+                total_gb = stat.ullTotalPhys / (1024 ** 3)
+                out["mem_text"] = f"{used:.1f} / {round(total_gb)} GB"
+        except (OSError, AttributeError):
+            pass
+
+        # -- System drive: used fraction + free-space caption ---------
+        try:
+            drive = os.environ.get("SystemDrive", "C:") + "\\"
+            free = ctypes.c_uint64()
+            total = ctypes.c_uint64()
+            if k32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(drive),
+                                       ctypes.byref(free),
+                                       ctypes.byref(total), None):
+                if total.value > 0:
+                    out["disk"] = 1.0 - free.value / total.value
+                    out["disk_text"] = (
+                        f"{free.value / (1024 ** 3):.0f} GB free")
+        except (OSError, AttributeError):
+            pass
+
+        return out

@@ -45,6 +45,13 @@ Item schema:
     confirm  bool  show a confirmation dialog before running   (default False)
     danger   bool  style the card/confirm dialog as destructive (default False)
     note     str   small badge, e.g. "Windows 11 only"          (default "")
+    recurring int  ROUTINE task: the re-run interval in days (default absent
+             = one-shot). A one-shot tweak has durable readable state and
+             badges APPLIED / MODIFIED / DEFAULT from 11-StateProbe.ps1; a
+             routine has none — it was run, and then time passed — so it
+             badges ACTION DUE once `recurring` days have elapsed since its
+             last run, and otherwise shows only its "Ran 3d ago" caption.
+             See recurring_days() below and main.PulseApp._card_badge.
     apps     list[tuple]  (AppId, DisplayName, Description, OfficialUrl)
              4-tuples - when present, the GUI opens the unified selector
              overlay (same elite row pattern as the Developer Hub: checkbox
@@ -381,14 +388,20 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  2. SYSTEM OPTIMIZATION
+    #  2. SYSTEM & TWEAKS  (v1.0: optimization + privacy, merged)
+    #
+    #  Both halves answer the same question — "change how Windows
+    #  behaves" — and both are one-shot, probeable, revertible registry
+    #  tweaks. Split across two rails they read as two thin modules; here
+    #  they are one substantial one, ordered performance-first then
+    #  privacy, with the full-pass action closing the page.
     # --------------------------------------------------------
     {
-        "id": "optimization",
+        "id": "system",
         "icon": "⚡",
         "glyph": "bolt",
-        "title": "System Optimization",
-        "tagline": "Smart tweaks, performance and gaming optimizations",
+        "title": "System & Tweaks",
+        "tagline": "Performance, interface and privacy tweaks",
         "accent": "optimization",
         "items": [
             {"icon": "🌙", "title": "Global Dark Mode",
@@ -423,53 +436,8 @@ CATEGORIES = [
                      "sleep timeouts while on AC power.",
              "glyph": "bolt", "task": "UltimatePowerPlan", "timeout": 300,
              "note": "Desktop PCs only", "confirm": True},
-        ],
-    },
-    # --------------------------------------------------------
-    #  3. MAINTENANCE & REPAIR
-    # --------------------------------------------------------
-    {
-        "id": "maintenance",
-        "icon": "🔧",
-        "glyph": "repair",
-        "title": "Maintenance & Repair",
-        "tagline": "System file repair, cache cleanup and disk optimization",
-        "accent": "maintenance",
-        "items": [
-            {"icon": "🛠️", "title": "System Repair (SFC + DISM)",
-             "desc": "Repair protected system files and the component store.",
-             "glyph": "repair", "task": "RunSFC", "timeout": 3600},
-            {"icon": "🧹", "title": "Aggressive Cache Clean",
-             "desc": "Wipe temp, Windows Update and system caches.",
-             "glyph": "broom", "task": "CleanCache", "timeout": 900, "confirm": True},
-            {"icon": "💾", "title": "Optimize All Drives",
-             "desc": "TRIM SSDs and defragment HDDs — drive by drive.",
-             "glyph": "disk", "task": "OptimizeDrives", "timeout": 1800},
-            {"icon": "🗑️", "title": "Remove Windows.old",
-             "desc": "Reclaim gigabytes from a previous Windows install.",
-             "glyph": "delete", "task": "RemoveWindowsOld", "timeout": 1800, "confirm": True, "danger": True},
-            {"icon": "😴", "title": "Disable Hibernation",
-             "desc": "Delete hiberfil.sys and free disk space.",
-             "glyph": "sleep", "task": "DisableHibernation", "timeout": 120},
-            {"icon": "🔋", "title": "Enable Hibernation",
-             "desc": "Bring hibernation (and hiberfil.sys) back.",
-             "glyph": "battery", "task": "EnableHibernation", "timeout": 120},
-            {"icon": "📈", "title": "Drive Space Report",
-             "desc": "Free / used space snapshot for every fixed drive.",
-             "glyph": "chart", "task": "DriveSpaceReport", "timeout": 120},
-        ],
-    },
-    # --------------------------------------------------------
-    #  4. PRIVACY & SECURITY
-    # --------------------------------------------------------
-    {
-        "id": "privacy",
-        "icon": "🛡️",
-        "glyph": "shield",
-        "title": "Privacy & Security",
-        "tagline": "Debloat, kill telemetry and stop data collection",
-        "accent": "privacy",
-        "items": [
+
+            # -- privacy half (merged from the old module 4) --------------
             {"icon": "📦", "title": "Remove Bloatware",
              "desc": "Uninstall pre-loaded Store apps you never asked for.",
              "glyph": "delete", "task": "RemoveBloatware", "timeout": 900, "confirm": True},
@@ -488,96 +456,105 @@ CATEGORIES = [
         ],
     },
     # --------------------------------------------------------
-    #  5. INFORMATION & UTILITIES
+    #  3. MAINTENANCE & SECURITY  (v1.0: maintenance + safety, merged)
+    #
+    #  Upkeep and recovery in one module: the routines that keep a machine
+    #  healthy, and the undo paths for when something needs putting back.
+    #  They belong together because they are the same mental mode — "look
+    #  after this system" — and because Create Restore Point is the hinge
+    #  between them (it is BOTH routine upkeep and the safety net every
+    #  rollback depends on). That card used to be duplicated verbatim in
+    #  two modules; it now exists exactly once, here.
     # --------------------------------------------------------
     {
-        "id": "information",
-        "icon": "📊",
-        "glyph": "info",
-        "title": "Information & Utilities",
-        "tagline": "System insight, licence status, driver tools and the log",
-        "accent": "information",
+        "id": "maintenance",
+        "icon": "🔧",
+        "glyph": "repair",
+        "title": "Maintenance & Security",
+        "tagline": "Repair, clean-up, restore points and rollback",
+        "accent": "maintenance",
         "items": [
-            {"icon": "📊", "title": "System Info Snapshot",
-             "desc": "Hardware, uptime and drive space — written to the log.",
-             "glyph": "chartline", "task": "SystemInfo", "timeout": 300},
-            {"icon": "💿", "title": "Driver Backup",
-             "desc": "Export every current hardware driver to your Desktop.",
-             "glyph": "save", "task": "DriverBackup", "timeout": 1800},
-            {"icon": "🔍", "title": "Missing Driver Scan",
-             "desc": "Check Windows Update for drivers you're missing.",
-             "glyph": "search", "task": "DriverScan", "timeout": 900},
+            {"icon": "🛠️", "title": "System Repair (SFC + DISM)",
+             "desc": "Repair protected system files and the component store.",
+             "glyph": "repair", "task": "RunSFC", "timeout": 3600, "recurring": 90},
+            {"icon": "🧹", "title": "Aggressive Cache Clean",
+             "desc": "Wipe temp, Windows Update and system caches.",
+             "glyph": "broom", "task": "CleanCache", "timeout": 900, "confirm": True,
+             "recurring": 30},
+            {"icon": "💾", "title": "Optimize All Drives",
+             "desc": "TRIM SSDs and defragment HDDs — drive by drive.",
+             "glyph": "disk", "task": "OptimizeDrives", "timeout": 1800, "recurring": 30},
             {"icon": "🛟", "title": "Create Restore Point",
-             "desc": "Manual System Restore checkpoint before big changes.",
-             "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600},
-            # Read-only, and deliberately so: it reports what Windows'
-            # licensing service already knows and hands off to Microsoft's
-            # own surfaces for anything that needs changing. Nothing in
-            # Pulse activates, keys, or alters a licence.
-            #
-            # Lives HERE rather than under Safety & Recovery (where it
-            # shipped in v10.3): Safety is the undo/rollback module, and a
-            # read-only licence report is neither. It is an inspector, and
-            # it belongs beside the other inspectors — System Info Snapshot
-            # and the driver scan — where a reader looking for "tell me
-            # about this machine" will actually go.
-            {"icon": "🔑", "title": "Activation Status",
-             "desc": "Windows and Office licence state, channel and expiry — read-only.",
-             "glyph": "key", "task": "@activation"},
-            {"icon": "📜", "title": "View Operation Log",
-             "desc": "Open the full Pulse operation log.",
-             "glyph": "log", "task": "@open_log"},
-        ],
-    },
-    # --------------------------------------------------------
-    #  6. SAFETY & RECOVERY
-    # --------------------------------------------------------
-    {
-        "id": "safety",
-        "icon": "🛟",
-        "glyph": "restore",
-        "title": "Safety & Recovery",
-        "tagline": "Undo tweaks, restore services and recover backups",
-        "accent": "safety",
-        "items": [
+             "desc": "Manual System Restore checkpoint — your safety net before big changes.",
+             "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600,
+             "recurring": 30},
+            {"icon": "📈", "title": "Drive Space Report",
+             "desc": "Free / used space snapshot for every fixed drive.",
+             "glyph": "chart", "task": "DriveSpaceReport", "timeout": 120},
+            {"icon": "🗑️", "title": "Remove Windows.old",
+             "desc": "Reclaim gigabytes from a previous Windows install.",
+             "glyph": "delete", "task": "RemoveWindowsOld", "timeout": 1800, "confirm": True, "danger": True},
+            {"icon": "😴", "title": "Disable Hibernation",
+             "desc": "Delete hiberfil.sys and free disk space.",
+             "glyph": "sleep", "task": "DisableHibernation", "timeout": 120},
+            {"icon": "🔋", "title": "Enable Hibernation",
+             "desc": "Bring hibernation (and hiberfil.sys) back.",
+             "glyph": "battery", "task": "EnableHibernation", "timeout": 120},
+
+            # -- recovery half (merged from the old Safety module) --------
             {"icon": "↩️", "title": "Reset All Tweaks",
              "desc": "Revert every registry tweak to your backed-up values.",
              "glyph": "restore", "task": "ResetTweaks", "timeout": 300, "confirm": True},
             {"icon": "🔧", "title": "Restore Services",
              "desc": "Re-enable Windows services disabled by the optimizer.",
              "glyph": "repair", "task": "RestoreServices", "timeout": 300},
-            {"icon": "🛟", "title": "Create Restore Point",
-             "desc": "Manual System Restore checkpoint — your safety net.",
-             "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600},
             {"icon": "☁️", "title": "OneDrive Backup Folder",
              "desc": "Open files rescued before OneDrive removal.",
              "glyph": "folder", "task": "@open_onedrive_backup"},
         ],
     },
     # --------------------------------------------------------
-    #  7. AUTOMATION  (v10.3)
+    #  4. UTILITIES & TOOLS  (v1.0: information + automation, merged)
     #
-    #  Both entries are GUI-LOCAL ("@") on purpose. A playbook is an
-    #  ordered list of tasks the dispatcher already has cases for, and the
-    #  health report is assembled by the GUI from probes that already
-    #  exist — neither adds a backend case, which is why neither appears
-    #  in 30-GuiDispatcher.ps1 and why test_contract's reachability check
-    #  still balances.
+    #  Everything that REPORTS on the machine or REPLAYS work against it,
+    #  none of which changes a setting on its own. Automation's two cards
+    #  used to be a module of their own — a two-card page with a nav entry
+    #  to itself — and they read far better here, beside the inspectors
+    #  whose output they summarise.
     # --------------------------------------------------------
     {
-        "id": "automation",
-        "icon": "📘",
-        "glyph": "boot",
-        "title": "Automation",
-        "tagline": "Repeatable playbooks and a system health report",
-        "accent": "automation",
+        "id": "utilities",
+        "icon": "📊",
+        "glyph": "info",
+        "title": "Utilities & Tools",
+        "tagline": "Reports, licence status, driver tools and playbooks",
+        "accent": "information",
         "items": [
-            {"icon": "📘", "title": "Playbooks",
-             "desc": "Run a saved sequence of tasks — preview it first with a dry run.",
-             "glyph": "boot", "task": "@playbooks"},
+            {"icon": "📊", "title": "System Info Snapshot",
+             "desc": "Hardware, uptime and drive space — written to the log.",
+             "glyph": "chartline", "task": "SystemInfo", "timeout": 300},
             {"icon": "🩺", "title": "Health & Drift Report",
              "desc": "Snapshot applied tweaks, drives and startup load; export HTML or JSON.",
              "glyph": "chart", "task": "@health_report"},
+            {"icon": "📘", "title": "Playbooks",
+             "desc": "Run a saved sequence of tasks — preview it first with a dry run.",
+             "glyph": "boot", "task": "@playbooks"},
+            {"icon": "💿", "title": "Driver Backup",
+             "desc": "Export every current hardware driver to your Desktop.",
+             "glyph": "save", "task": "DriverBackup", "timeout": 1800, "recurring": 180},
+            {"icon": "🔍", "title": "Missing Driver Scan",
+             "desc": "Check Windows Update for drivers you're missing.",
+             "glyph": "search", "task": "DriverScan", "timeout": 900, "recurring": 90},
+            # Read-only, and deliberately so: it reports what Windows'
+            # licensing service already knows and hands off to Microsoft's
+            # own surfaces for anything that needs changing. Nothing in
+            # Pulse activates, keys, or alters a licence.
+            {"icon": "🔑", "title": "Activation Status",
+             "desc": "Windows and Office licence state, channel and expiry — read-only.",
+             "glyph": "key", "task": "@activation"},
+            {"icon": "📜", "title": "View Operation Log",
+             "desc": "Open the full Pulse operation log.",
+             "glyph": "log", "task": "@open_log"},
         ],
     },
 ]
@@ -623,6 +600,38 @@ def find_action(cat_index: int, task: str) -> tuple[dict | None, str]:
         return None
 
     return walk(cat["items"]), cat["accent"]
+
+
+def find_action_anywhere(task: str) -> tuple[dict | None, str]:
+    """(item, category_accent_KEY) for `task` in ANY category, hubs
+    expanded — the index-free form of find_action.
+
+    The dashboard's Quick Actions used to be declared as (category_index,
+    task) pairs, which silently broke the moment the v1.0 restructure
+    renumbered the modules from seven to four: index 4 and 5 simply
+    stopped existing and two quick actions vanished from the dashboard
+    with no error. A task name is stable across any amount of
+    re-shelving; a position is not.
+    """
+    for index in range(len(CATEGORIES)):
+        item, accent = find_action(index, task)
+        if item is not None:
+            return item, accent
+    return None, ""
+
+
+def recurring_days(item: dict) -> int | None:
+    """The re-run interval of a ROUTINE task, or None for a one-shot one.
+
+    The distinction drives the card badge (see main.PulseApp._card_badge):
+    a one-shot tweak has readable state, so it reports APPLIED / MODIFIED
+    / DEFAULT from the probe; a routine like a cache clean has no such
+    state — it was done, and then time passed — so it reports how long ago
+    it last ran and whether that is overdue. Showing APPLIED on a cache
+    clean was the category error this key exists to fix.
+    """
+    value = item.get("recurring")
+    return int(value) if isinstance(value, int) and value > 0 else None
 
 
 # ============================================================
@@ -672,14 +681,23 @@ def category_operations(category: dict) -> int:
 
 
 def search_haystack(item: dict) -> str:
-    """Everything a category-page filter should match an item against,
-    lowercased. Hub containers fold in their sub-items' titles so typing
-    "office" still surfaces the Browsers & Daily Apps hub that holds it —
-    otherwise filtering would hide actions that are genuinely there, just
-    one level down."""
+    """Everything a search surface should match an item against, lowercased
+    — shared by the category-page filter AND the Ctrl+K palette, so the two
+    can never disagree about whether something is findable.
+
+    Three levels fold in, each for the same reason: hiding a genuine match
+    because it lives one layer down is indistinguishable from the feature
+    not existing. Hub containers carry their sub-items' full haystacks;
+    an `apps` catalog card carries its app display names (v1.0 — typing
+    "spotify" must surface the installer that ships it); a devhub card
+    carries every Dev Hub tool name ("docker", "pycharm")."""
     parts = [item.get("title", ""), item.get("desc", ""), item.get("note", "")]
+    parts.extend(entry[1] for entry in item.get("apps", []) if len(entry) > 1)
+    if item.get("devhub"):
+        parts.extend(tool[1] for _title, tools in DEV_HUB_GROUPS
+                     for tool in tools)
     if item.get("hub"):
-        parts.extend(sub.get("title", "") for sub in hub_items(item))
+        parts.extend(search_haystack(sub) for sub in hub_items(item))
     return " ".join(parts).lower()
 
 

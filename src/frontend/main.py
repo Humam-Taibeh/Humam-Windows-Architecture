@@ -40,8 +40,8 @@ from PySide6.QtGui import (
     QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPalette, QShortcut,
 )
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea,
+    QApplication, QComboBox, QDialog, QFrame, QGraphicsOpacityEffect,
+    QGridLayout, QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -53,22 +53,25 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from utils import prefs, resources  # noqa: E402
-from utils.helpers import PowerShellTask, TaskResult, ToastManager  # noqa: E402
+from utils.helpers import (  # noqa: E402
+    PowerShellTask, SystemPulseSampler, TaskResult, ToastManager, has_battery,
+)
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
     CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, accent_for_task,
-    category_operations, find_action, hub_items, iter_leaf_items,
-    requires_admin, search_haystack,
+    category_operations, find_action_anywhere, hub_items, iter_leaf_items,
+    recurring_days, requires_admin, search_haystack,
 )
 from frontend.widgets import (  # noqa: E402
     ActivationStatusDialog, ActivityDrawer, AmbientGlow, AppSelectorDialog,
     BreathingIcon,
     CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
     DevHubSelectorDialog,
-    ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog, NavButton,
+    ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog, MeterBar,
+    NavButton,
     NavPill, OfficeWizardDialog, PlaybookDialog, PulseDialog,
-    RecentOperationsPanel,
+    RecentOperationRow, RecentOperationsPanel, RevertChoiceDialog,
     ResponsiveGridHost, ShortcutSheetDialog, StartupManagerDialog, TitleBar,
     UpdateCenterDialog, refit_dialog,
 )
@@ -95,6 +98,31 @@ DEFAULT_TIMEOUT = 900
 # shell doesn't leave a dead-space frame around the sidebar/content.
 _FLOAT_MARGINS = (20, 8, 20, 16)
 _FLUSH_MARGINS = (10, 6, 10, 10)
+
+# ============================================================
+#  TWO-WAY TOGGLES (v1.0) — GUI task -> its dispatcher revert case
+# ============================================================
+# The safely invertible set, and ONLY it. Every entry restores backed-up
+# original values (02-Safety.ps1's Restore-* functions, the same code the
+# bulk Reset All Tweaks composes). Deliberately absent: the Hibernation
+# pair (each card is already the other's revert), UltimatePowerPlan
+# (switching schemes is a choice, not a revert), the Remove* tasks
+# (reinstalling software is its own explicit action, not a toggle), and
+# NetworkOptimization (transient — nothing to revert to).
+#
+# Literal strings on purpose: tests/test_contract.py's _PROGRAMMATIC
+# reachability check reads the Revert* names out of this file, which is
+# what keeps a dispatcher case from going quietly dead.
+_REVERT_TASKS: dict[str, str] = {
+    "DarkMode": "RevertDarkMode",
+    "DisableMouseAccel": "RevertDisableMouseAccel",
+    "MinimalistTaskbar": "RevertMinimalistTaskbar",
+    "ClassicContextMenu": "RevertClassicContextMenu",
+    "GameMode": "RevertGameMode",
+    "DisableTelemetry": "RevertDisableTelemetry",
+    "DisableAdvertisingID": "RevertDisableAdvertisingID",
+    "DisableActivityHistory": "RevertDisableActivityHistory",
+}
 
 
 def _locate_icon() -> str | None:
@@ -167,6 +195,71 @@ def _system_insights() -> list[tuple[str, str, str]]:
     return insights
 
 
+def _system_spec_line() -> str:
+    """"Windows 11 Pro · Build 26200 · 16 cores · 32.0 GB" — the machine's
+    static identity as one caption.
+
+    v1.0: this is what remains of the removed system status strip. The
+    strip rendered the same three facts as a 66px band of plaques directly
+    above a System Pulse card measuring the same hardware live, which is
+    the duplication the redundancy pass removed. As a subtitle to the
+    live meters the facts still land — a reader sees "16 cores" right
+    above the processor meter — without a second surface claiming them.
+    """
+    parts = []
+    for _icon, value, caption in _system_insights():
+        value = (value or "").strip()
+        caption = (caption or "").strip()
+        if not value or value == "—":
+            continue
+        # the OS cell carries its build in the caption; the others carry a
+        # descriptor ("Logical processors", "62% in use") that the spec
+        # line does not want — keep only the build.
+        if caption.lower().startswith("build"):
+            parts.append(f"{value} · {caption}")
+        else:
+            parts.append(value)
+    return "  ·  ".join(parts) if parts else "System details unavailable"
+
+
+def due_routines(history: dict) -> list[tuple[str, str]]:
+    """[(title, caption)] for every ROUTINE task that is overdue or has
+    never been run, worst-overdue first.
+
+    Powers the dashboard's Maintenance & Attention card and mirrors the
+    per-card ACTION DUE badge exactly — both read `recurring` from
+    menu_structure and the same stored history, so a card badged due and
+    this panel can never disagree.
+    """
+    now = time.time()
+    rows: list[tuple[float, str, str]] = []
+    for item, _breadcrumb in iter_leaf_items():
+        interval = recurring_days(item)
+        if interval is None:
+            continue
+        entry = history.get(item.get("task"))
+        last = float(entry.get("last_ts", 0.0)) if entry else 0.0
+        if not last:
+            rows.append((float("inf"), item.get("title", ""), "never run"))
+            continue
+        days = (now - last) / 86400.0
+        if days >= interval:
+            rows.append((days, item.get("title", ""),
+                         f"last run {_humanize_days(days)}"))
+    rows.sort(key=lambda row: -row[0])
+    return [(title, caption) for _overdue, title, caption in rows]
+
+
+def _humanize_days(days: float) -> str:
+    if days < 1:
+        return "today"
+    if days < 2:
+        return "yesterday"
+    if days < 60:
+        return f"{int(days)} days ago"
+    return f"{int(days // 30)} months ago"
+
+
 def _focus_neighbour(cards: list, cols: int, current, direction: str) -> bool:
     """Move keyboard focus to `current`'s neighbour in a `cols`-wide grid.
 
@@ -233,13 +326,16 @@ class WelcomePage(QWidget):
     # (category index, task) for each Quick Action — one per module, so the
     # band reads as a full-spectrum control surface. Resolved via
     # menu_structure.find_action (skips any the backend no longer defines).
+    # v1.0: task names only, resolved through find_action_anywhere. The old
+    # (category_index, task) form silently lost two actions when the module
+    # count went from seven to four — see find_action_anywhere's docstring.
     QUICK_ACTIONS = [
-        (0, "UpdateSelectedApps"),    # Software      — Check for Updates
-        (1, "UltimatePowerPlan"),     # Optimization  — Ultimate Power Plan
-        (2, "CleanCache"),            # Maintenance   — Aggressive Cache Clean
-        (3, "DisableTelemetry"),      # Privacy       — Disable Telemetry
-        (4, "SystemInfo"),            # Information   — System Info Snapshot
-        (5, "CreateRestorePoint"),    # Safety        — Create Restore Point
+        "UpdateSelectedApps",    # Software              — Check for Updates
+        "UltimatePowerPlan",     # System & Tweaks       — Ultimate Power Plan
+        "CleanCache",            # Maintenance & Security— Aggressive Cache Clean
+        "DisableTelemetry",      # System & Tweaks       — Disable Telemetry
+        "SystemInfo",            # Utilities & Tools     — System Info Snapshot
+        "CreateRestorePoint",    # Maintenance & Security— Create Restore Point
     ]
 
     # Concise, dashboard-tailored one-liners so a Quick Action reads as a
@@ -264,10 +360,6 @@ class WelcomePage(QWidget):
 
     def __init__(self, t: dict, engine_ok: bool, is_admin: bool):
         super().__init__()
-        self._tel_icons: list[QLabel] = []
-        self._tel_values: list[QLabel] = []
-        self._tel_captions: list[QLabel] = []
-        self._tel_divs: list[QFrame] = []
         self._action_cards: list[GlassCard] = []
         self._cols = 0
 
@@ -304,68 +396,14 @@ class WelcomePage(QWidget):
         id_col.addStretch()
         hb.addLayout(id_col)
         hb.addStretch()
-        root.addWidget(self._hero)
 
-        # ============ 2. SYSTEM STATUS STRIP ==============================
-        # One horizontal bar carrying every system fact: the OS/CPU/RAM
-        # metrics (each glyph in its own brand-accent plaque) on the left,
-        # and the engine/admin state pills on the right. Folding the hero's
-        # old chip column in here is what makes it a true status bar instead
-        # of a metrics ribbon with the status living somewhere else.
-        self._telemetry = DepthCard(radius=TH.RADIUS["card"], t=t)
-        self._telemetry.setObjectName("telemetry")
-        self._telemetry.setFixedHeight(66)
-        tb = QHBoxLayout(self._telemetry)
-        tb.setContentsMargins(TH.SPACE["md"], TH.SPACE["sm"],
-                              TH.SPACE["md"], TH.SPACE["sm"])
-        tb.setSpacing(0)
-        insights = _system_insights()
-        for i, (icon, value, caption) in enumerate(insights):
-            if i > 0:
-                div = QFrame()
-                div.setFixedWidth(1)
-                div.setFixedHeight(32)
-                self._tel_divs.append(div)
-                tb.addWidget(div, 0, Qt.AlignmentFlag.AlignVCenter)
-
-            cell = QHBoxLayout()
-            cell.setContentsMargins(TH.SPACE["lg"], 0, TH.SPACE["lg"], 0)
-            cell.setSpacing(TH.SPACE["md"])
-            # The glyph now sits in a tinted plaque (see telemetry_plaque_qss)
-            # rather than floating bare — the single biggest "premium" cue,
-            # matching the card and sidebar icon wells.
-            icon_lbl = QLabel(icon)
-            icon_lbl.setFixedSize(34, 34)
-            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._tel_icons.append(icon_lbl)
-            cell.addWidget(icon_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
-
-            text_col = QVBoxLayout()
-            text_col.setSpacing(0)
-            # elide long OS strings ("Windows 11 Professional") against a
-            # generous per-cell budget so nothing clips mid-glyph
-            value_font = QFont("Segoe UI")
-            value_font.setPixelSize(15)
-            value_font.setWeight(QFont.Weight.DemiBold)
-            elided = QFontMetrics(value_font).elidedText(
-                value, Qt.TextElideMode.ElideRight, 210)
-            value_lbl = QLabel(elided)
-            if elided != value:
-                value_lbl.setToolTip(value)
-            self._tel_values.append(value_lbl)
-            text_col.addWidget(value_lbl)
-            caption_lbl = QLabel(caption)
-            self._tel_captions.append(caption_lbl)
-            text_col.addWidget(caption_lbl)
-            cell.addLayout(text_col)
-            # Natural width per metric (stretch 0), so the pills below can
-            # own the right end instead of the three cells splaying to fill
-            # the whole bar (the old spread-out, empty-feeling ribbon).
-            tb.addLayout(cell, 0)
-
-        tb.addStretch(1)
-
-        # -- engine / admin state pills, right-anchored -------
+        # Engine / admin state pills, right-anchored in the masthead.
+        # v1.0 REDUNDANCY PASS: these lived in a separate 66px "system
+        # status strip" that ALSO carried OS/CPU/RAM — the same machine
+        # facts the System Pulse card below reports live. One set of
+        # system stats, in one place: the strip is gone, its two session
+        # pills come back here (where they sat before v1.0), and every
+        # machine metric now belongs to System Pulse.
         self._status_pills: list[tuple[QLabel, bool]] = []
         for text, ok in (
             ("Engine Ready" if engine_ok else "Engine Missing", engine_ok),
@@ -374,11 +412,10 @@ class WelcomePage(QWidget):
             pill = QLabel(text)
             pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._status_pills.append((pill, ok))
-            tb.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
-            tb.addSpacing(TH.SPACE["sm"])
-        root.addWidget(self._telemetry)
+            hb.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
+        root.addWidget(self._hero)
 
-        # ============ 3. QUICK ACTIONS ====================================
+        # ============ 2. QUICK ACTIONS ====================================
         head = QHBoxLayout()
         head.setSpacing(14)
         self._section = QLabel("QUICK ACTIONS")
@@ -395,8 +432,8 @@ class WelcomePage(QWidget):
         # the grid re-columns off its OWN width — see ResponsiveGridHost
         grid_host.resized.connect(
             lambda w: self._relayout_actions(self._columns_for(w)))
-        for cat_index, task in self.QUICK_ACTIONS:
-            item, accent = find_action(cat_index, task)
+        for task in self.QUICK_ACTIONS:
+            item, accent = find_action_anywhere(task)
             if item is None:
                 continue   # backend no longer defines it — skip gracefully
             # DISPLAY copy: a concise blurb and no meta-producing keys, so all
@@ -437,7 +474,162 @@ class WelcomePage(QWidget):
         self._scroll.viewport().setStyleSheet("background: transparent;")
         root.addWidget(self._scroll, 1)
 
+        # ============ 4. SYSTEM HEALTH & ACTIVITY =========================
+        # v1.0's answer to the void below the Quick Actions grid: a fixed-
+        # height band of two live cards. FIXED height, deliberately — the
+        # scroll area above keeps the stretch, so a short window shrinks the
+        # (scrollable) action grid rather than crushing the meters, per the
+        # v10 "scrolling is the correct answer to not enough room" rule.
+        head2 = QHBoxLayout()
+        head2.setSpacing(14)
+        self._section2 = QLabel("SYSTEM HEALTH & ACTIVITY")
+        head2.addWidget(self._section2)
+        self._rule2 = QFrame()
+        self._rule2.setFixedHeight(1)
+        head2.addWidget(self._rule2, 1)
+        root.addLayout(head2)
+
+        band = QHBoxLayout()
+        band.setSpacing(TH.SPACE["lg"])
+
+        # -- left: SYSTEM PULSE — live utilisation meters ---------------
+        # Sampling is kernel32 reads on a 2 s timer that runs ONLY while
+        # this page is visible (showEvent/hideEvent below) — the AmbientGlow
+        # suspend discipline applied to data instead of paint.
+        self._pulse_card = DepthCard(radius=TH.RADIUS["card"], t=t)
+        # same card-glass material as the status strip — telemetry_qss is
+        # scoped to QFrame#telemetry, so the band cards take that name
+        self._pulse_card.setObjectName("telemetry")
+        self._pulse_card.setFixedHeight(158)
+        pl = QVBoxLayout(self._pulse_card)
+        pl.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
+                              TH.SPACE["lg"], TH.SPACE["md"])
+        pl.setSpacing(2)
+        self._pulse_title = QLabel("SYSTEM PULSE")
+        pl.addWidget(self._pulse_title)
+        # The machine's identity, in the ONE place machine facts live now
+        # (v1.0 redundancy pass — see the hero's pill comment). The removed
+        # status strip's OS / core-count / RAM facts are folded in here as
+        # this card's subtitle, so the live meters below have the static
+        # spec they are measured against sitting directly above them.
+        self._pulse_spec = QLabel(_system_spec_line())
+        self._pulse_spec.setWordWrap(True)
+        pl.addWidget(self._pulse_spec)
+        pl.addSpacing(2)
+        self._meters: dict[str, MeterBar] = {}
+        for key, label in (("cpu", "PROCESSOR"), ("mem", "MEMORY"),
+                           ("disk", "SYSTEM DRIVE")):
+            meter = MeterBar(label, t)
+            self._meters[key] = meter
+            pl.addWidget(meter)
+        pl.addStretch()
+        band.addWidget(self._pulse_card, 1)
+
+        # -- right: MAINTENANCE & ATTENTION -----------------------------
+        # v1.0 REDUNDANCY PASS: this slot used to be a second "Recent
+        # Activity" list — the same prefs.recent_operations() trail the
+        # sidebar panel already shows on every page. Two renderings of one
+        # list is not a dashboard, it is a duplicate, so the trail now
+        # lives ONLY in the sidebar and this card answers a question
+        # nothing else in the app did: which ROUTINE tasks are overdue?
+        #
+        # That also completes the recurring-task story (menu_structure's
+        # `recurring` key): the card badge tells you a single task is due,
+        # and this panel tells you at a glance whether anything is.
+        self._maint_card = DepthCard(radius=TH.RADIUS["card"], t=t)
+        self._maint_card.setObjectName("telemetry")
+        self._maint_card.setFixedHeight(158)
+        al = QVBoxLayout(self._maint_card)
+        al.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
+                              TH.SPACE["lg"], TH.SPACE["md"])
+        al.setSpacing(2)
+        self._maint_title = QLabel("MAINTENANCE & ATTENTION")
+        al.addWidget(self._maint_title)
+        self._maint_empty = QLabel("")
+        self._maint_empty.setWordWrap(True)
+        al.addWidget(self._maint_empty)
+        self._rows_lay = QVBoxLayout()
+        self._rows_lay.setContentsMargins(0, 2, 0, 0)
+        self._rows_lay.setSpacing(2)
+        al.addLayout(self._rows_lay)
+        al.addStretch()
+        band.addWidget(self._maint_card, 1)
+        root.addLayout(band)
+
+        self._maint_rows: list[QLabel] = []
+        self._t = t
+        self.refresh_maintenance()
+
+        self._pulse_sampler = SystemPulseSampler()
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(2000)
+        self._pulse_timer.timeout.connect(self._tick_pulse)
+
         self.apply_theme(t)
+
+    # -- system pulse lifecycle: sample only while the page is shown ----
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._tick_pulse()          # prime immediately (CPU fills on tick 2)
+        self._pulse_timer.start()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._pulse_timer.stop()
+
+    def _tick_pulse(self):
+        s = self._pulse_sampler.sample()
+        cpu = s["cpu"]
+        self._meters["cpu"].set_value(
+            cpu, f"{round(cpu * 100)}%" if cpu is not None else "—")
+        self._meters["mem"].set_value(s["mem"], s["mem_text"])
+        self._meters["disk"].set_value(s["disk"], s["disk_text"])
+
+    # -- maintenance & attention ----------------------------------------
+    #: Rows the card can show before it would overflow its fixed height.
+    MAINT_ROWS = 3
+
+    def refresh_maintenance(self):
+        """Rebuild the overdue-routine list from stored run history.
+
+        Read straight from prefs rather than cached: the same honesty rule
+        the tweak probe follows — a task's last-run time can change from
+        under us (another Pulse window, a cleared history), so the answer
+        is always recomputed from storage."""
+        history = prefs.task_history()
+        due = due_routines(history)
+        for row in self._maint_rows:
+            self._rows_lay.removeWidget(row)
+            row.deleteLater()
+        self._maint_rows = []
+
+        if not due:
+            self._maint_empty.setText(
+                "All routine maintenance is up to date." if history
+                else "No maintenance run yet — Cache Clean and a Restore "
+                     "Point are good first steps.")
+            self._maint_empty.setVisible(True)
+        else:
+            self._maint_empty.setVisible(False)
+            for title, caption in due[: self.MAINT_ROWS]:
+                row = QLabel(f"●  {title}  —  {caption}")
+                row.setWordWrap(False)
+                self._maint_rows.append(row)
+                self._rows_lay.addWidget(row)
+            extra = len(due) - self.MAINT_ROWS
+            if extra > 0:
+                more = QLabel(f"    +{extra} more due")
+                self._maint_rows.append(more)
+                self._rows_lay.addWidget(more)
+        self._style_maintenance()
+
+    def _style_maintenance(self):
+        t = self._t
+        self._maint_empty.setStyleSheet(TH.label_qss(t, "caption"))
+        for row in self._maint_rows:
+            row.setStyleSheet(
+                f"color: {t['warn']}; font-size: 11px; font-weight: 600;"
+                "background: transparent; border: none;")
 
     def action_cards(self) -> list[GlassCard]:
         """The dashboard's Quick Action cards — the applied-state probe
@@ -482,10 +674,6 @@ class WelcomePage(QWidget):
     # Column counts are driven by ResponsiveGridHost.resized (see the grid
     # construction above), so no resizeEvent/showEvent width guessing here.
 
-    #: The three brand accents, one per metric plaque, so the status strip
-    #: carries the Aurora tri-tone the same way the module grid does.
-    _TEL_ACCENTS = ("accent", "accent2", "accent3")
-
     def apply_theme(self, t: dict):
         self._logo.apply_theme(t)
         self._hero.setStyleSheet(TH.hero_banner_qss(t))
@@ -497,24 +685,6 @@ class WelcomePage(QWidget):
             "letter-spacing: 2px; background: transparent; border: none;")
         self._tag.setStyleSheet(
             TH.label_qss(t, "tagline") + "font-size: 12px; letter-spacing: 1px;")
-
-        self._telemetry.setStyleSheet(TH.telemetry_qss(t))
-        self._telemetry.set_theme(t)
-        for i, lbl in enumerate(self._tel_icons):
-            accent = t[self._TEL_ACCENTS[i % len(self._TEL_ACCENTS)]]
-            # The plaque QSS owns the well; the emoji glyph rides on top,
-            # sized here. Kept as one stylesheet so the plaque's own
-            # background is not clobbered by a second setStyleSheet call.
-            lbl.setStyleSheet(TH.telemetry_plaque_qss(t, accent)
-                              + "QLabel { font-size: 17px; }")
-        for lbl in self._tel_values:
-            lbl.setStyleSheet(
-                f"color: {t['text']}; font-size: 15px; font-weight: 600;"
-                "background: transparent; border: none;")
-        for lbl in self._tel_captions:
-            lbl.setStyleSheet(TH.label_qss(t, "caption"))
-        for div in self._tel_divs:
-            div.setStyleSheet(f"background: {t['panel_line']}; border: none;")
         for pill, ok in self._status_pills:
             pill.setStyleSheet(TH.strip_status_qss(t, ok))
 
@@ -523,6 +693,20 @@ class WelcomePage(QWidget):
         self._scroll.setStyleSheet(TH.scroll_area_qss(t))
         for card in self._action_cards:
             card.apply_theme(t)
+
+        # -- system health & maintenance band -----------------------------
+        self._t = t
+        self._section2.setStyleSheet(TH.label_qss(t, "section"))
+        self._rule2.setStyleSheet(TH.hub_group_rule_qss(t, t["accent2"]))
+        for card_frame in (self._pulse_card, self._maint_card):
+            card_frame.setStyleSheet(TH.telemetry_qss(t))
+            card_frame.set_theme(t)
+        for title in (self._pulse_title, self._maint_title):
+            title.setStyleSheet(TH.label_qss(t, "section"))
+        self._pulse_spec.setStyleSheet(TH.label_qss(t, "caption"))
+        for meter in self._meters.values():
+            meter.set_theme(t)
+        self._style_maintenance()
 
 
 class CategoryPage(QWidget):
@@ -536,6 +720,26 @@ class CategoryPage(QWidget):
 
     MAX_COLUMNS = 4
     MIN_CARD_W = 288   # v9.1: tighter cards → more columns, higher density
+
+    # v1.0 SPARSE MODE — pages with this many cards or fewer (Automation:
+    # 2) trade the fill-the-canvas grid for a centered, width-capped row.
+    # The equal-stretch grid is the right answer for 5+ cards; for two it
+    # produced two ~700px slabs floating mid-canvas with a void on every
+    # side (see the v1.0 audit renders). Centered at a readable width and
+    # top-anchored, the same two cards read as a deliberate composition.
+    SPARSE_MAX_CARDS = 3
+    SPARSE_CARD_W = 430
+
+    #: (label, badge-state key) for the header's status filter. "" is the
+    #: unfiltered default; every other key is a state GlassCard can badge
+    #: (see GlassCard._STATE_BADGES), so no option can be a dead end.
+    FILTERS = [
+        ("All operations", ""),
+        ("Applied", "applied"),
+        ("Not applied", "default"),
+        ("Modified", "mixed"),
+        ("Action due", "due"),
+    ]
 
     home_requested = Signal()
     task_requested = Signal(dict, object)  # (item, GlassCard)
@@ -593,18 +797,24 @@ class CategoryPage(QWidget):
         head.addLayout(title_col)
         head.addStretch()
 
-        # -- v10 filter rail: the header's right-hand side ---------------
-        # The whole right two-thirds of this row was empty. It now carries
-        # the two things a module page can usefully say about itself: how
-        # to narrow it, and how much is in it. The filter matches titles,
-        # descriptions AND a hub's sub-item titles (see
-        # menu_structure.search_haystack), so searching "office" surfaces
-        # the hub that contains it rather than hiding a real match.
-        self._filter = QLineEdit()
-        self._filter.setPlaceholderText("Filter…")
-        self._filter.setFixedSize(200, 32)
-        self._filter.setClearButtonEnabled(True)
-        self._filter.textChanged.connect(self._apply_filter)
+        # -- v1.0 STATUS filter: the header's right-hand side ------------
+        # This was a free-text "Filter…" box, which sat on screen at the
+        # same time as the sidebar's "Search everything…" doorway and left
+        # two inputs competing to answer the same question. Text search is
+        # now unambiguously GLOBAL (one implementation, the Ctrl+K palette,
+        # which already searches every app, tweak and tool); this control
+        # does the thing the palette cannot — narrow the page you are on by
+        # the STATE its cards are in.
+        #
+        # The options are exactly the badge states the app can actually
+        # produce, so a filter can never present a category that renders
+        # empty for a state nothing ever reports.
+        self._filter = QComboBox()
+        self._filter.setFixedSize(190, 32)
+        self._filter.setCursor(Qt.CursorShape.PointingHandCursor)
+        for label, key in self.FILTERS:
+            self._filter.addItem(label, key)
+        self._filter.currentIndexChanged.connect(lambda _i: self.refresh_filter())
         head.addWidget(self._filter, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._count_chip = QLabel()
@@ -641,6 +851,10 @@ class CategoryPage(QWidget):
         # Everything below re-columns over VISIBLE cards only, so filtering
         # reflows the grid instead of leaving holes where hidden cards were.
         self._visible = list(self.cards)
+        # Page-level, not filter-level: filtering a dense page down to two
+        # matches must NOT recentre it mid-keystroke — sparse is a property
+        # of what the page is, not of what a query left showing.
+        self._sparse = len(self.cards) <= self.SPARSE_MAX_CARDS
         self._relayout(2)   # safe default; the first resize event corrects it
 
         # Empty state — a filter that matches nothing must say so; a blank
@@ -669,21 +883,35 @@ class CategoryPage(QWidget):
         gap = self._grid.spacing()
         widest = max((c.minimumSizeHint().width() for c in self.cards),
                      default=self.MIN_CARD_W)
-        unit = max(self.MIN_CARD_W, widest)
+        # sparse pages column against their fixed display width, so the
+        # 2-card row drops to a single column exactly when two capped
+        # cards genuinely no longer fit
+        floor = self.SPARSE_CARD_W if self._sparse else self.MIN_CARD_W
+        unit = max(floor, widest)
         fits = (viewport_w + gap) // (unit + gap)
         return max(1, min(self.MAX_COLUMNS, fits))
 
     # -- filtering -------------------------------------------------
-    def _apply_filter(self, text: str):
-        query = text.strip().lower()
+    def refresh_filter(self):
+        """Re-apply the current status filter.
+
+        Called both when the user changes the dropdown AND whenever card
+        badges are re-decided (main._refresh_card_badges): the filter
+        selects on badge state, so a probe result arriving after the user
+        picked "Action due" has to reflow the grid or the page would keep
+        showing a stale selection."""
+        state = self._filter.currentData() or ""
         self._visible = [
             card for card in self.cards
-            if not query or query in search_haystack(card.item)
+            if not state or card.state() == state
         ]
         shown = set(id(c) for c in self._visible)
         for card in self.cards:
             card.setVisible(id(card) in shown)
-        self._empty.setVisible(bool(query) and not self._visible)
+        self._empty.setText(
+            "No operations in this module are "
+            f"{self._filter.currentText().lower()}.")
+        self._empty.setVisible(bool(state) and not self._visible)
         # force a rebuild: the column count may not change, but WHICH cards
         # occupy which cells certainly has
         self._cols = 0
@@ -697,7 +925,7 @@ class CategoryPage(QWidget):
 
     def _sync_count_chip(self):
         total = category_operations(self.category)
-        filtering = bool(self._filter.text().strip())
+        filtering = bool(self._filter.currentData())
         if filtering:
             self._count_chip.setText(f"{len(self._visible)} OF {len(self.cards)}")
         else:
@@ -713,18 +941,54 @@ class CategoryPage(QWidget):
         self._cols = cols
         for card in self.cards:
             self._grid.removeWidget(card)
+        if self._sparse:
+            self._relayout_sparse(cols)
+            return
+        for col in range(self.MAX_COLUMNS + 2):
+            # +2 clears sparse-mode leftovers if a page ever flips modes —
+            # gutter stretches and minimum widths are sparse-only state
+            self._grid.setColumnStretch(col, 0)
+            self._grid.setColumnMinimumWidth(col, 0)
         for col in range(self.MAX_COLUMNS):
             self._grid.setColumnStretch(col, 1 if col < cols else 0)
-        # v7 spatial fix: give every OCCUPIED row an equal stretch so the
-        # cards share the leftover vertical space and FILL the canvas, instead
-        # of the old single trailing spacer row that top-anchored the grid and
-        # stranded ~50% of the page as dead middle space (the redesign's #1
-        # complaint). Rows past the last occupied one collapse to zero.
+        # v1.0: content rows take NO stretch and one trailing row takes it
+        # all — the dashboard's rule (WelcomePage._relayout_actions), now
+        # shared so every grid in the app anchors the same way.
+        #
+        # This replaces v7's equal-stretch-per-occupied-row, which existed
+        # to stop a short grid top-anchoring above a void. It solved that
+        # for a FULL page and created the mirror-image problem for a short
+        # one: cards are height-capped (CARD_MAX_H), so a stretched row
+        # cannot grow — it just centres its cards inside the slack. With
+        # the v1.0 status filter a page can now show three cards out of
+        # eleven at any time, and those three floated in the middle of the
+        # canvas with dead space above AND below. Anchoring to the top and
+        # pushing all slack below reads as a deliberate result set.
         n_rows = (len(self._visible) + cols - 1) // cols
         for row in range(max(self._grid.rowCount(), n_rows) + 1):
-            self._grid.setRowStretch(row, 1 if row < n_rows else 0)
+            self._grid.setRowStretch(row, 1 if row == n_rows else 0)
         for i, card in enumerate(self._visible):
             self._grid.addWidget(card, i // cols, i % cols)
+
+    def _relayout_sparse(self, cols: int):
+        """Centered, width-capped composition for a page of ≤3 cards: the
+        cards sit in fixed SPARSE_CARD_W columns between two stretch
+        gutters, top-anchored with the slack below (the dashboard's v1.0
+        row rule) — never two slabs stretched across the full canvas,
+        never a row floating in the vertical middle."""
+        n = max(1, min(cols, len(self._visible) or 1))
+        for col in range(self.MAX_COLUMNS + 2):
+            self._grid.setColumnStretch(col, 0)
+            self._grid.setColumnMinimumWidth(col, 0)
+        self._grid.setColumnStretch(0, 1)
+        self._grid.setColumnStretch(n + 1, 1)
+        for col in range(1, n + 1):
+            self._grid.setColumnMinimumWidth(col, self.SPARSE_CARD_W)
+        n_rows = (len(self._visible) + n - 1) // n
+        for row in range(max(self._grid.rowCount(), n_rows) + 1):
+            self._grid.setRowStretch(row, 1 if row == n_rows else 0)
+        for i, card in enumerate(self._visible):
+            self._grid.addWidget(card, i // n, 1 + i % n)
 
     # Column counts are driven by ResponsiveGridHost.resized (see the grid
     # construction above): the width that chooses the column count IS the
@@ -734,15 +998,19 @@ class CategoryPage(QWidget):
     # them lagging a layout pass behind the other.
 
     def focus_filter(self):
-        """Ctrl+L / Ctrl+F target — select-all so typing replaces whatever
-        query is already there, matching every browser address bar."""
+        """Ctrl+Shift+F target — open the status dropdown.
+
+        Plain Ctrl+F no longer lands here: with page-level text search
+        folded into the global palette (v1.0), the muscle-memory "find"
+        keys belong to the one search the app has. This shortcut reaches
+        the status filter, which is a different question."""
         self._filter.setFocus(Qt.FocusReason.ShortcutFocusReason)
-        self._filter.selectAll()
+        self._filter.showPopup()
 
     def apply_theme(self, t: dict):
         self._t = t
         accent = TH.resolve_accent(t, self.category["accent"])
-        self._filter.setStyleSheet(TH.filter_input_qss(t, accent))
+        self._filter.setStyleSheet(TH.filter_combo_qss(t, accent))
         self._empty.setStyleSheet(TH.empty_state_qss(t))
         self._sync_count_chip()
         self._home.apply_theme(t)
@@ -936,6 +1204,21 @@ class PulseApp(QMainWindow):
         side.setContentsMargins(16, 24, 16, 18)
         side.setSpacing(8)
 
+        # -- global search doorway (v1.0) ----------------------
+        # The Linear/Raycast sidebar pattern: a quiet input-shaped button
+        # at the top of the rail that opens the Ctrl+K palette. One search
+        # implementation, two entry points — the button exists for
+        # discoverability (a keyboard-only affordance is invisible to
+        # anyone who hasn't read the shortcut sheet).
+        self._search_btn = QPushButton("🔍  Search everything…")
+        self._search_btn.setFixedHeight(36)
+        self._search_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._search_btn.setToolTip(
+            "Search every app, tweak and tool  (Ctrl+K)")
+        self._search_btn.clicked.connect(self._open_command_palette)
+        side.addWidget(self._search_btn)
+        side.addSpacing(10)
+
         self._section = QLabel("MODULES")
         self._section.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._section.setIndent(10)   # editor-style left-aligned section label
@@ -1065,6 +1348,7 @@ class PulseApp(QMainWindow):
         self._glow.apply_theme(t)
         self._sidebar.setStyleSheet(TH.sidebar_qss(t))
         self._content.setStyleSheet(TH.content_qss(t))
+        self._search_btn.setStyleSheet(TH.sidebar_search_qss(t))
         self._section.setStyleSheet(TH.label_qss(t, "section"))
         self._side_footer.setStyleSheet(TH.label_qss(t, "caption"))
         if self._elevate_btn is not None:
@@ -1176,16 +1460,64 @@ class PulseApp(QMainWindow):
         self._probe_worker = worker
         thread.start()
 
+    @staticmethod
+    def _badge_verdict(task: str | None, verdict) -> str | None:
+        """Badge policy for one ONE-SHOT card. "applied" and "mixed" always
+        show; "default" shows ONLY on the two-way toggle cards
+        (_REVERT_TASKS), where "at Windows defaults" answers a question the
+        card genuinely poses — on a removal card ("Remove Edge") a DEFAULT
+        badge would just be noise restating that Edge exists. Legacy
+        booleans from an older backend normalise so a version-skewed probe
+        stays honest."""
+        if verdict is True:
+            verdict = "applied"
+        elif verdict is False:
+            verdict = "default"
+        if verdict == "default" and task not in _REVERT_TASKS:
+            return None
+        return verdict if verdict in ("applied", "mixed", "default") else None
+
+    def _card_badge(self, item: dict, history: dict) -> str | None:
+        """THE badge decision for any card — one function so the two inputs
+        (the state probe and the run history) can never fight over the same
+        chip, which is what would happen if _on_tweak_state and
+        _refresh_task_history each wrote it.
+
+        A ROUTINE task takes the history branch and never the probe: a
+        cache clean has no durable state to read, so "APPLIED" was a
+        category error — it was run, and then time passed. It badges ACTION
+        DUE once its interval has elapsed (or if it has never run), and
+        otherwise nothing, leaving its "Ran 3d ago" caption to say when.
+        """
+        interval = recurring_days(item)
+        task = item.get("task")
+        if interval is not None:
+            entry = history.get(task)
+            last = float(entry.get("last_ts", 0.0)) if entry else 0.0
+            if not last:
+                return "due"
+            return "due" if (time.time() - last) / 86400.0 >= interval else None
+        return self._badge_verdict(task, self._tweak_state.get(task))
+
+    def _refresh_card_badges(self):
+        """Re-decide every card's badge from the current probe state and
+        run history. Called by both producers, so whichever lands last
+        renders the same answer."""
+        history = prefs.task_history()
+        for page in self.pages:
+            for card in page.cards:
+                card.set_applied(self._card_badge(card.item, history))
+        for card in self.welcome.action_cards():
+            card.set_applied(self._card_badge(card.item, history))
+        for page in self.pages:
+            page.refresh_filter()
+
     def _on_tweak_state(self, result: TaskResult):
         state = result.data if isinstance(result.data, dict) else None
         if not state:
             return
         self._tweak_state = state
-        for page in self.pages:
-            for card in page.cards:
-                card.set_applied(state.get(card.item.get("task")))
-        for card in self.welcome.action_cards():
-            card.set_applied(state.get(card.item.get("task")))
+        self._refresh_card_badges()
 
     def _on_probe_thread_finished(self):
         if self._probe_worker is not None:
@@ -1199,6 +1531,10 @@ class PulseApp(QMainWindow):
     #  RECENT OPERATIONS (sidebar panel, persisted across sessions)
     # ============================================================
     def _refresh_recent(self):
+        # The operations trail has exactly ONE rendering (v1.0 redundancy
+        # pass): this sidebar panel, visible on every page. The dashboard
+        # showed a second copy of the same list until v1.0; its slot now
+        # carries overdue maintenance instead — see WelcomePage.
         self._recent.set_entries(prefs.recent_operations())
 
     def _rerun_recent(self, task: str):
@@ -1228,6 +1564,11 @@ class PulseApp(QMainWindow):
                 card.set_history(history.get(card.item.get("task")))
         for card in self.welcome.action_cards():
             card.set_history(history.get(card.item.get("task")))
+        # A routine task's badge IS a function of its history, so the two
+        # must be pushed together — running a cache clean has to clear its
+        # ACTION DUE chip in the same pass that updates its caption.
+        self._refresh_card_badges()
+        self.welcome.refresh_maintenance()
 
     def _record_task_history(self, outcome: str):
         """Fold the run that just settled into its task's history.
@@ -1399,10 +1740,10 @@ class PulseApp(QMainWindow):
     # below is the single source of truth for both the bindings and the
     # help sheet, so a shortcut can never exist without being documented.
     SHORTCUTS = [
-        ("Ctrl+K",        "Command palette"),
-        ("Ctrl+L  or  Ctrl+F", "Filter this module"),
+        ("Ctrl+K  or  Ctrl+F", "Search everything"),
+        ("Ctrl+Shift+F",  "Filter this module by status"),
         ("Ctrl+H",        "Go to the dashboard"),
-        ("Ctrl+1 … 7",    "Jump to a module"),
+        ("Ctrl+1 … 4",    "Jump to a module"),
         ("Ctrl+\\",       "Show / hide live output"),
         ("↑ ↓ ← →",       "Move between cards"),
         ("Enter / Space", "Run the focused card"),
@@ -1417,8 +1758,12 @@ class PulseApp(QMainWindow):
         bind(Qt.Key.Key_Escape, self.go_home)
         bind("Ctrl+K", self._open_command_palette)
         bind("Ctrl+H", self.go_home)
-        bind("Ctrl+L", self._focus_page_filter)
-        bind("Ctrl+F", self._focus_page_filter)   # the other muscle memory
+        # v1.0: the "find" keys now open the ONE search the app has. The
+        # page-level control they used to focus is a status filter, not a
+        # search, so it moves to its own binding rather than quietly
+        # answering a keypress the user meant for text search.
+        bind("Ctrl+F", self._open_command_palette)
+        bind("Ctrl+Shift+F", self._focus_page_filter)
         bind("Ctrl+\\", self.activity.toggle_pinned)
         bind("F1", self._open_shortcut_sheet)
         bind("?", self._open_shortcut_sheet)
@@ -1426,9 +1771,9 @@ class PulseApp(QMainWindow):
             bind(f"Ctrl+{i + 1}", lambda idx=i: self.open_category(idx))
 
     def _focus_page_filter(self):
-        """Ctrl+L on a module page focuses its filter; on the dashboard,
-        where there is no filter, it falls back to the command palette so
-        the key never does nothing."""
+        """Ctrl+Shift+F on a module page opens its status filter; on the
+        dashboard, which has no filter, it falls back to the command
+        palette so the key never does nothing."""
         page = self.stack.currentWidget()
         if isinstance(page, CategoryPage):
             page.focus_filter()
@@ -1511,6 +1856,47 @@ class PulseApp(QMainWindow):
         if not self.ps1_path:
             self.toasts.show("error", f"{PS1_FILENAME} not found — engine unavailable.", 5000)
             return
+
+        # -- v1.0 chassis guard: the Ultimate Power Plan on battery hardware
+        # The card copy already says "Desktop PCs only"; a machine that
+        # REPORTS A BATTERY gets an explicit danger-styled confirm on top,
+        # because never-sleep AC timeouts on a laptop are a flat (and, in a
+        # bag, hot) battery. Only a definite True escalates — unknown stays
+        # silent rather than warning every desktop with a quirky driver.
+        if task == "UltimatePowerPlan" and has_battery() is True:
+            item = {**item, "danger": True, "confirm": True,
+                    "desc": ("A battery was detected — this machine looks "
+                             "like a laptop or mobile device. This plan "
+                             "disables display and sleep timeouts on AC "
+                             "power and is designed for desktop PCs only. "
+                             "Proceed only if this is genuinely a desktop.")}
+
+        # -- v1.0 two-way toggle: applied tweak -> re-apply / revert choice
+        # Only when the probe DEFINITELY reports the tweak applied (or
+        # modified): unknown keeps the plain apply flow, because offering a
+        # revert for a state we cannot read would promise an undo we cannot
+        # scope. The choice dialog replaces the item's own confirm step —
+        # one click, one question.
+        if (task in _REVERT_TASKS
+                and self._tweak_state.get(task) in ("applied", "mixed", True)):
+            choice = RevertChoiceDialog(self, item, self.theme.t,
+                                        "mixed" if self._tweak_state.get(task) == "mixed"
+                                        else "applied")
+            if self._exec_dialog(choice) != QDialog.DialogCode.Accepted:
+                return
+            if choice.choice == "revert":
+                revert_item = {
+                    "icon": item.get("icon", "↩"),
+                    "glyph": item.get("glyph", ""),
+                    "title": f"Revert: {item['title']}",
+                    "desc": "Restore this tweak to your original values.",
+                    "task": _REVERT_TASKS[task],
+                    "timeout": item.get("timeout", 300),
+                }
+                self._start_task(revert_item, card)
+                return
+            item = {**item}
+            item.pop("confirm", None)   # the choice dialog WAS the confirm
 
         app_ids: list[str] | None = None
         office_paths: tuple[str, str] | None = None
