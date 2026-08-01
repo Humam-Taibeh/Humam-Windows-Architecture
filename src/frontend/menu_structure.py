@@ -500,6 +500,13 @@ CATEGORIES = [
                 {"icon": "📡", "title": "Network & Ping Optimizer",
                  "desc": "Flush DNS and reset Winsock for lower latency.",
                  "glyph": "network", "task": "NetworkOptimization", "timeout": 300, "confirm": True},
+                # Per-adapter, and always reversible — the dialog carries
+                # 'Restore Automatic DNS' beside every profile. See
+                # 15-Network.ps1 for why "all adapters" is not offered.
+                {"icon": "🛰️", "title": "DNS & Network Profiles",
+                 "desc": "Switch a connection to Cloudflare, Quad9 or AdGuard — with a one-click way back.",
+                 "glyph": "network", "task": "NetworkProfiles", "timeout": 300,
+                 "dns_switcher": True},
                 {"icon": "🖱️", "title": "Disable Mouse Acceleration",
                  "desc": "Raw pointer precision — no speed curves or thresholds.",
                  "glyph": "mouse", "task": "DisableMouseAccel", "timeout": 120},
@@ -514,6 +521,14 @@ CATEGORIES = [
                 {"icon": "📋", "title": "Classic Context Menu",
                  "desc": "Restore the full Windows 10 right-click menu.",
                  "glyph": "list", "task": "ClassicContextMenu", "timeout": 120, "note": "Windows 11 only"},
+                # Distinct from the card above, which switches Windows 11
+                # between its short menu and the classic one. This prunes
+                # the ENTRIES inside whichever menu is showing, using
+                # Windows' own block list — see 16-ContextMenu.ps1.
+                {"icon": "🧹", "title": "Context Menu Manager",
+                 "desc": "See every right-click entry and hide the ones you don't use — fully reversible.",
+                 "glyph": "list", "task": "ContextMenuScan", "timeout": 300,
+                 "context_menu": True},
             ]},
             {"title": "PRIVACY & CLEANUP", "items": [
                 {"icon": "📦", "title": "Remove Bloatware",
@@ -804,6 +819,9 @@ ADMIN_REQUIRED_TASKS = frozenset({
     "CreateRestorePoint", "DriverBackup", "RestoreServices", "RestoreEdge", "RestoreOneDrive",
     "ApplyAllPrivacy", "ResetTweaks", "InstallOfficeODT", "InstallOfficeODTAuto",
     "StartupDisableItem", "StartupEnableItem",
+    # v1.0+ Phase 2 DNS switcher — mirrors 01-Catalogs.ps1.
+    "SetDnsProfile", "RestoreDns",
+    "ContextMenuToggle", "ContextMenuRestore",
 })
 
 

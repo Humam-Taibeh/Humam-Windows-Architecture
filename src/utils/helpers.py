@@ -381,7 +381,9 @@ class PowerShellTask(QObject):
                  office_setup: str | None = None, office_config: str | None = None,
                  local_installer_path: str | None = None,
                  startup_item_id: str | None = None,
-                 scan_path: str | None = None):
+                 scan_path: str | None = None,
+                 adapter_name: str | None = None,
+                 dns_profile: str | None = None):
         super().__init__()
         self.ps1_path = ps1_path
         self.task_name = task_name
@@ -396,6 +398,11 @@ class PowerShellTask(QObject):
         self.startup_item_id = startup_item_id
         # Storage Analyzer's scan root — see the argv note in _build_argv.
         self.scan_path = scan_path
+        # DNS switcher: the adapter is addressed by NAME (indexes are
+        # reassigned as adapters come and go), and an adapter name can
+        # contain a comma, so neither rides on -AppIds.
+        self.adapter_name = adapter_name
+        self.dns_profile = dns_profile
         # Resolved by the Office ODT wizard (widgets.OfficeWizardDialog)
         # before this worker is ever constructed — both set, or both None.
         self.office_setup = office_setup
@@ -476,6 +483,12 @@ class PowerShellTask(QObject):
             # would be split into fragments matching no directory.
             argv += ["-ScanPath",
                      validate_backend_arg("The scan path", self.scan_path)]
+        if self.adapter_name:
+            argv += ["-AdapterName",
+                     validate_backend_arg("The adapter name", self.adapter_name)]
+        if self.dns_profile:
+            argv += ["-DnsProfile",
+                     validate_backend_arg("The DNS profile", self.dns_profile)]
         if self.dry_run:
             argv.append("-WhatIf")
         return argv

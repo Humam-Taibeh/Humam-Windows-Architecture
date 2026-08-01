@@ -482,5 +482,16 @@ $Script:AdminRequiredTasks = @(
     # HKLM and fail with access-denied instead of being blocked cleanly.
     # tests/test_contract.py::test_revert_admin_gating_matches_apply pins
     # the pairing so the two lists cannot drift apart.
-    "RevertDisableTelemetry","RevertDisableActivityHistory"
+    "RevertDisableTelemetry","RevertDisableActivityHistory",
+    # v1.0+ Phase 2: DNS configuration lives in the adapter's
+    # machine-scope settings, so both the apply and its undo need
+    # elevation. Listed as a PAIR deliberately - a revert must need
+    # exactly the rights its counterpart needed, or the undo blocks
+    # on a machine that could perform the change.
+    "SetDnsProfile","RestoreDns",
+    # The shell block list is machine-scope HKLM. The SCAN
+    # (ContextMenuScan) is deliberately absent - reading the menu
+    # needs no rights, and gating it would prompt for elevation
+    # just to look.
+    "ContextMenuToggle","ContextMenuRestore"
 )

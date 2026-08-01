@@ -134,6 +134,65 @@ def test_band_headers_are_themed_in_both_modes(qapp):
         theme.toggle()
 
 
+@pytest.mark.parametrize("width", [1100, 1440, 1920])
+def test_content_column_edges_line_up(window, qapp, width):
+    """The card grid and the page header share one content column.
+
+    Measured, because this is the class of defect that never looks like a
+    bug and always looks like sloppiness: the grid shipped with margins of
+    (2, 4, 12, 4), which put the last card's right edge 34px inside the
+    count chip above it while the left edge sat 2px OUTSIDE the
+    breadcrumb — flush on one side, floating on the other. The band rule
+    separately overhung the last card by one 16px gutter because it
+    spanned MAX_COLUMNS rather than the live column count.
+    """
+    original = window.size()
+    window.resize(width, 900)
+    qapp.processEvents()
+    try:
+        window.open_category(1)          # System & Tweaks: banded, 12 cards
+        for _ in range(6):
+            qapp.processEvents()
+        page = window.pages[1]
+
+        def left(widget):
+            return widget.mapTo(page, widget.rect().topLeft()).x()
+
+        def right(widget):
+            return widget.mapTo(page, widget.rect().topRight()).x()
+
+        header, cards = page._bands[0]
+        assert header is not None
+        assert left(cards[0]) == left(page._home), (
+            f"@{width}px: cards start {left(cards[0]) - left(page._home)}px "
+            "from the page header's left edge")
+
+        last = cards[min(page._cols, len(cards)) - 1]
+        assert right(header) == right(last), (
+            f"@{width}px: the band rule overhangs the last card by "
+            f"{right(header) - right(last)}px")
+    finally:
+        window.resize(original)
+        qapp.processEvents()
+
+
+def test_band_headers_hug_the_cards_they_label(qapp):
+    """Proximity: a header belongs to the band BELOW it, so the air above
+    it must exceed the air below. Equidistant headers read as loose rows
+    rather than as groups."""
+    page = CategoryPage(CATEGORIES[1], TH.ThemeManager().t)
+    page.resize(1200, 900)
+    qapp.processEvents()
+    for index, (header, cards) in enumerate(page._bands):
+        assert header is not None
+        top = header.layout().contentsMargins().top()
+        if index == 0:
+            assert top == 0, "the first band already has the page header above it"
+        else:
+            assert top > 0, (
+                f"band {index} has no separation from the band above it")
+
+
 # ============================================================
 #  SPARSE MODE
 # ============================================================

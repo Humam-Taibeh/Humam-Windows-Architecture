@@ -67,6 +67,7 @@ from frontend.widgets import (  # noqa: E402
     ActivationStatusDialog, ActivityDrawer, AmbientGlow,
     BreathingIcon,
     CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
+    ContextMenuDialog, DnsSwitcherDialog,
     ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog, MeterBar,
     NavButton,
     NavPill, OfficeWizardDialog, PlaybookDialog, PowerHealthDialog,
@@ -843,7 +844,19 @@ class CategoryPage(QWidget):
 
         grid_host = ResponsiveGridHost()
         self._grid = QGridLayout(grid_host)
-        self._grid.setContentsMargins(2, 4, 12, 4)
+        # SYMMETRIC, and zero on the sides. The page layout's own 8px
+        # margin is what insets the content column, so the header row and
+        # the card grid share one left and right edge.
+        #
+        # This was (2, 4, 12, 4). Measured on a 1440px window that put the
+        # last card's right edge 34px inside the count chip above it while
+        # the left edge sat 2px outside the breadcrumb — a content column
+        # that was flush on one side and floating on the other, which is
+        # the kind of misalignment that reads as "unfinished" without ever
+        # being obvious enough to point at. The scroll area shrinks its own
+        # viewport when the scrollbar appears, so no manual right gutter is
+        # needed to clear it.
+        self._grid.setContentsMargins(0, TH.SPACE["xs"], 0, TH.SPACE["xs"])
         self._grid.setSpacing(TH.SPACE["lg"])
         # the grid re-columns off its OWN width — see ResponsiveGridHost
         grid_host.resized.connect(lambda w: self._relayout(self._columns_for(w)))
@@ -874,7 +887,8 @@ class CategoryPage(QWidget):
                 self.cards.append(card)
                 band_cards.append(card)
                 idx += 1
-            header = self._band_header(band_title, t) if band_title else None
+            header = (self._band_header(band_title, t, first=not self._bands)
+                      if band_title else None)
             self._bands.append((header, band_cards))
         # Everything below re-columns over VISIBLE cards only, so filtering
         # reflows the grid instead of leaving holes where hidden cards were.
@@ -903,7 +917,7 @@ class CategoryPage(QWidget):
 
         self.apply_theme(t)
 
-    def _band_header(self, title: str, t: dict) -> QWidget:
+    def _band_header(self, title: str, t: dict, first: bool = False) -> QWidget:
         """A section band's header: an accent-tinted title plus a 1px rule
         fading out to the right.
 
@@ -920,8 +934,15 @@ class CategoryPage(QWidget):
         host = QWidget()
         host.setStyleSheet("background: transparent;")
         row = QHBoxLayout(host)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(12)
+        # PROXIMITY: a band header belongs to the cards BELOW it, so the
+        # gap above it is larger than the gap under it. Every band after
+        # the first opens with a full step of air; the first sits tight
+        # under the page header, which already provides that separation.
+        # Without this the grid's uniform 16px row gap made each header
+        # equidistant from the band it labels and the band it follows,
+        # which reads as three loose rows rather than three groups.
+        row.setContentsMargins(0, 0 if first else TH.SPACE["md"], 0, 0)
+        row.setSpacing(TH.SPACE["md"])
         label = QLabel(title)
         label.setObjectName("bandTitle")
         row.addWidget(label)
@@ -1046,7 +1067,11 @@ class CategoryPage(QWidget):
             if header is not None:
                 header.setVisible(bool(visible_here))
                 if visible_here:
-                    self._grid.addWidget(header, row, 0, 1, self.MAX_COLUMNS)
+                    # Span the LIVE column count, not MAX_COLUMNS. Spanning
+                    # unused columns still includes the grid spacing before
+                    # them, so on a 3-up page the header's rule overhung the
+                    # last card's right edge by exactly one 16px gutter.
+                    self._grid.addWidget(header, row, 0, 1, cols)
                     row += 1
             for i, card in enumerate(visible_here):
                 self._grid.addWidget(card, row + i // cols, i % cols)
@@ -2030,6 +2055,22 @@ class PulseApp(QMainWindow):
             # flips items live via its own workers. Nothing to hand back —
             # open it and move on, exactly like a plain informational card.
             StartupManagerDialog(self, self.ps1_path, self.theme.t).exec()
+            return
+        if item.get("context_menu"):
+            # Self-contained like the DNS switcher: per-row toggles on a
+            # live list, re-scanned after every change so the rows show
+            # the registry rather than the request.
+            self._exec_dialog(ContextMenuDialog(
+                self, self.ps1_path, self.theme.t, is_admin=self.is_admin))
+            return
+        if item.get("dns_switcher"):
+            # Self-contained like the Startup Manager: it scans, applies
+            # per-adapter and re-scans through its own workers, so there
+            # is no selection for the task pipeline to carry. `is_admin`
+            # is passed in so the dialog can show what each adapter uses
+            # WITHOUT elevation and disable only the change buttons.
+            self._exec_dialog(DnsSwitcherDialog(
+                self, self.ps1_path, self.theme.t, is_admin=self.is_admin))
             return
         if item.get("storage_analyzer"):
             # Same shape: a read-only scan that hands nothing back. It owns

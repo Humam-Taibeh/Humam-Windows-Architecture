@@ -3310,13 +3310,21 @@ class InspectorDialog(PulseDialog):
     a self-contained panel that hands nothing back must not be able to
     block a real operation just by being open.
 
-    THE SHARED CONTRACT, and the reason this is a base class rather than
-    three copies: all three are REPORTS. Every one of them reads, renders
-    and stops. None writes a value, deletes a file, or changes a setting —
-    where an action genuinely belongs (open Explorer, run System Restore)
-    they hand off to the Windows surface that owns it, visibly, and take
-    no further part. Subclasses supply a task name, a title and a
-    `_render`; they do not get a mutation path.
+    WHAT THE BASE PROVIDES is the READ half: run one backend task, take
+    its DATA document, render it, and offer a re-check. Subclasses supply
+    a task name, a title and a `_render`.
+
+    THE THREE INSPECTORS THEMSELVES ARE READ-ONLY — that is a property of
+    Power Health, Restore Points and Storage Analyzer, not of this class.
+    Each reads, renders and stops; where an action genuinely belongs
+    (open Explorer, run System Restore) they hand off to the Windows
+    surface that owns it, visibly, and take no further part.
+    tests/test_contract.py asserts that of the modules behind them.
+
+    DnsSwitcherDialog also builds on this, and it DOES mutate. It is not
+    a violation of the above: what it inherits is the scan-and-render
+    plumbing, and its own changes are elevated, per-adapter and paired
+    with a restore. A subclass that mutates owes the user an undo.
     """
 
     #: Subclasses override. `TASK` must be allow-listed in
@@ -3881,6 +3889,335 @@ class StorageAnalyzerDialog(InspectorDialog):
             "Pulse never deletes anything from this screen. Reveal opens the "
             "item in File Explorer, where Windows' own delete, undo and "
             "Recycle Bin apply.")
+
+
+class DnsSwitcherDialog(InspectorDialog):
+    """F4 — per-adapter DNS profiles, with a one-click way back.
+
+    Pointing a PC at Cloudflare or Quad9 is one of the few single changes
+    that improves speed AND privacy at once, and by hand it is five nested
+    adapter dialogs. This is that change, scoped to one connection.
+
+    SELF-CONTAINED, like the Startup Manager: it scans, applies and
+    re-scans through its own workers rather than handing a selection back
+    to main.py's pipeline. A DNS switch is a per-row action on a live
+    list, not a batch the shell can queue.
+
+    EVERY PROFILE SITS BESIDE ITS UNDO. 'Automatic (DHCP)' is the first
+    option on every adapter, not a footnote — a network tool that can
+    strand a machine with no visible way back is a hazard, and the way
+    back has to be as reachable as the way in.
+    """
+
+    TASK = "NetworkProfiles"
+    TITLE = "🛰️  DNS & Network Profiles"
+    LOADING = "Reading network adapters…"
+    ACCENT_KEY = "optimization"
+    TIMEOUT = 120
+
+    #: The restore option, rendered as a profile like any other so it is
+    #: never the odd one out at the bottom of a list.
+    DHCP_KEY = "dhcp"
+
+    def __init__(self, parent: QWidget, ps1_path: str, t: dict,
+                 is_admin: bool = True):
+        self._is_admin = is_admin
+        self._busy = False
+        self._profiles: list[dict] = []
+        super().__init__(parent, ps1_path, t)
+
+    def action_buttons(self, t: dict, accent: str) -> list[QPushButton]:
+        return [
+            self._button("Close", TH.dialog_cancel_qss(t), self.reject, 88),
+            self._button("Re-scan", TH.dialog_secondary_go_qss(t, accent),
+                         self._start, 120),
+        ]
+
+    # -- rendering ------------------------------------------------
+    def _render(self, report: dict):
+        adapters = report.get("adapters") or []
+        self._profiles = report.get("profiles") or []
+        doh = bool(report.get("dohSupported"))
+
+        if not adapters:
+            self._status.setText("No connected network adapters were found.")
+            self._card("Adapters").note(
+                "Pulse lists physical adapters that are currently up. A "
+                "machine on Wi-Fi with the adapter disabled, or one behind "
+                "a virtual switch only, will show nothing here.")
+            return
+
+        self._status.setText(
+            f"{len(adapters)} connected adapter(s). Changes apply to ONE "
+            "adapter at a time and can be undone with Automatic (DHCP)."
+            + ("" if doh else
+               " This build of Windows cannot encrypt DNS (DoH needs "
+               "Windows 11), so profiles are applied unencrypted."))
+
+        if not self._is_admin:
+            warn = self._card("Administrator required", ("NOT ELEVATED", "warn"))
+            warn.note(
+                "DNS lives in the adapter's machine-scope settings, so "
+                "changing it needs an elevated Pulse. You can still see "
+                "what each adapter is using now.")
+
+        for adapter in adapters:
+            self._adapter_card(adapter, doh)
+
+    def _adapter_card(self, adapter: dict, doh: bool):
+        name = str(adapter.get("name") or "Adapter")
+        active = str(adapter.get("activeKey") or "custom")
+        servers = adapter.get("v4") or []
+
+        label = {"dhcp": "AUTOMATIC", "custom": "CUSTOM"}.get(
+            active, active.upper())
+        tone = "ok" if active not in ("custom",) else ""
+        card = self._card(f"{name}", (label, tone))
+        card.row("Adapter", str(adapter.get("description") or ""),
+                 label_width=self._LABEL_W)
+        card.row("Current DNS",
+                 ", ".join(servers) if servers
+                 else "Automatic (provided by your router)",
+                 label_width=self._LABEL_W)
+
+        # One row of choices per adapter. Automatic comes FIRST — see the
+        # class docstring; the undo is not a footnote.
+        strip, row = _chip_strip(self._t, 40)
+        row.addWidget(self._profile_button(
+            name, self.DHCP_KEY, "Automatic (DHCP)", active == self.DHCP_KEY))
+        for profile in self._profiles:
+            key = str(profile.get("key"))
+            row.addWidget(self._profile_button(
+                name, key, str(profile.get("name") or key), active == key))
+        row.addStretch()
+        card.add(strip)
+
+        note = next((p.get("note") for p in self._profiles
+                     if p.get("key") == active), None)
+        if note:
+            card.note(str(note))
+
+    def _profile_button(self, adapter: str, key: str, label: str,
+                        current: bool) -> QPushButton:
+        btn = QPushButton(label.replace("&", "&&"))
+        btn.setFixedHeight(32)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(TH.catalog_tab_qss(self._t, self._accent, current))
+        # The active profile is shown as the selected pill and does
+        # nothing when clicked: re-applying what is already set would run
+        # an elevated task to achieve no change.
+        btn.setEnabled(self._is_admin and not current and not self._busy)
+        if current:
+            btn.setToolTip("This adapter is already using this profile.")
+        elif not self._is_admin:
+            btn.setToolTip("Changing DNS needs an elevated Pulse.")
+        btn.clicked.connect(
+            lambda _c=False, a=adapter, k=key: self._apply(a, k))
+        return btn
+
+    # -- mutation -------------------------------------------------
+    def _apply(self, adapter: str, key: str):
+        """Apply one profile to one adapter, then re-scan so the card
+        reflects what the machine actually reports rather than what was
+        requested — the two differ whenever a driver rejects a change."""
+        if self._busy or self._worker is not None:
+            return
+        self._busy = True
+        restoring = key == self.DHCP_KEY
+        self._status.setText(
+            f"Restoring automatic DNS on {adapter}…" if restoring
+            else f"Applying {key} to {adapter}…")
+
+        thread = QThread(self)
+        worker = PowerShellTask(
+            self._ps1, "RestoreDns" if restoring else "SetDnsProfile",
+            timeout=120, adapter_name=adapter,
+            dns_profile=None if restoring else key)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_applied)
+        worker.failed.connect(self._on_apply_failed)
+        for signal in (worker.finished, worker.failed, worker.cancelled):
+            signal.connect(thread.quit)
+        thread.finished.connect(self._cleanup)
+        self._thread, self._worker = thread, worker
+        thread.start()
+
+    def _on_applied(self, result: TaskResult):
+        self._busy = False
+        self._status.setText(result.message or "DNS updated.")
+        # Re-scan on a beat so the worker teardown finishes first.
+        QTimer.singleShot(120, self._start)
+
+    def _on_apply_failed(self, message: str):
+        self._busy = False
+        self._status.setText(f"Could not change DNS: {message}")
+
+
+class ContextMenuDialog(InspectorDialog):
+    """F5 — every right-click entry, with the clutter switchable off.
+
+    Windows ships no UI for this, so menus accumulate an entry from every
+    installer that ever ran and there is no way to see what put them
+    there. This lists them all with their owner.
+
+    TWO SAFETY PROPERTIES, both visible in the UI rather than merely
+    promised in a docstring:
+
+    ONLY CURATED ENTRIES ARE TOGGLABLE. Everything found is listed, but a
+    handler Pulse does not recognise renders greyed with its owning module
+    and no switch. Shell extensions can be load-bearing — a security
+    suite's scan hook, a backup tool's provider — and a manager that
+    happily blocks anything it can enumerate is a way to break a machine
+    subtly. Seeing the entry is useful; being offered a switch for it is
+    not.
+
+    NOTHING IS DELETED. Hiding an entry adds its CLSID to Windows' own
+    block list; showing it removes that value. The extension's own
+    registration is never touched, which is what makes Restore All
+    complete by construction rather than best-effort.
+    """
+
+    TASK = "ContextMenuScan"
+    TITLE = "🧹  Context Menu Manager"
+    LOADING = "Reading shell context-menu handlers…"
+    ACCENT_KEY = "optimization"
+    TIMEOUT = 300
+
+    def __init__(self, parent: QWidget, ps1_path: str, t: dict,
+                 is_admin: bool = True):
+        self._is_admin = is_admin
+        self._busy = False
+        self._has_backup = False
+        super().__init__(parent, ps1_path, t)
+
+    def action_buttons(self, t: dict, accent: str) -> list[QPushButton]:
+        self._restore_btn = self._button(
+            "Restore All", TH.dialog_secondary_go_qss(t, accent),
+            self._restore, 140)
+        self._restore_btn.setToolTip(
+            "Put every context-menu entry back exactly as it was before "
+            "Pulse changed anything.")
+        self._restore_btn.setEnabled(False)
+        return [
+            self._button("Close", TH.dialog_cancel_qss(t), self.reject, 88),
+            self._restore_btn,
+            self._button("Re-scan", TH.dialog_go_qss(t, accent), self._start, 120),
+        ]
+
+    def _render(self, report: dict):
+        items = report.get("items") or []
+        managed = [i for i in items if i.get("managed")]
+        others = [i for i in items if not i.get("managed")]
+        self._has_backup = bool(report.get("hasBackup"))
+        self._restore_btn.setEnabled(self._is_admin and self._has_backup)
+
+        hidden = sum(1 for i in items if not i.get("enabled"))
+        self._status.setText(
+            f"{len(items)} handler(s) registered · {len(managed)} manageable · "
+            f"{hidden} currently hidden."
+            + ("" if self._is_admin else
+               "  Changing entries needs an elevated Pulse."))
+
+        if managed:
+            card = self._card("Manageable entries",
+                              (f"{len(managed)} ITEMS", ""))
+            for item in managed:
+                self._toggle_row(card, item)
+        else:
+            self._card("Manageable entries").note(
+                "None of the handlers on this machine are ones Pulse "
+                "manages. That is a good sign, not a failure — it means "
+                "nothing recognised as safe-to-hide is installed.")
+
+        if others:
+            card = self._card("Other handlers", (f"{len(others)} ITEMS", ""))
+            card.note(
+                "Listed so you can see what is in your menu. Pulse does not "
+                "offer to change these: a shell extension can be doing real "
+                "work — a scanner hook, a sync provider — and blocking one "
+                "blind is how a machine breaks in a way nobody connects "
+                "back to a context menu.")
+            for item in others[:40]:
+                owner = str(item.get("owner") or "unknown module")
+                card.row(str(item.get("label") or ""),
+                         f"{item.get('scope')} · {os.path.basename(owner) if owner else ''}",
+                         label_width=240)
+            if len(others) > 40:
+                card.note(f"Showing 40 of {len(others)}.")
+
+    def _toggle_row(self, card: ReportSubCard, item: dict):
+        line = QWidget()
+        line.setStyleSheet("background: transparent;")
+        row = QHBoxLayout(line)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(TH.SPACE["sm"])
+
+        name = ElidedCaption()
+        name.setFullText(f"{item.get('label')}   ·   {item.get('scope')}")
+        name.setStyleSheet(TH.label_qss(self._t, "body"))
+        row.addWidget(name, 1)
+
+        owner = QLabel(str(item.get("owner") or ""))
+        owner.setStyleSheet(TH.label_qss(self._t, "caption"))
+        owner.setFixedWidth(150)
+        row.addWidget(owner)
+
+        enabled = bool(item.get("enabled"))
+        btn = QPushButton("Visible" if enabled else "Hidden")
+        btn.setFixedSize(88, 28)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(TH.catalog_tab_qss(self._t, self._accent, enabled))
+        btn.setEnabled(self._is_admin and not self._busy)
+        btn.setToolTip(
+            "Hide this entry from right-click menus." if enabled
+            else "Bring this entry back.")
+        btn.clicked.connect(
+            lambda _c=False, c=str(item.get("clsid")), e=enabled:
+            self._toggle(c, not e))
+        row.addWidget(btn)
+        card.add(line)
+
+    # -- mutation -------------------------------------------------
+    def _toggle(self, clsid: str, enable: bool):
+        if self._busy or self._worker is not None or not clsid:
+            return
+        self._busy = True
+        self._status.setText("Updating the context menu…")
+        # "{CLSID}|||on" — the opaque single-item channel; see the
+        # ContextMenuToggle dispatcher case for why -AppIds cannot carry it.
+        self._run_mutation("ContextMenuToggle",
+                           startup_item_id=f"{clsid}|||{'on' if enable else 'off'}")
+
+    def _restore(self):
+        if self._busy or self._worker is not None:
+            return
+        self._busy = True
+        self._status.setText("Restoring the context menu…")
+        self._run_mutation("ContextMenuRestore")
+
+    def _run_mutation(self, task: str, **kwargs):
+        thread = QThread(self)
+        worker = PowerShellTask(self._ps1, task, timeout=180, **kwargs)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_changed)
+        worker.failed.connect(self._on_change_failed)
+        for signal in (worker.finished, worker.failed, worker.cancelled):
+            signal.connect(thread.quit)
+        thread.finished.connect(self._cleanup)
+        self._thread, self._worker = thread, worker
+        thread.start()
+
+    def _on_changed(self, result: TaskResult):
+        self._busy = False
+        self._status.setText(result.message or "Context menu updated.")
+        # Re-scan so every row reflects the registry, not the request.
+        QTimer.singleShot(120, self._start)
+
+    def _on_change_failed(self, message: str):
+        self._busy = False
+        self._status.setText(f"Could not change the context menu: {message}")
 
 
 class CloseConfirmDialog(PulseDialog):

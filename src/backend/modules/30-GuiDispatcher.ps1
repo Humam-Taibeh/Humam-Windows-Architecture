@@ -754,6 +754,84 @@ function Invoke-GuiTask {
                 Write-Output "##PULSE##SUCCESS|$(Get-RestorePointSummaryLine -Report $Report)"
                 break
             }
+            # ============ CONTEXT MENU MANAGER (16-ContextMenu.ps1) ======
+            "ContextMenuScan" {
+                # Unelevated: enumerating handlers and reading the block
+                # list needs no rights, and gating it would raise a UAC
+                # prompt just to LOOK at the right-click menu.
+                Write-Log "GUI-TASK: enumerating shell context-menu handlers."
+                $Report = Get-PulseContextMenuReport
+                Write-GuiData -Data $Report
+                Write-Output "##PULSE##SUCCESS|$(@($Report.items).Count) handler(s) found; $($Report.managed) manageable, $($Report.blocked) currently hidden."
+                break
+            }
+            "ContextMenuToggle" {
+                if ([string]::IsNullOrWhiteSpace($StartupItemId)) {
+                    Write-Output "##PULSE##ERROR|No context-menu handler was supplied."
+                    break
+                }
+                # Reuses -StartupItemId as the opaque "one item, verbatim"
+                # channel: "{CLSID}|||on|off". Same reason that parameter
+                # exists at all - it is the argument that must survive a
+                # value containing anything, unlike the comma-split -AppIds.
+                $Parts = $StartupItemId -split '\|\|\|'
+                if ($Parts.Count -lt 2) {
+                    Write-Output "##PULSE##ERROR|Malformed context-menu item id."
+                    break
+                }
+                $TargetClsid = $Parts[0]
+                $WantEnabled = ($Parts[1] -eq 'on')
+                Complete-GuiTask -Action {
+                    [void](Set-PulseContextMenuState -Clsid $TargetClsid -Enabled $WantEnabled)
+                } -SuccessMessage "Context menu updated. Explorer applies it to new windows immediately." `
+                  -FailureMessage "The context-menu entry could not be changed."
+                break
+            }
+            "ContextMenuRestore" {
+                Complete-GuiTask -Action { [void](Restore-PulseContextMenus) } `
+                    -SuccessMessage "Every context-menu entry Pulse hid has been restored." `
+                    -FailureMessage "The context menu could not be restored."
+                break
+            }
+
+            # ============ DNS & NETWORK PROFILES (15-Network.ps1) ========
+            "NetworkProfiles" {
+                # Read-only inventory: adapters, their current resolvers,
+                # the profile catalog and whether this OS can do encrypted
+                # DNS. Unelevated — reading adapter configuration needs no
+                # rights, and gating it would raise a UAC prompt just to
+                # LOOK at a setting.
+                Write-Log "GUI-TASK: reading network adapters and DNS profiles."
+                $Report = Get-PulseNetworkReport
+                Write-GuiData -Data $Report
+                Write-Output "##PULSE##SUCCESS|$(@($Report.adapters).Count) connected adapter(s) found."
+                break
+            }
+            "SetDnsProfile" {
+                if ([string]::IsNullOrWhiteSpace($AdapterName) -or
+                    [string]::IsNullOrWhiteSpace($DnsProfile)) {
+                    Write-Output "##PULSE##ERROR|No adapter or DNS profile was supplied."
+                    break
+                }
+                Complete-GuiTask -Action {
+                    [void](Set-PulseDnsProfile -AdapterName $AdapterName -ProfileKey $DnsProfile)
+                } -SuccessMessage "DNS updated on '$AdapterName'. Use 'Restore Automatic DNS' to undo." `
+                  -FailureMessage "The DNS profile could not be applied to '$AdapterName'."
+                break
+            }
+            "RestoreDns" {
+                # The undo for SetDnsProfile, and the reason offering DNS
+                # switching at all is safe. Its own case, its own card.
+                if ([string]::IsNullOrWhiteSpace($AdapterName)) {
+                    Write-Output "##PULSE##ERROR|No adapter was supplied."
+                    break
+                }
+                Complete-GuiTask -Action {
+                    [void](Restore-PulseDnsDefaults -AdapterName $AdapterName)
+                } -SuccessMessage "'$AdapterName' is back on automatic (DHCP-provided) DNS." `
+                  -FailureMessage "DNS could not be reset on '$AdapterName'."
+                break
+            }
             "StorageScan" {
                 # -ScanPath selects the root; empty means the system drive.
                 # The scan is time-budgeted inside Get-PulseStorageScan and

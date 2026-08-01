@@ -40,11 +40,10 @@ MANIFEST = os.path.join(ASSET_DIR, "manifest.json")
 INDEX_URL = "https://cdn.jsdelivr.net/npm/simple-icons@13/_data/simple-icons.json"
 ICON_URL = "https://cdn.jsdelivr.net/npm/simple-icons@13/icons/{slug}.svg"
 
-#: winget AppId -> Simple Icons slug, or None when no authentic mark is
-#: available. The None entries are documented, not forgotten — and every
-#: one of them is now covered by a PULSE-DRAWN mark instead (see
-#: DRAWN_MARKS below), so nothing in the catalog falls back to the neutral
-#: placeholder:
+#: winget AppId -> Simple Icons slug, or None when this set has no
+#: authentic mark. The None entries are documented, not forgotten; three
+#: of them are picked up from a brand-logo set by LOGO_MAP below, and the
+#: rest genuinely have no open-licensed logo anywhere:
 #:
 #:   Microsoft.VisualStudioCode / Microsoft.Edge / Microsoft.DirectX
 #:       Simple Icons REMOVED every Microsoft product mark under
@@ -118,41 +117,59 @@ ICON_MAP: dict[str, str | None] = {
 }
 
 
-#: AppIds covered by a mark DRAWN FOR PULSE rather than fetched — the
-#: entries above that map to None. These files are committed to the repo
-#: and this script must never overwrite or forget them.
+# ============================================================
+#  SECOND SOURCE: FULL-COLOUR OFFICIAL BRAND LOGOS
+# ============================================================
+#: winget AppId -> an Iconify icon id from a BRAND-LOGO collection.
 #:
-#: THEY ARE NOT BRAND LOGOS AND MUST NOT BE PRESENTED AS ONE. Every app
-#: here has no authentic mark in any open, licensed set (checked against
-#: the full Simple Icons index, ~3300 marks), and drawing an approximation
-#: of a real logo from memory would be worse than the placeholder it
-#: replaces: an inaccurate Edge swirl or VS Code ribbon shipped as the
-#: vendor's own artwork is a fabrication, and this file's own rule is that
-#: a WRONG logo is worse than no logo.
+#: Simple Icons (above) is a monochrome SILHOUETTE set — one flat path per
+#: brand, recoloured at paint time. It is excellent, and it is also why
+#: Microsoft's marks are absent: Simple Icons removed every Microsoft
+#: product logo under Microsoft's trademark policy.
 #:
-#: What they are instead is a set of purpose-drawn PICTOGRAMS naming what
-#: the software does — a code bracket for an editor, a CPU die for CPU-Z,
-#: a thermometer for HWMonitor. That keeps every catalog row a crisp,
-#: distinct vector (the actual goal: no row looks broken or unfinished)
-#: while claiming nothing untrue. They deliberately avoid the LETTER
-#: MONOGRAM the neutral glyph replaced — a pictogram describes, a bare
-#: initial pretends to be branding.
+#: This map is the answer to that gap. It pulls from Iconify's brand-logo
+#: collections — principally `logos` (SVG Logos by Gil Barbara, CC0, ~1861
+#: marks) — which carry the REAL, FULL-COLOUR artwork: VS Code's blue
+#: ribbon with its actual gradient, Edge's actual swirl. These are the
+#: vendors' own marks, not renditions, and they render in their true
+#: colours rather than as a recoloured silhouette (see `color: true` in
+#: the manifest and _brand_pixmap in src/utils/appicons.py).
 #:
-#: Each entry mirrors the manifest record its SVG already carries, and is
-#: written back with "drawn": true so the runtime, the tests and the next
-#: person can tell the two tiers apart at a glance.
-DRAWN_MARKS: dict[str, dict] = {
-    "Microsoft.VisualStudioCode": {"hex": "#3C8CE0", "title": "VS Code"},
-    "Anysphere.Cursor": {"hex": "#7A5CFF", "title": "Cursor IDE"},
-    "Microsoft.Edge": {"hex": "#2B8FD8", "title": "Microsoft Edge"},
-    "Microsoft.DirectX": {"hex": "#5B7CD8", "title": "DirectX Runtime"},
-    "OpenWebUI.OpenWebUI": {"hex": "#4EA8A0", "title": "Open WebUI"},
-    "BlueStacks.BlueStacks": {"hex": "#4A9BE8", "title": "BlueStacks"},
-    "CPUID.CPU-Z": {"hex": "#C8803A", "title": "CPU-Z"},
-    "CPUID.HWMonitor": {"hex": "#D2603C", "title": "HWMonitor"},
-    "TechPowerUp.GPU-Z": {"hex": "#4E9E5C", "title": "GPU-Z"},
-    "CrystalDewWorld.CrystalDiskInfo": {"hex": "#3B8FC4",
-                                        "title": "CrystalDiskInfo"},
+#: WHAT IS STILL MISSING, and why nothing is invented to cover it:
+#: BlueStacks, DirectX, CPU-Z, GPU-Z, HWMonitor, CrystalDiskInfo and Open
+#: WebUI have NO authentic mark in any open, licensed icon set. That was
+#: not assumed — it was measured against the full Simple Icons index
+#: (~3300 marks), the whole `logos` collection (1861 marks) and Iconify's
+#: federated search across every collection it aggregates. Those seven
+#: fall through to the runtime's next tier: the app's OWN icon, read from
+#: its own installed binary, which is the vendor's genuine artwork and
+#: needs no redistribution at all. When the app is not installed they
+#: reach the neutral glyph, which says "no logo available" honestly.
+#:
+#: THE RULE THIS FILE IS BUILT ON, restated because it was tested: a WRONG
+#: logo is worse than no logo, and an INVENTED one is worse than both.
+#: Pulse ships no hand-drawn stand-ins. To bundle a mark for one of the
+#: seven, drop a genuine `<AppId>.svg` into assets/appicons/ and add it
+#: here — the loader already prefers a file on disk.
+LOGO_MAP: dict[str, str] = {
+    "Microsoft.VisualStudioCode": "logos:visual-studio-code",
+    "Microsoft.Edge": "logos:microsoft-edge",
+    # BoxIcons Logos' rendition of Cursor's cube mark — a curated
+    # brand-logo set, not a lookalike picked by keyword.
+    "Anysphere.Cursor": "bxl:cursor-ai",
+}
+
+ICONIFY_SVG = "https://api.iconify.design/{prefix}/{name}.svg"
+
+#: Brand hex for LOGO_MAP entries that turn out to be SILHOUETTES (drawn
+#: with `currentColor`) rather than full-colour artwork. These take the
+#: Simple Icons treatment — recoloured through the contrast guard — so
+#: they need the brand's own colour the same way those do.
+MONOCHROME_LOGO_HEX: dict[str, str] = {
+    # Cursor's mark is a monochrome cube; black is its own brand colour,
+    # and the guard lifts it off obsidian exactly as it does for Steam,
+    # Notion and 7-Zip, which are all #000000 too.
+    "Anysphere.Cursor": "#000000",
 }
 
 
@@ -217,42 +234,81 @@ def main() -> int:
             "title": entry.get("title", ""),
         }
 
-    # Fold the hand-drawn marks back in BEFORE writing. The manifest is
-    # rebuilt from scratch on every run, so without this step a routine
-    # `python tools/fetch_app_icons.py` would silently delete ten entries
-    # and drop those rows back to the neutral placeholder — the exact
-    # regression this whole module exists to prevent, introduced by the
-    # tool that maintains it.
-    missing_assets: list[str] = []
-    for app_id, record in DRAWN_MARKS.items():
+    # -- second pass: full-colour official logos ------------------
+    # Written AFTER the Simple Icons pass so a LOGO_MAP entry wins for any
+    # app that somehow appears in both: the vendor's real colour artwork is
+    # a better answer than a recoloured silhouette of it.
+    colour_failures: list[str] = []
+    for app_id, icon_id in sorted(LOGO_MAP.items()):
+        prefix, _, name = icon_id.partition(":")
+        if not prefix or not name:
+            colour_failures.append(f"{app_id}: malformed icon id {icon_id!r}")
+            continue
         safe = app_id.replace("/", "_").replace("\\", "_")
         path = os.path.join(ASSET_DIR, f"{safe}.svg")
-        if not os.path.isfile(path):
-            missing_assets.append(app_id)
-            continue
-        manifest[app_id] = {"file": f"{safe}.svg", "hex": record["hex"],
-                            "title": record["title"], "drawn": True}
+        if args.force or not os.path.isfile(path):
+            try:
+                data = _get(ICONIFY_SVG.format(prefix=prefix, name=name))
+            except Exception as exc:                    # noqa: BLE001
+                colour_failures.append(f"{app_id}: {icon_id} fetch failed ({exc})")
+                continue
+            if b"<svg" not in data[:400]:
+                colour_failures.append(f"{app_id}: {icon_id} was not an SVG")
+                continue
+            with open(path, "wb") as handle:
+                handle.write(data)
+            fetched += 1
+        else:
+            skipped += 1
+        # DETECTED, not assumed. Some brand-logo sets publish a mark as a
+        # single path filled with `currentColor` — a SILHOUETTE wearing a
+        # colour set's prefix. Flagging one of those `color: true` would
+        # send it down the render-as-drawn path, where "currentColor"
+        # resolves to black and the mark disappears into a dark canvas
+        # with a rescue plaque bolted behind it. Reading the file decides
+        # correctly for every entry, including ones added later.
+        with open(path, "rb") as handle:
+            body = handle.read().decode("utf-8", "ignore")
+        monochrome = "currentColor" in body
+        record = {
+            "file": f"{safe}.svg",
+            "source": icon_id,
+            "title": name.replace("-", " ").title(),
+        }
+        if monochrome:
+            # Same treatment as a Simple Icons mark: a brand hex plus the
+            # runtime's contrast guard, which is what keeps a near-black
+            # silhouette readable on obsidian.
+            record["hex"] = MONOCHROME_LOGO_HEX.get(app_id, "#000000")
+        else:
+            # `color` is the flag the runtime reads to render the mark AS
+            # DRAWN instead of recolouring it to a single tone. A full
+            # colour logo pushed through the silhouette path would come out
+            # as a flat blue blob — accurate artwork, destroyed on paint.
+            record["color"] = True
+        manifest[app_id] = record
+        unmapped = [a for a in unmapped if a != app_id]
 
     with open(MANIFEST, "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=1, sort_keys=True)
 
-    drawn = sum(1 for entry in manifest.values() if entry.get("drawn"))
+    colour = sum(1 for entry in manifest.values() if entry.get("color"))
     print(f"\nfetched {fetched}, already present {skipped}")
     print(f"manifest -> {os.path.relpath(MANIFEST, ROOT)} "
-          f"({len(manifest)} marks: {len(manifest) - drawn} brand, "
-          f"{drawn} drawn for Pulse)")
+          f"({len(manifest)} marks: {len(manifest) - colour} monochrome, "
+          f"{colour} full-colour)")
     if unmapped:
-        covered = [a for a in unmapped if a in DRAWN_MARKS]
-        print(f"\nno authentic brand mark ({len(unmapped)}) — "
-              f"{len(covered)} covered by a Pulse-drawn pictogram:")
+        print(f"\nno authentic brand mark exists in any open set "
+              f"({len(unmapped)}) — these fall through to the app's OWN "
+              "installed icon, then to the neutral glyph:")
         for app_id in unmapped:
-            tag = "drawn" if app_id in DRAWN_MARKS else "NEUTRAL GLYPH"
-            print(f"    {app_id:38s} {tag}")
-    if missing_assets:
-        print("\n!! DRAWN_MARKS names files that are not on disk — these rows "
-              "will fall back to the neutral glyph:")
-        for app_id in missing_assets:
             print(f"    {app_id}")
+        print("  (drop a genuine <AppId>.svg into assets/appicons/ and add "
+              "it to LOGO_MAP to bundle one. Nothing is ever invented.)")
+    if colour_failures:
+        print("\n!! LOGO_MAP entries that did not resolve:")
+        for failure in colour_failures:
+            print(f"    {failure}")
         return 1
     return 0
 

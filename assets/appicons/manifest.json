@@ -15,10 +15,10 @@
   "title": "iCloud"
  },
  "Anysphere.Cursor": {
-  "drawn": true,
   "file": "Anysphere.Cursor.svg",
-  "hex": "#7A5CFF",
-  "title": "Cursor IDE"
+  "hex": "#000000",
+  "source": "bxl:cursor-ai",
+  "title": "Cursor Ai"
  },
  "Apache.NetBeans": {
   "file": "Apache.NetBeans.svg",
@@ -30,12 +30,6 @@
   "hex": "#FB5BC5",
   "title": "iTunes"
  },
- "BlueStacks.BlueStacks": {
-  "drawn": true,
-  "file": "BlueStacks.BlueStacks.svg",
-  "hex": "#4A9BE8",
-  "title": "BlueStacks"
- },
  "Brave.Brave": {
   "file": "Brave.Brave.svg",
   "hex": "#FB542B",
@@ -45,24 +39,6 @@
   "file": "Bruno.Bruno.svg",
   "hex": "#F4AA41",
   "title": "Bruno"
- },
- "CPUID.CPU-Z": {
-  "drawn": true,
-  "file": "CPUID.CPU-Z.svg",
-  "hex": "#C8803A",
-  "title": "CPU-Z"
- },
- "CPUID.HWMonitor": {
-  "drawn": true,
-  "file": "CPUID.HWMonitor.svg",
-  "hex": "#D2603C",
-  "title": "HWMonitor"
- },
- "CrystalDewWorld.CrystalDiskInfo": {
-  "drawn": true,
-  "file": "CrystalDewWorld.CrystalDiskInfo.svg",
-  "hex": "#3B8FC4",
-  "title": "CrystalDiskInfo"
  },
  "DBeaver.DBeaver.Community": {
   "file": "DBeaver.DBeaver.Community.svg",
@@ -119,21 +95,15 @@
   "hex": "#A42E2B",
   "title": "GNU"
  },
- "Microsoft.DirectX": {
-  "drawn": true,
-  "file": "Microsoft.DirectX.svg",
-  "hex": "#5B7CD8",
-  "title": "DirectX Runtime"
- },
  "Microsoft.DotNet.DesktopRuntime.8": {
   "file": "Microsoft.DotNet.DesktopRuntime.8.svg",
   "hex": "#512BD4",
   "title": ".NET"
  },
  "Microsoft.Edge": {
-  "drawn": true,
+  "color": true,
   "file": "Microsoft.Edge.svg",
-  "hex": "#2B8FD8",
+  "source": "logos:microsoft-edge",
   "title": "Microsoft Edge"
  },
  "Microsoft.VCRedist.2015+.x64": {
@@ -142,10 +112,10 @@
   "title": "C++"
  },
  "Microsoft.VisualStudioCode": {
-  "drawn": true,
+  "color": true,
   "file": "Microsoft.VisualStudioCode.svg",
-  "hex": "#3C8CE0",
-  "title": "VS Code"
+  "source": "logos:visual-studio-code",
+  "title": "Visual Studio Code"
  },
  "Mozilla.Firefox": {
   "file": "Mozilla.Firefox.svg",
@@ -166,12 +136,6 @@
   "file": "OpenJS.NodeJS.LTS.svg",
   "hex": "#5FA04E",
   "title": "Node.js"
- },
- "OpenWebUI.OpenWebUI": {
-  "drawn": true,
-  "file": "OpenWebUI.OpenWebUI.svg",
-  "hex": "#4EA8A0",
-  "title": "Open WebUI"
  },
  "Oracle.JavaRuntimeEnvironment": {
   "file": "Oracle.JavaRuntimeEnvironment.svg",
@@ -197,12 +161,6 @@
   "file": "Spotify.Spotify.svg",
   "hex": "#1ED760",
   "title": "Spotify"
- },
- "TechPowerUp.GPU-Z": {
-  "drawn": true,
-  "file": "TechPowerUp.GPU-Z.svg",
-  "hex": "#4E9E5C",
-  "title": "GPU-Z"
  },
  "Telegram.TelegramDesktop": {
   "file": "Telegram.TelegramDesktop.svg",

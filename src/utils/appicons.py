@@ -6,26 +6,33 @@ APP ICON RESOLUTION for Software Management rows.
 Every catalog row (SoftwareCatalogDialog, Update Center) shows a 28px
 icon beside the app's name. Three sources, tried in order:
 
-  1. A BUNDLED VECTOR MARK — assets/appicons/<AppId>.svg, rendered here as
-     vector so it stays crisp at any size or DPI, painted in the mark's
-     own colour subject to the contrast guard below. Two kinds live here,
-     and the manifest's "drawn" flag distinguishes them:
+  1. A BUNDLED VECTOR MARK — assets/appicons/<AppId>.svg, fetched at BUILD
+     time by tools/fetch_app_icons.py and rendered here as vector so it
+     stays crisp at any size or DPI. EVERY ONE IS THE VENDOR'S GENUINE
+     MARK; Pulse ships no hand-drawn stand-ins. Two kinds live here, and
+     the manifest's "color" flag distinguishes them:
 
-       - a BRAND mark, fetched at BUILD time by tools/fetch_app_icons.py
-         from Simple Icons — the vendor's authentic logo;
+       - MONOCHROME (Simple Icons): a single-path silhouette with a brand
+         hex, recoloured at paint time subject to the contrast guard below.
 
-       - a PULSE-DRAWN pictogram for the ten catalog apps that have no
-         authentic mark in any open, licensed set (every Microsoft product
-         mark was withdrawn from Simple Icons under Microsoft's trademark
-         policy; Cursor, BlueStacks, Open WebUI and the four hardware
-         utilities were never in it). These describe what the software
-         does — a code bracket for an editor, a CPU die for CPU-Z — rather
-         than imitating a logo, because an approximated Edge swirl drawn
-         from memory and shipped as Microsoft's own artwork would be a
-         fabrication, and the rule this module is built on is that a WRONG
-         logo is worse than no logo. What they buy is the thing that
-         actually mattered: every row is a crisp, distinct vector, so no
-         row reads as broken or unfinished.
+       - FULL COLOUR (Iconify's brand-logo sets, principally the CC0 `logos`
+         collection): the real artwork including gradients — VS Code's blue
+         ribbon, Edge's swirl. Rendered exactly as drawn; legibility is
+         handled by a backing plaque rather than by altering the colours,
+         because recolouring real vendor artwork is what would make it
+         inauthentic.
+
+     SEVEN CATALOG APPS HAVE NO BUNDLED MARK, and that is a finding, not
+     an omission: BlueStacks, DirectX, CPU-Z, GPU-Z, HWMonitor,
+     CrystalDiskInfo and Open WebUI have no authentic logo in ANY open,
+     licensed set. That was measured — the full Simple Icons index (~3300
+     marks), the whole `logos` collection (1861), and Iconify's federated
+     search across every collection it aggregates. They fall to tier 2,
+     where the vendor's own artwork is read out of their own installed
+     binary, and to tier 3 when the app is not present. An invented
+     pictogram in that gap was tried and REMOVED: a mark that describes
+     software is still not that software's logo, and the rule here is that
+     a wrong logo is worse than no logo.
 
      THIS OUTRANKS THE INSTALLED APP'S OWN ICON, which is not the obvious
      ordering and was arrived at by looking at the result. Windows' icon
@@ -276,6 +283,38 @@ def _manifest() -> dict[str, dict]:
     return _MANIFEST
 
 
+_RGBA_RE = re.compile(
+    r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)", re.I)
+
+
+def _parse_color(value: str, fallback: str) -> QColor:
+    """A theme colour token as a QColor, accepting BOTH "#rrggbb" and the
+    CSS "rgba(r, g, b, a)" form the palette actually stores.
+
+    Qt does not parse rgba() strings, and — the part that made this a real
+    bug rather than a missing feature — QColor("rgba(...)") comes back
+    INVALID while still reporting alpha() == 255. The guard here used to be
+    `if surface.alpha() == 0`, which therefore never fired: every surface
+    handed to the contrast guard was an invalid QColor, which behaves as
+    pure black. Both themes were being solved against black, so the light
+    theme's readability was decided from the wrong backdrop entirely.
+
+    Parsed locally rather than by importing frontend.theme's to_qcolor:
+    utils/ sits BELOW frontend/ in the import graph (theme <- animations <-
+    widgets <- main), and reaching upward from here would invert it.
+    """
+    text = (value or "").strip()
+    match = _RGBA_RE.fullmatch(text)
+    if match:
+        r, g, b, a = match.groups()
+        color = QColor(int(r), int(g), int(b))
+        if a is not None:
+            color.setAlphaF(max(0.0, min(1.0, float(a))))
+        return color
+    color = QColor(text)
+    return color if color.isValid() else QColor(fallback)
+
+
 def _luminance(color: QColor) -> float:
     """WCAG relative luminance."""
     channels = []
@@ -314,12 +353,26 @@ def _readable_brand_color(brand: QColor, surface: QColor, dark: bool) -> QColor:
     return QColor("#f2f4f8") if dark else QColor("#12151b")
 
 
-def _brand_pixmap(app_id: str, px: int, tone: QColor) -> QPixmap | None:
-    """Render the bundled SVG at 2x, recoloured to `tone`.
+def _brand_pixmap(app_id: str, px: int, tone: QColor,
+                  surface: QColor | None = None) -> QPixmap | None:
+    """Render the bundled SVG at 2x.
 
-    Simple Icons marks are single-path monochrome silhouettes, so the
-    recolour is a flat SourceIn composite over the rendered alpha — no
-    per-path editing, and it works for every mark identically.
+    TWO KINDS OF MARK live in assets/appicons/, and the manifest's `color`
+    flag says which this is:
+
+      MONOCHROME (Simple Icons) — a single-path silhouette carrying no
+      colour of its own. Recoloured to `tone` with a flat SourceIn
+      composite over the rendered alpha: no per-path editing, identical
+      handling for every mark, and it is what lets the contrast guard
+      move a #000000 brand off a near-black canvas.
+
+      FULL COLOUR (the `logos` / brand-logo sets) — the vendor's REAL
+      artwork, gradients and all: VS Code's blue ribbon, Edge's swirl.
+      Rendered exactly as drawn. Pushing one of these through the
+      silhouette path would flatten a multi-stop gradient into a single
+      blob — authentic artwork, destroyed on paint — so `color` marks skip
+      the recolour entirely, and their legibility is solved by the backing
+      plaque below instead of by rewriting their colours.
     """
     entry = _manifest().get(app_id)
     if not entry:
@@ -341,18 +394,102 @@ def _brand_pixmap(app_id: str, px: int, tone: QColor) -> QPixmap | None:
         pm.fill(Qt.GlobalColor.transparent)
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        full_colour = bool(entry.get("color"))
+        plaque = _backing_plaque(renderer, size, surface) if full_colour else None
+        if plaque is not None:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(plaque)
+            p.drawRoundedRect(QRectF(0, 0, size, size),
+                              size * 0.22, size * 0.22)
+
         # 10% inset: the marks are drawn edge-to-edge in their viewBox,
         # and a logo butting against the row's text needs optical padding
-        # to sit as calmly as the shell icons beside it.
-        pad = size * 0.10
+        # to sit as calmly as the shell icons beside it. A mark on a
+        # backing plaque insets further so it does not touch the corners.
+        pad = size * (0.19 if plaque is not None else 0.10)
         renderer.render(p, QRectF(pad, pad, size - pad * 2, size - pad * 2))
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        p.fillRect(pm.rect(), tone)
+        if not full_colour:
+            p.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_SourceIn)
+            p.fillRect(pm.rect(), tone)
         p.end()
         pm.setDevicePixelRatio(2.0)
         return pm
     except Exception:
         return None
+
+
+def _mark_luminance(renderer: QSvgRenderer, size: int) -> float | None:
+    """Mean WCAG luminance of a rendered mark's OPAQUE pixels, or None.
+
+    Measured rather than declared. The alternative — a per-brand "darkest
+    tone" hint in the manifest — is a second set of colour data to keep in
+    step with artwork that is fetched automatically, and it would be wrong
+    the first time a vendor refreshed their logo. Rendering the real thing
+    and reading it back is always current.
+
+    Transparent pixels are excluded: a mark is mostly empty space inside
+    its own bounding box, and averaging that in drags every logo toward
+    the same middling number and defeats the test.
+    """
+    try:
+        probe = QPixmap(size, size)
+        probe.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(probe)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        renderer.render(painter, QRectF(0, 0, size, size))
+        painter.end()
+        image = probe.toImage()
+    except Exception:
+        return None
+
+    total = 0.0
+    counted = 0
+    step = max(1, size // 24)          # ~24x24 samples is plenty for a mean
+    for y in range(0, size, step):
+        for x in range(0, size, step):
+            pixel = image.pixelColor(x, y)
+            if pixel.alpha() < 128:
+                continue
+            total += _luminance(pixel)
+            counted += 1
+    if counted == 0:
+        return None
+    return total / counted
+
+
+def _backing_plaque(renderer: QSvgRenderer, size: int,
+                    surface: QColor | None) -> QColor | None:
+    """A soft neutral plaque to sit a full-colour logo on, or None when the
+    logo already reads against `surface`.
+
+    The trick that rescues a monochrome silhouette cannot be used here:
+    walking a brand's hue until it clears the floor is exactly what makes
+    a recoloured silhouette legible, and exactly what would make real
+    vendor artwork inauthentic. So the mark is left alone and the SURFACE
+    moves instead — what macOS and every app store do when they sit an app
+    icon on a light tile.
+
+    Applied only when measurement says it is needed, so a vivid mark like
+    Edge's swirl keeps the clean plaque-free look it already has on
+    obsidian, while VS Code's ribbon — whose dark strokes vanish into the
+    canvas — gets its tile.
+    """
+    if surface is None:
+        return None
+    luminance = _mark_luminance(renderer, size)
+    if luminance is None:
+        return None
+    surface_luminance = _luminance(surface)
+    hi, lo = max(luminance, surface_luminance), min(luminance, surface_luminance)
+    if (hi + 0.05) / (lo + 0.05) >= _MIN_CONTRAST:
+        return None
+    # Near-white rather than pure: a hard #ffffff tile on the light theme's
+    # porcelain canvas reads as a hole punched in the row.
+    plaque = QColor("#f7f8fa")
+    plaque.setAlphaF(0.96)
+    return plaque
 
 
 # ============================================================
@@ -397,9 +534,8 @@ def app_icon(app_name: str, px: int, t: dict, app_id: str = "") -> QPixmap:
     against the current surface — see the contrast-guard note above.
     """
     dark = t.get("name", "dark") == "dark"
-    surface = QColor(t.get("dialog_bg", "#16181d"))
-    if surface.alpha() == 0:
-        surface = QColor("#16181d" if dark else "#ffffff")
+    surface = _parse_color(t.get("dialog_bg", ""),
+                           "#16181d" if dark else "#ffffff")
     key = (app_id, app_name, px, "d" if dark else "l")
     cached = _PIXMAP_CACHE.get(key)
     if cached is not None:
@@ -408,11 +544,19 @@ def app_icon(app_name: str, px: int, t: dict, app_id: str = "") -> QPixmap:
     pm = None
     entry = _manifest().get(app_id) if app_id else None
     if entry:
-        brand = QColor(entry.get("hex", "#000000"))
-        if not brand.isValid():
-            brand = QColor("#888888")
-        pm = _brand_pixmap(app_id, px,
-                           _readable_brand_color(brand, surface, dark))
+        if entry.get("color"):
+            # Real vendor artwork: rendered as drawn. `tone` is unused on
+            # this path, so the contrast guard is skipped here and the
+            # backing plaque inside _brand_pixmap does the legibility work
+            # instead — moving the surface, never the brand's own colours.
+            pm = _brand_pixmap(app_id, px, QColor("#000000"), surface)
+        else:
+            brand = QColor(entry.get("hex", "#000000"))
+            if not brand.isValid():
+                brand = QColor("#888888")
+            pm = _brand_pixmap(app_id, px,
+                               _readable_brand_color(brand, surface, dark),
+                               surface)
     if pm is None:
         path = _installed_icon_path(app_name)
         if path:

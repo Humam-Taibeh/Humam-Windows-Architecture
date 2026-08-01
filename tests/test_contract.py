@@ -50,6 +50,18 @@ _PROGRAMMATIC = {
     # here — its card declares the task name directly, exactly like the
     # Startup Manager's StartupReport.)
     "PowerHealth", "RestorePoints",
+    # v1.0+ Phase 2 DNS switcher. Same shape as the Startup Manager's
+    # per-row actions: the CARD declares the read task (NetworkProfiles),
+    # and these two mutations are fired per adapter from inside
+    # widgets.DnsSwitcherDialog rather than from a card of their own.
+    # Both are admin-gated in $Script:AdminRequiredTasks AND in
+    # ADMIN_REQUIRED_TASKS — a revert must need exactly the rights its
+    # counterpart needed.
+    "SetDnsProfile", "RestoreDns",
+    # v1.0+ Phase 2 context-menu manager. The card declares the read task
+    # (ContextMenuScan); these two are fired per row from inside
+    # widgets.ContextMenuDialog. Both admin-gated in both lists.
+    "ContextMenuToggle", "ContextMenuRestore",
 }
 
 
@@ -262,86 +274,100 @@ class TestAppIcons:
         assert "_monogram_pixmap" not in code
         assert "initial" not in code.lower().split('"""')[-1]
 
-    def test_every_catalog_app_has_a_bundled_mark(self):
-        """100% coverage: no catalog row falls back to the neutral glyph.
+    def test_no_mark_is_fabricated(self):
+        """THE provenance rule, and the reason the previous attempt was
+        reverted: every bundled mark must be the vendor's real artwork,
+        fetched from a curated brand-logo set. Pulse ships no hand-drawn
+        stand-ins.
 
-        The placeholder is honest, but a list where some rows carry a logo
-        and others carry an identical grey parcel reads as half-finished —
-        and the fallback BELOW it (the installed app's own icon) only fires
-        on machines where that app happens to be installed, so coverage
-        that relies on it is coverage that differs per machine. Every
-        catalog AppId therefore ships a mark in the repo.
+        A purpose-drawn pictogram ("a CPU die means CPU-Z") was tried for
+        the seven apps with no open-licensed logo. It made every row a
+        crisp vector, and it was still wrong: a mark that DESCRIBES
+        software is not that software's logo, and shipping it in the same
+        slot as real brand artwork invites the reader to assume it is one.
+        A wrong logo is worse than no logo, and an invented one is worse
+        than both.
         """
         import json
-        from frontend.menu_structure import catalog_app_ids
-
         manifest = json.load(open(
             os.path.join(_ROOT, "assets/appicons/manifest.json"),
             encoding="utf-8"))
-        missing = [app_id for app_id in catalog_app_ids()
-                   if app_id not in manifest]
-        assert not missing, (
-            f"catalog apps with no bundled mark: {missing}\n"
-            "  add an <AppId>.svg to assets/appicons/ and register it in "
-            "tools/fetch_app_icons.py (ICON_MAP for a real brand logo, "
-            "DRAWN_MARKS for a Pulse-drawn pictogram)")
+        fabricated = sorted(a for a, e in manifest.items() if e.get("drawn"))
+        assert not fabricated, (
+            f"manifest still flags hand-drawn marks: {fabricated}")
 
-    def test_drawn_marks_survive_a_fetch_run(self):
-        """tools/fetch_app_icons.py rebuilds manifest.json from scratch on
-        every run. The hand-drawn entries are not fetched, so unless the
-        tool folds them back in, a routine re-fetch silently deletes ten
-        marks and drops those rows to the placeholder — a regression
-        introduced by the very tool that maintains the icon set."""
         tool = open(os.path.join(_ROOT, "tools/fetch_app_icons.py"),
                     encoding="utf-8").read()
-        assert "DRAWN_MARKS" in tool, "the drawn-mark register is gone"
-        write_at = tool.index("json.dump(manifest")
-        assert "DRAWN_MARKS.items()" in tool[:write_at], (
-            "fetch_app_icons.py writes the manifest without merging "
-            "DRAWN_MARKS first — a re-fetch would erase the drawn marks")
+        assert "DRAWN_MARKS" not in tool, (
+            "fetch_app_icons.py still declares a hand-drawn mark register")
 
-    def test_drawn_marks_are_flagged_and_present(self):
-        """A drawn pictogram must be identifiable as one. Losing the flag
-        would leave the set claiming ten logos it does not have."""
+    def test_every_bundled_mark_has_a_traceable_source(self):
+        """Each mark names where it came from — a Simple Icons slug via
+        ICON_MAP, or an Iconify brand-set id recorded as `source`. A mark
+        with neither is an asset nobody can re-derive or verify."""
         import json
         manifest = json.load(open(
             os.path.join(_ROOT, "assets/appicons/manifest.json"),
             encoding="utf-8"))
         tool = open(os.path.join(_ROOT, "tools/fetch_app_icons.py"),
                     encoding="utf-8").read()
-        # anchor on the ASSIGNMENT, not the first mention — the name also
-        # appears in ICON_MAP's comment above, and starting there swept the
-        # whole of ICON_MAP into the "declared" set
-        body = tool[tool.index("DRAWN_MARKS: dict"):tool.index("def _get(")]
-        declared = set(re.findall(r'^\s{4}"([^"]+)":', body, re.M))
-        assert declared, "DRAWN_MARKS did not parse"
-        flagged = {a for a, e in manifest.items() if e.get("drawn")}
-        assert declared == flagged, (
-            f"declared but unflagged: {sorted(declared - flagged)}; "
-            f"flagged but undeclared: {sorted(flagged - declared)}")
-        for app_id in declared:
-            path = os.path.join(_ROOT, "assets/appicons",
-                                manifest[app_id]["file"])
-            assert os.path.isfile(path), f"{app_id}: {path} is missing"
+        icon_body = tool[tool.index("ICON_MAP"):tool.index("def _get(")]
+        mapped = set(re.findall(r'^\s{4}"([^"]+)":', icon_body, re.M))
 
-    def test_drawn_marks_carry_no_letterforms(self):
-        """The rule the neutral glyph was introduced to enforce: a
-        pictogram describes what the software does; a bare initial in a
-        tile pretends to be branding. SVG <text> is how that would creep
-        back in — a drawn mark must be paths only."""
+        untraceable = sorted(
+            app_id for app_id, entry in manifest.items()
+            if not entry.get("source") and app_id not in mapped)
+        assert not untraceable, (
+            f"bundled marks with no recorded provenance: {untraceable}")
+
+    def test_colour_and_silhouette_marks_are_classified_correctly(self):
+        """`color: true` means "render as drawn"; its absence means
+        "recolour through the contrast guard". Getting this backwards is
+        silent and ugly in opposite directions — a gradient logo flattened
+        to one blob, or a `currentColor` silhouette rendered as pure black
+        on obsidian with a rescue plaque bolted behind it.
+        """
         import json
         manifest = json.load(open(
             os.path.join(_ROOT, "assets/appicons/manifest.json"),
             encoding="utf-8"))
-        offenders = []
+        wrong = []
         for app_id, entry in manifest.items():
-            if not entry.get("drawn"):
-                continue
-            svg = open(os.path.join(_ROOT, "assets/appicons", entry["file"]),
-                       encoding="utf-8").read()
-            if "<text" in svg or "<tspan" in svg:
-                offenders.append(app_id)
-        assert not offenders, f"drawn marks using letterforms: {offenders}"
+            path = os.path.join(_ROOT, "assets/appicons", entry["file"])
+            body = open(path, encoding="utf-8", errors="ignore").read()
+            uses_current = "currentColor" in body
+            if entry.get("color") and uses_current:
+                wrong.append(f"{app_id}: flagged colour but uses currentColor")
+            if not entry.get("color") and not uses_current and "source" in entry:
+                wrong.append(f"{app_id}: full-colour artwork not flagged colour")
+        assert not wrong, "mark classification is wrong:\n  " + "\n  ".join(wrong)
+
+    def test_silhouette_marks_carry_a_brand_hex(self):
+        """A recoloured mark needs a colour to be recoloured TO."""
+        import json
+        manifest = json.load(open(
+            os.path.join(_ROOT, "assets/appicons/manifest.json"),
+            encoding="utf-8"))
+        missing = sorted(a for a, e in manifest.items()
+                         if not e.get("color") and not e.get("hex"))
+        assert not missing, f"silhouette marks with no brand hex: {missing}"
+
+    def test_uncovered_apps_are_documented_not_forgotten(self):
+        """The seven apps with no authentic mark must remain a stated,
+        explained gap in the fetch tool rather than a silent one."""
+        from frontend.menu_structure import catalog_app_ids
+        import json
+        manifest = json.load(open(
+            os.path.join(_ROOT, "assets/appicons/manifest.json"),
+            encoding="utf-8"))
+        uncovered = [a for a in catalog_app_ids() if a not in manifest]
+        tool = open(os.path.join(_ROOT, "tools/fetch_app_icons.py"),
+                    encoding="utf-8").read()
+        undocumented = sorted(a for a in uncovered
+                              if a.split(".")[0] not in tool)
+        assert not undocumented, (
+            f"apps with no bundled mark and no explanation: {undocumented}")
+
 
     def test_every_mapped_app_is_a_real_catalog_entry(self):
         """tools/fetch_app_icons.py's map is keyed by winget AppId. A key

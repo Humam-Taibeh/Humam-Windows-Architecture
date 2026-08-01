@@ -92,6 +92,13 @@ param(
     # comma ("C:\Program Files\Acme, Inc\") which would be split into
     # fragments that match no directory.
     [string]$ScanPath,
+    # DNS switcher (15-Network.ps1). The adapter is addressed by NAME, not
+    # by interface index: indexes are reassigned as adapters come and go,
+    # so a stale one from the GUI could point at a different connection
+    # entirely. Its own parameter for the same reason $ScanPath is —
+    # an adapter name can contain a comma ("Ethernet 2, vEthernet").
+    [string]$AdapterName,
+    [string]$DnsProfile,
     [switch]$WhatIf
 )
 
