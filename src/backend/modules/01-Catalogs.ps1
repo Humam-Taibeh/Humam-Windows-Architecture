@@ -169,18 +169,12 @@ $Apps_CatalogAll = @() + $Apps_Basic + $Apps_DevHubAll + $Apps_Gaming + $Runtime
 $Script:CatalogGpuExtraTriggerIds  = @($Apps_Gaming | ForEach-Object { $_[0] })
 $Script:CatalogMoboExtraTriggerIds = @($Apps_Tools  | ForEach-Object { $_[0] })
 
-# Pre-configured quick-select bundles for the Software Catalog's
-# Development & Tools tab - each just ticks the listed AppIds; nothing is
-# forced, the user can still deselect any of them before deploying.
-# Mirrored by CATALOG_BUNDLES in menu_structure.py.
-$Script:DevHubBundles = @(
-    @{ Key = "java-university"; Icon = "🎓"; Title = "Java / University Stack"
-       AppIds = @("EclipseAdoptium.Temurin.21.JDK", "Apache.NetBeans", "JetBrains.IntelliJIDEA.Community", "Git.Git", "Microsoft.VisualStudioCode") }
-    @{ Key = "ai-python"; Icon = "🧠"; Title = "AI / Python Stack"
-       AppIds = @("Python.Python.3.12", "Ollama.Ollama", "OpenWebUI.OpenWebUI", "Microsoft.VisualStudioCode") }
-    @{ Key = "web-dev"; Icon = "🌐"; Title = "Web Dev Stack"
-       AppIds = @("OpenJS.NodeJS.LTS", "Git.Git", "Microsoft.VisualStudioCode", "Postman.Postman") }
-)
+# $Script:DevHubBundles is GONE. It declared three quick-select stacks
+# (Java / University, AI / Python, Web Dev) that the GUI catalog rendered
+# as a second row of buttons under its tab bar. The row was removed - a
+# third filter over a list that already has a category tab bar and a name
+# field, present on one tab out of five - and this mirror went with it.
+# Nothing in the backend ever read it.
 
 # Smart dependency hints for the Dev Hub selector UI (surfaced as a caption
 # under the IDE's row - "subtly suggests", never auto-forces a checkbox).

@@ -151,12 +151,24 @@ def resolve_accent(t: dict, accent: str) -> str:
 # decisions — the root cause of the app's "almost aligned" feel. Everything
 # now comes from these two scales; a new surface picks the nearest step
 # instead of inventing another number.
+#
+# v1.1 closes the scale at both ends. The audit that prompted it found 57
+# layout calls still carrying hand-picked numbers (1, 2, 3, 6, 7, 9, 10,
+# 14, 18, 20, 28, 30, 34) — every one of them within 2px of a step, which
+# is exactly the "almost aligned" feel the scale was introduced to kill.
+# Two of those clusters were real needs the five steps could not express,
+# so they became steps rather than staying exceptions: the 1-3px leading
+# between two lines of ONE text block (a title and its subtitle are not
+# "related blocks"), and the 28-34px air a dialog puts around an empty
+# state. Everything else now snaps to the nearest existing step.
 SPACE = {
+    "xxs": 2,    # leading INSIDE one text block (title over subtitle)
     "xs":  4,    # icon<->label, tight inline pairs
     "sm":  8,    # inside a row / between sibling controls
     "md":  12,   # between related blocks
     "lg":  16,   # grid gutters, card padding
     "xl":  24,   # section separation, dialog padding
+    "xxl": 32,   # air around an empty state / a top-anchored dialog
 }
 
 # Semantic radii — named by the surface they belong to, so a card and a
@@ -1232,6 +1244,49 @@ def scroll_area_qss(t: dict) -> str:
     """
 
 
+def stack_qss() -> str:
+    """Every QStackedWidget in the app.
+
+    A stack IS a QFrame, and Fusion paints one: left unstyled it draws a
+    sunken platform panel around whatever page is showing. That rectangle
+    was visible around the Office wizard's steps, the Update Center's
+    loading/empty/error states and the Startup Manager's — a hard
+    platform-grey box cutting across three custom dialogs. The shell's own
+    stack in main.py had the fix inline as a string literal, which is
+    exactly why the other three never got it.
+
+    Theme-independent (transparent + no border), so it takes no `t`.
+    """
+    return "QStackedWidget { background: transparent; border: none; }"
+
+
+def chip_strip_qss(t: dict) -> str:
+    """scroll_area_qss with a quieter horizontal bar, for a single-line row
+    of pills (widgets._chip_strip).
+
+    The shared bar is 6px with a 2px margin all round, which is right
+    inside a tall list and wrong under a pill row: sitting 2px under a
+    30px pill, a full-width 6px bar reads as an UNDERLINE drawn across the
+    tab bar rather than as a scrollbar — it was the most eye-catching line
+    in the Software Catalog. Here the bar keeps the FULL lane height and
+    spends most of it on margin, so the visible handle is 4px sitting
+    clear of the pills above it.
+
+    `height` is the widget, not the handle: it must equal
+    widgets._CHIP_LANE, or the lane the strip reserves and the space Qt
+    actually takes out of the viewport stop agreeing (a shorter bar than
+    the lane leaves the pills floating; margins larger than the height
+    leave a handle of zero pixels — a scrollable strip with no visible
+    scrollbar at all, which is how this shipped for one revision).
+    """
+    return scroll_area_qss(t) + f"""
+        QScrollBar:horizontal {{ height: 10px; margin: 4px 0 2px 0; }}
+        QScrollBar::handle:horizontal {{
+            background: {t['scroll']}; border-radius: 2px; min-width: 48px;
+        }}
+    """
+
+
 # (chip_qss was removed in v1.0: its only caller was the hero banner's
 # Engine/Admin chip column, which folded into the system status strip —
 # strip_status_qss now owns that pill.)
@@ -1700,8 +1755,15 @@ def command_input_qss(t: dict) -> str:
 
 
 def command_list_qss(t: dict) -> str:
-    """Ctrl+K command palette result list."""
-    return f"""
+    """Ctrl+K command palette result list.
+
+    Carries the shared scrollbar rules: a QListWidget scrolls ITSELF
+    rather than living inside a QScrollArea, so it never picked up
+    scroll_area_qss — and the palette, the most-used surface in the app,
+    was the one place that showed a stock Windows scrollbar, arrow
+    buttons and all.
+    """
+    return scroll_area_qss(t) + f"""
         QListWidget {{
             background: transparent;
             border: none;

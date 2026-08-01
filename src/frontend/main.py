@@ -59,8 +59,8 @@ from utils.helpers import (  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
-    CATALOG_BUNDLE_SECTION, CATALOG_BUNDLES, CATEGORIES, SOFTWARE_CATALOG,
-    accent_for_task, category_bands, category_operations, find_action_anywhere,
+    CATEGORIES, SOFTWARE_CATALOG, accent_for_task, category_bands,
+    category_operations, find_action_anywhere,
     hub_items, iter_leaf_items, recurring_days, requires_admin,
 )
 from frontend.widgets import (  # noqa: E402
@@ -97,8 +97,10 @@ DEFAULT_TIMEOUT = 900
 # Body-layout margins: comfortable while floating, collapsed to a slim
 # comfort gap when maximized/flush so the (now border-less, radius-less)
 # shell doesn't leave a dead-space frame around the sidebar/content.
-_FLOAT_MARGINS = (20, 8, 20, 16)
-_FLUSH_MARGINS = (10, 6, 10, 10)
+_FLOAT_MARGINS = (TH.SPACE["xl"], TH.SPACE["sm"],
+                  TH.SPACE["xl"], TH.SPACE["lg"])
+_FLUSH_MARGINS = (TH.SPACE["md"], TH.SPACE["sm"],
+                  TH.SPACE["md"], TH.SPACE["md"])
 
 # ============================================================
 #  TWO-WAY TOGGLES (v1.0) — GUI task -> its dispatcher revert case
@@ -365,7 +367,8 @@ class WelcomePage(QWidget):
         self._cols = 0
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 16, 28, 18)
+        root.setContentsMargins(TH.SPACE["xl"], TH.SPACE["lg"],
+                                TH.SPACE["xl"], TH.SPACE["lg"])
         root.setSpacing(TH.SPACE["md"])
 
         # ============ 1. HERO BANNER — identity masthead ==================
@@ -381,14 +384,14 @@ class WelcomePage(QWidget):
         self._hero.setObjectName("heroBanner")
         self._hero.setFixedHeight(96)
         hb = QHBoxLayout(self._hero)
-        hb.setContentsMargins(28, 0, 28, 0)
+        hb.setContentsMargins(TH.SPACE["xl"], 0, TH.SPACE["xl"], 0)
         hb.setSpacing(TH.SPACE["lg"])
 
         self._logo = BreathingIcon("✦", size=58, accent=t["accent"])
         hb.addWidget(self._logo, 0, Qt.AlignmentFlag.AlignVCenter)
 
         id_col = QVBoxLayout()
-        id_col.setSpacing(3)
+        id_col.setSpacing(TH.SPACE["xxs"])
         id_col.addStretch()
         self._name = QLabel(APP_NAME)
         id_col.addWidget(self._name)
@@ -418,7 +421,7 @@ class WelcomePage(QWidget):
 
         # ============ 2. QUICK ACTIONS ====================================
         head = QHBoxLayout()
-        head.setSpacing(14)
+        head.setSpacing(TH.SPACE["lg"])
         self._section = QLabel("QUICK ACTIONS")
         head.addWidget(self._section)
         self._rule = QFrame()
@@ -428,7 +431,7 @@ class WelcomePage(QWidget):
 
         grid_host = ResponsiveGridHost()
         self._grid = QGridLayout(grid_host)
-        self._grid.setContentsMargins(0, 2, 0, 0)
+        self._grid.setContentsMargins(0, TH.SPACE["xxs"], 0, 0)
         self._grid.setSpacing(TH.SPACE["lg"])
         # the grid re-columns off its OWN width — see ResponsiveGridHost
         grid_host.resized.connect(
@@ -471,6 +474,7 @@ class WelcomePage(QWidget):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(TH.scroll_area_qss(t))
         self._scroll.setWidget(grid_host)
         self._scroll.viewport().setStyleSheet("background: transparent;")
         root.addWidget(self._scroll, 1)
@@ -482,7 +486,7 @@ class WelcomePage(QWidget):
         # (scrollable) action grid rather than crushing the meters, per the
         # v10 "scrolling is the correct answer to not enough room" rule.
         head2 = QHBoxLayout()
-        head2.setSpacing(14)
+        head2.setSpacing(TH.SPACE["lg"])
         self._section2 = QLabel("SYSTEM HEALTH & ACTIVITY")
         head2.addWidget(self._section2)
         self._rule2 = QFrame()
@@ -505,7 +509,7 @@ class WelcomePage(QWidget):
         pl = QVBoxLayout(self._pulse_card)
         pl.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
                               TH.SPACE["lg"], TH.SPACE["md"])
-        pl.setSpacing(2)
+        pl.setSpacing(TH.SPACE["xxs"])
         self._pulse_title = QLabel("SYSTEM PULSE")
         pl.addWidget(self._pulse_title)
         # The machine's identity, in the ONE place machine facts live now
@@ -516,7 +520,7 @@ class WelcomePage(QWidget):
         self._pulse_spec = QLabel(_system_spec_line())
         self._pulse_spec.setWordWrap(True)
         pl.addWidget(self._pulse_spec)
-        pl.addSpacing(2)
+        pl.addSpacing(TH.SPACE["xxs"])
         self._meters: dict[str, MeterBar] = {}
         for key, label in (("cpu", "PROCESSOR"), ("mem", "MEMORY"),
                            ("disk", "SYSTEM DRIVE")):
@@ -543,15 +547,15 @@ class WelcomePage(QWidget):
         al = QVBoxLayout(self._maint_card)
         al.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
                               TH.SPACE["lg"], TH.SPACE["md"])
-        al.setSpacing(2)
+        al.setSpacing(TH.SPACE["xxs"])
         self._maint_title = QLabel("MAINTENANCE & ATTENTION")
         al.addWidget(self._maint_title)
         self._maint_empty = QLabel("")
         self._maint_empty.setWordWrap(True)
         al.addWidget(self._maint_empty)
         self._rows_lay = QVBoxLayout()
-        self._rows_lay.setContentsMargins(0, 2, 0, 0)
-        self._rows_lay.setSpacing(2)
+        self._rows_lay.setContentsMargins(0, TH.SPACE["xxs"], 0, 0)
+        self._rows_lay.setSpacing(TH.SPACE["xxs"])
         al.addLayout(self._rows_lay)
         al.addStretch()
         band.addWidget(self._maint_card, 1)
@@ -768,8 +772,9 @@ class CategoryPage(QWidget):
         self._applied_unit = 0     # see _relayout / _sparse_unit
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(16)
+        lay.setContentsMargins(TH.SPACE["sm"], TH.SPACE["sm"],
+                               TH.SPACE["sm"], TH.SPACE["sm"])
+        lay.setSpacing(TH.SPACE["lg"])
 
         # -- header: breadcrumb trail -------------------------
         # v8 navigation doctrine: a single, depth-aware breadcrumb path —
@@ -781,7 +786,7 @@ class CategoryPage(QWidget):
         # Finder / VS Code path-bar pattern, which scales cleanly if the app
         # ever nests deeper (each new level just appends another crumb).
         head = QHBoxLayout()
-        head.setSpacing(10)
+        head.setSpacing(TH.SPACE["sm"])
 
         self._home = NavPill("⌂  Home", t, width=88)
         self._home.setToolTip("Back to the welcome screen")
@@ -792,7 +797,7 @@ class CategoryPage(QWidget):
         self._crumb_sep.setFixedWidth(10)
         self._crumb_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
         head.addWidget(self._crumb_sep)
-        head.addSpacing(4)
+        head.addSpacing(TH.SPACE["xs"])
 
         # the current-location crumb: a short vertical rail in the module's
         # own accent leads the title — the same 'you are here, and this is
@@ -801,10 +806,10 @@ class CategoryPage(QWidget):
         self._accent_rail.setFixedWidth(3)
         self._accent_rail.setFixedHeight(34)
         head.addWidget(self._accent_rail)
-        head.addSpacing(2)
+        head.addSpacing(TH.SPACE["xs"])
 
         title_col = QVBoxLayout()
-        title_col.setSpacing(2)
+        title_col.setSpacing(TH.SPACE["xxs"])
         self._title = QLabel(category["title"])
         title_col.addWidget(self._title)
         self._tagline = QLabel(category["tagline"])
@@ -841,6 +846,7 @@ class CategoryPage(QWidget):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(TH.scroll_area_qss(t))
 
         grid_host = ResponsiveGridHost()
         self._grid = QGridLayout(grid_host)
@@ -1341,7 +1347,7 @@ class PulseApp(QMainWindow):
 
         body = QHBoxLayout()
         body.setContentsMargins(*_FLOAT_MARGINS)
-        body.setSpacing(20)
+        body.setSpacing(TH.SPACE["xl"])
         root.addLayout(body, 1)
         self._body = body  # margins flip to _FLUSH_MARGINS in changeEvent
                            # when maximized (native edge-to-edge fit)
@@ -1350,8 +1356,9 @@ class PulseApp(QMainWindow):
         self._sidebar = QFrame()
         self._sidebar.setFixedWidth(250)
         side = QVBoxLayout(self._sidebar)
-        side.setContentsMargins(16, 24, 16, 18)
-        side.setSpacing(8)
+        side.setContentsMargins(TH.SPACE["lg"], TH.SPACE["xl"],
+                                TH.SPACE["lg"], TH.SPACE["lg"])
+        side.setSpacing(TH.SPACE["sm"])
 
         # -- global search doorway (v1.0) ----------------------
         # The Linear/Raycast sidebar pattern: a quiet input-shaped button
@@ -1366,13 +1373,13 @@ class PulseApp(QMainWindow):
             "Search every app, tweak and tool  (Ctrl+K)")
         self._search_btn.clicked.connect(self._open_command_palette)
         side.addWidget(self._search_btn)
-        side.addSpacing(10)
+        side.addSpacing(TH.SPACE["md"])
 
         self._section = QLabel("MODULES")
         self._section.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._section.setIndent(10)   # editor-style left-aligned section label
         side.addWidget(self._section)
-        side.addSpacing(8)
+        side.addSpacing(TH.SPACE["sm"])
 
         for i, cat in enumerate(CATEGORIES):
             btn = NavButton(cat["glyph"], cat["title"], cat["accent"], t)
@@ -1422,7 +1429,7 @@ class PulseApp(QMainWindow):
                 "Relaunch Pulse elevated (you'll get a UAC prompt).")
             self._elevate_btn.clicked.connect(self._relaunch_as_admin)
             side.addWidget(self._elevate_btn)
-        side.addSpacing(14)
+        side.addSpacing(TH.SPACE["lg"])
 
         # Anchors the nav column so it no longer floats above a void — a
         # quiet identity line the way VS Code / Linear close their rails.
@@ -1434,11 +1441,12 @@ class PulseApp(QMainWindow):
         # -- content ------------------------------------------
         self._content = QFrame()
         content = QVBoxLayout(self._content)
-        content.setContentsMargins(24, 18, 24, 16)
-        content.setSpacing(12)
+        content.setContentsMargins(TH.SPACE["xl"], TH.SPACE["lg"],
+                                   TH.SPACE["xl"], TH.SPACE["lg"])
+        content.setSpacing(TH.SPACE["md"])
 
         self.stack = QStackedWidget()
-        self.stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
+        self.stack.setStyleSheet(TH.stack_qss())
         self.welcome = WelcomePage(t, bool(self.ps1_path), self.is_admin)
         self.welcome.action_requested.connect(self.request_task)
         self.stack.addWidget(self.welcome)
@@ -2098,8 +2106,7 @@ class PulseApp(QMainWindow):
             # the old per-pack selectors did, so everything downstream
             # (concurrency guard, live console, toasts) is unchanged.
             dialog = SoftwareCatalogDialog(
-                self, item, self.theme.t,
-                SOFTWARE_CATALOG, CATALOG_BUNDLES, CATALOG_BUNDLE_SECTION)
+                self, item, self.theme.t, SOFTWARE_CATALOG)
             if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
                 return
             if dialog.local_installer:

@@ -19,6 +19,9 @@ pinning.
 """
 from __future__ import annotations
 
+import ast
+import os
+
 import pytest
 from PySide6.QtWidgets import QFrame, QLabel
 
@@ -27,6 +30,58 @@ from frontend.main import CategoryPage
 from frontend.menu_structure import (
     CATEGORIES, category_bands, category_items, category_operations,
 )
+
+_FRONTEND = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "src", "frontend")
+
+
+# ============================================================
+#  THE SPACING SCALE
+# ============================================================
+#: Layout calls whose integer arguments are pixel measurements.
+_SPACING_CALLS = ("setSpacing", "addSpacing", "insertSpacing",
+                  "setContentsMargins")
+
+
+def _off_scale_calls(path: str) -> list[tuple[int, str]]:
+    allowed = {0} | set(TH.SPACE.values())
+    source = open(path, encoding="utf-8").read()
+    lines = source.splitlines()
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _SPACING_CALLS):
+            continue
+        literals = [a.value for a in node.args
+                    if isinstance(a, ast.Constant) and isinstance(a.value, int)]
+        if literals and not all(v in allowed for v in literals):
+            out.append((node.lineno, lines[node.lineno - 1].strip()))
+    return out
+
+
+@pytest.mark.parametrize("module", ["main.py", "widgets.py", "animations.py",
+                                    "health_report.py", "playbooks.py"])
+def test_every_layout_measurement_comes_off_the_scale(module):
+    """No hand-picked pixel gaps. Anywhere.
+
+    theme.SPACE exists because the app once carried 13 distinct spacing
+    values and margins like (15, 13, 16, 13) — the root cause of its
+    "almost aligned" feel. The scale was introduced but never enforced,
+    so 57 calls had drifted back to hand-picked numbers (1, 2, 3, 6, 7,
+    9, 10, 14, 18, 20, 28, 30, 34), every one within 2px of a step it
+    could have used. A comment is not a constraint; this is.
+
+    If a surface genuinely needs a step the scale does not have, ADD THE
+    STEP (with the reason, as "xxs" and "xxl" were added) rather than
+    writing the number here.
+    """
+    off_scale = _off_scale_calls(os.path.join(_FRONTEND, module))
+    listing = "\n".join(f"  {module}:{ln}  {text}" for ln, text in off_scale)
+    assert not off_scale, (
+        f"{len(off_scale)} layout call(s) off TH.SPACE "
+        f"{sorted(TH.SPACE.values())}:\n{listing}")
 
 
 # ============================================================
@@ -244,8 +299,7 @@ def _dialog_specs(window):
         ("ConfirmDialog", lambda: W.ConfirmDialog(window, item, t)),
         ("HubDialog", lambda: W.HubDialog(window, hub, t)),
         ("SoftwareCatalogDialog", lambda: W.SoftwareCatalogDialog(
-            window, item, t, MS.SOFTWARE_CATALOG, MS.CATALOG_BUNDLES,
-            MS.CATALOG_BUNDLE_SECTION)),
+            window, item, t, MS.SOFTWARE_CATALOG)),
         ("CommandPalette", lambda: W.CommandPalette(
             window, t, list(MS.iter_leaf_items()))),
         ("ShortcutSheetDialog", lambda: W.ShortcutSheetDialog(
@@ -284,9 +338,9 @@ def test_dialog_panel_fits_the_minimum_window(window, qapp, name):
 
     A responsive panel takes its width from a content floor that OVERRIDES
     both its own cap and the host window (see widgets._content_width_floor),
-    so a single wide row — five labelled tabs, three bundle buttons — can
-    drag the whole dialog wider than the app. Nothing raises; the panel
-    simply hangs off the window.
+    so a single wide row — the catalog's five labelled tabs — can drag the
+    whole dialog wider than the app. Nothing raises; the panel simply
+    hangs off the window.
     """
     from frontend.widgets import refit_dialog
 
@@ -329,6 +383,133 @@ def test_every_dialog_uses_the_shared_chrome(window, qapp):
         dialog.deleteLater()
     qapp.processEvents()
     assert not missing, f"dialogs not built on _dialog_chrome: {missing}"
+
+
+class TestChipStrip:
+    """The scrolling pill row (catalog tabs, DNS profiles).
+
+    Both halves of its geometry shipped broken once, in opposite
+    directions: the strip first squeezed its pills because the scrollbar
+    took its space out of a viewport sized to the pills alone, and the fix
+    for that (pinning the row with QLayout.setAlignment) stopped the
+    scroll area from ever learning the row overflowed — leaving the fifth
+    tab clipped and unreachable, with no scrollbar to say so.
+    """
+
+    def _strip(self, dialog):
+        from PySide6.QtWidgets import QScrollArea
+        from frontend.widgets import _CHIP_H, _CHIP_LANE
+        strips = [s for s in dialog.findChildren(QScrollArea)
+                  if s.height() == _CHIP_H + _CHIP_LANE]
+        assert strips, "the catalog's tab strip is not a _chip_strip"
+        return strips[0]
+
+    def test_the_scrollbar_lane_is_exactly_reserved(self, window, qapp):
+        """Viewport == pill height: the lane the strip adds and the space
+        Qt takes for the bar have to be the same number, or the pills
+        shift by the difference the moment the row overflows."""
+        from frontend.widgets import _CHIP_H
+        dialog = dict(_dialog_specs(window))["SoftwareCatalogDialog"]()
+        dialog.show()
+        qapp.processEvents()
+        strip = self._strip(dialog)
+        assert strip.viewport().height() == _CHIP_H, (
+            f"viewport {strip.viewport().height()}px against a {_CHIP_H}px "
+            "pill — the lane and the scrollbar disagree")
+        dialog.reject()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+    def test_an_overflowing_strip_can_actually_be_scrolled(self, window, qapp):
+        """At the app's minimum width the five tabs cannot all fit, so the
+        strip MUST scroll: a clipped tab with no scrollbar is a filter the
+        user simply cannot reach."""
+        from frontend.widgets import refit_dialog
+        original = window.size()
+        window.resize(_MIN_W, _MIN_H)
+        qapp.processEvents()
+        try:
+            dialog = dict(_dialog_specs(window))["SoftwareCatalogDialog"]()
+            dialog.resize(window.size())
+            dialog.show()
+            qapp.processEvents()
+            refit_dialog(dialog)
+            qapp.processEvents()
+            strip = self._strip(dialog)
+            assert strip.horizontalScrollBar().maximum() > 0, (
+                "the tab strip does not scroll at the minimum window size — "
+                "its overflowing tabs are unreachable")
+            dialog.reject()
+            dialog.deleteLater()
+            qapp.processEvents()
+        finally:
+            window.resize(original)
+            qapp.processEvents()
+
+    def test_the_filter_row_shares_one_top_edge(self, window, qapp):
+        """Tabs and search field are one control row and must read as one:
+        the field is aligned to the strip's TOP, not its centre, because
+        the strip is taller than its pills by the scrollbar lane."""
+        dialog = dict(_dialog_specs(window))["SoftwareCatalogDialog"]()
+        dialog.show()
+        qapp.processEvents()
+        strip = self._strip(dialog)
+        panel = dialog.panel
+        tab = next(iter(dialog._tab_buttons.values()))
+        tab_top = tab.mapTo(panel, tab.rect().topLeft()).y()
+        field_top = dialog._search.mapTo(
+            panel, dialog._search.rect().topLeft()).y()
+        assert tab_top == field_top, (
+            f"the tabs start at y={tab_top} and the filter field at "
+            f"y={field_top} — the row is misaligned by "
+            f"{abs(tab_top - field_top)}px")
+        assert tab.height() == dialog._search.height()
+        assert strip.width() > 0
+        dialog.reject()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+#: Widgets that paint PLATFORM chrome unless they are told not to — a
+#: sunken Fusion frame around a stack, a stock Windows scrollbar with
+#: arrow buttons on a scroll area or a self-scrolling list. Each one
+#: shipped visible in at least one surface: the Office wizard's steps, the
+#: Update Center's and Startup Manager's state pages (frames), the Welcome
+#: and category card grids (bars) and the Ctrl+K palette (bar).
+_PLATFORM_CHROME = ("QStackedWidget", "QScrollArea", "QListWidget")
+
+
+def _unstyled_chrome(root) -> list[str]:
+    from PySide6.QtWidgets import QListWidget, QScrollArea, QStackedWidget
+    out = []
+    for cls in (QStackedWidget, QScrollArea, QListWidget):
+        for widget in root.findChildren(cls):
+            if not widget.styleSheet():
+                out.append(f"{cls.__name__} in {type(widget.parent()).__name__}")
+    return out
+
+
+def test_no_surface_shows_stock_platform_chrome(window, qapp):
+    """Every stack, scroll area and list states its own style.
+
+    These are the only widgets in the app that render platform chrome by
+    default, and an unstyled one does not look broken — it looks like
+    Windows, in the middle of a surface that looks like Pulse.
+    """
+    offenders = {}
+    for name, build in _dialog_specs(window):
+        dialog = build()
+        found = _unstyled_chrome(dialog)
+        if found:
+            offenders[name] = found
+        dialog.reject()
+        dialog.deleteLater()
+    for page in [window.welcome, *window.pages]:
+        found = _unstyled_chrome(page)
+        if found:
+            offenders[type(page).__name__] = found
+    qapp.processEvents()
+    assert not offenders, f"unstyled platform chrome: {offenders}"
 
 
 def test_filtering_dialogs_declare_an_empty_state(window, qapp):

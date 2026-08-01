@@ -196,7 +196,24 @@ def _selector_panel_size(dialog: QDialog) -> tuple[int, int]:
     return (width, height)
 
 
-def _chip_strip(t: dict, height: int) -> tuple[QScrollArea, QHBoxLayout]:
+#: Height of a pill in a _chip_strip, and of every control that has to
+#: line up with one (the catalog's filter field). A named constant because
+#: three separate places used to say "30" and a fourth said "34".
+_CHIP_H = 30
+
+#: Vertical room the strip reserves BELOW its pills for the horizontal
+#: scrollbar: a 4px handle with 4px of air above it and 2px below (the
+#: bar widget itself is the full 10 — see TH.chip_strip_qss, which must
+#: agree with this number). Reserved unconditionally, which is the point:
+#: Qt takes the bar out of the viewport only when it is showing, so a
+#: strip sized to its pills alone squeezed and clipped them the moment the
+#: row overflowed — and the bar then rendered hard against the pill edges,
+#: reading as an underline drawn across the tab bar.
+_CHIP_LANE = 10
+
+
+def _chip_strip(t: dict,
+                pill_height: int = _CHIP_H) -> tuple[QScrollArea, QHBoxLayout]:
     """A single-line, horizontally scrolling row of pills — returns the
     (strip, layout) so the caller just addWidget()s its buttons.
 
@@ -204,26 +221,42 @@ def _chip_strip(t: dict, height: int) -> tuple[QScrollArea, QHBoxLayout]:
     content floor that OVERRIDES both the 1100px cap and the host window
     (see _content_width_floor). A plain QHBoxLayout of labelled buttons
     reports the sum of their widths as its minimum, so one row of five
-    category tabs — or three bundle buttons — silently dragged the whole
-    dialog wider than the window containing it. A scroll area reports a
-    small minimum instead, so the panel stays inside its band and the
-    overflow becomes scrollable rather than clipped.
+    category tabs silently dragged the whole dialog wider than the window
+    containing it. A scroll area reports a small minimum instead, so the
+    panel stays inside its band and the overflow becomes scrollable rather
+    than clipped.
+
+    Takes the PILL height, not the strip height: the caller sizes the
+    thing it can see, and the scrollbar lane is added here so every strip
+    reserves it identically. Pills are pinned to the TOP of the strip by a
+    stretch UNDER them, so their top edge does not move by half a lane the
+    moment the row overflows and the bar takes its space out of the
+    viewport. Pinning them with QLayout.setAlignment instead looks
+    identical and is a trap: an aligned layout reports its size hint
+    rather than its minimum, the scroll area never learns the row is
+    wider than the viewport, and the overflowing pills become silently
+    unreachable instead of scrollable.
     """
     strip = QScrollArea()
     strip.setWidgetResizable(True)
-    strip.setFixedHeight(height)
+    strip.setFixedHeight(pill_height + _CHIP_LANE)
     strip.setFrameShape(QFrame.Shape.NoFrame)
     strip.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     strip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    strip.setStyleSheet(TH.scroll_area_qss(t))
+    strip.setStyleSheet(TH.chip_strip_qss(t))
     strip.viewport().setStyleSheet("background: transparent;")
     strip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     host = QWidget()
     host.setStyleSheet("background: transparent;")
-    lay = QHBoxLayout(host)
+    column = QVBoxLayout(host)
+    column.setContentsMargins(0, 0, 0, 0)
+    column.setSpacing(0)
+    lay = QHBoxLayout()
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(6)
+    lay.setSpacing(TH.SPACE["sm"])
+    column.addLayout(lay)
+    column.addStretch(1)
     strip.setWidget(host)
     return strip, lay
 
@@ -257,7 +290,7 @@ def _dialog_chrome(dialog: PulseDialog, t: dict, accent: str,
     outer.setContentsMargins(0, 0, 0, 0)
     outer.setSpacing(0)
     if anchor == "top":
-        outer.addSpacing(34)
+        outer.addSpacing(TH.SPACE["xxl"])
     else:
         outer.addStretch(1)
     row = QHBoxLayout()
@@ -408,8 +441,9 @@ class TitleBar(QWidget):
         self.setFixedHeight(50)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(20, 8, 10, 6)
-        lay.setSpacing(9)
+        lay.setContentsMargins(TH.SPACE["xl"], TH.SPACE["sm"],
+                               TH.SPACE["md"], TH.SPACE["sm"])
+        lay.setSpacing(TH.SPACE["sm"])
 
         # Same breathing-pulse component the Welcome page's hero mark uses
         # (BreathingIcon) — the brand glyph reads identically everywhere
@@ -432,7 +466,7 @@ class TitleBar(QWidget):
         lay.addStretch()
 
         btns = QHBoxLayout()
-        btns.setSpacing(2)
+        btns.setSpacing(TH.SPACE["xxs"])
 
         def _mk(icon_key: str, tip: str, slot) -> QPushButton:
             b = QPushButton(self._icon(icon_key))
@@ -1557,24 +1591,41 @@ class AmbientGlow(QWidget):
 
     Two motion layers, both engineered to stay cheap:
 
-    1. Aurora orbs — three large, soft brand-tinted radial blobs (indigo /
-       violet / magenta) that slowly DRIFT on independent sine paths and
-       BREATHE (a gentle opacity pulse). Each orb is a radial-gradient
-       PIXMAP rendered once and cached, then blitted at its drifting
-       position every frame — a GPU-friendly blit, not a per-frame gradient
-       rasterization, so the animation costs microseconds even full-screen.
-    2. Particle field — a scatter of tiny soft 'stars' drifting slowly
-       upward and twinkling, wrapping around the top. ~40 small ellipses a
-       frame, negligible.
+    1. Aurora orbs — FIVE soft brand-tinted radial blobs (indigo / violet /
+       magenta) that slowly DRIFT on independent sine paths and BREATHE (a
+       gentle opacity pulse). Three are the large foreground wash; two are
+       smaller, dimmer and lean harder on the pointer parallax, which is
+       what gives the field a front and a back instead of one flat sheet.
+       Each orb is a radial-gradient PIXMAP rendered once and cached, then
+       blitted at its drifting position — a GPU-friendly blit, not a
+       per-frame gradient rasterization, so the animation costs
+       microseconds even full-screen.
+    2. Particle field — a scatter of soft 'stars' drifting upward and
+       twinkling, wrapping around the top. Three DEPTH TIERS (see
+       _PARTICLE_TIERS): far stars are small, dim and slow, near ones
+       larger, brighter and quicker, so the field has parallax rather than
+       uniform noise. Each star is a cached soft-glow texture blitted at
+       its own scale, not a hard-edged ellipse.
 
     Driven by one QTimer at ~28 fps (slow drift stays perfectly smooth at
     that rate) that suspends whenever the widget is hidden, so a minimized
-    or backgrounded window pays nothing. Opacities stay low (theme.py
-    documents why the brand pair reads neon past ~0.16) — this is ambient
+    or backgrounded window pays nothing. DENSITY IS NOT INTENSITY: the
+    count went up 3x, the per-star peak alpha did not (theme.py documents
+    why the brand pair reads neon past ~0.16) — this is ambient
     luminescence, never a light show."""
 
     _INTERVAL_MS = 36          # ~28 fps — slow motion reads smooth, CPU low
-    _N_PARTICLES = 42
+
+    #: Depth tiers, far to near: (share of the field, radius range in px,
+    #: upward speed range in fractions of height/sec, alpha scale). The
+    #: three numbers move TOGETHER on purpose — a far star that is small
+    #: and dim but fast reads as a bug, not as distance.
+    _PARTICLE_TIERS = (
+        (0.46, (0.5, 1.0), (0.005, 0.013), 0.52),
+        (0.34, (1.0, 1.7), (0.013, 0.026), 0.78),
+        (0.20, (1.7, 2.7), (0.026, 0.044), 1.00),
+    )
+    _N_PARTICLES = 126
     # v1.0 pointer-biased drift: the orb field leans almost imperceptibly
     # toward the cursor. GAIN is the fraction of the widget dimension one
     # full lean can move an orb (the bias itself caps at ±0.5, so the real
@@ -1604,19 +1655,26 @@ class AmbientGlow(QWidget):
         self._layer_t = -1e9
         self._layer_size = (0, 0)
         self._frozen = False
+        self._star_cache: dict = {}
         self._particles: list[dict] = []
         self._build_particles()
 
         # Independent drift/breathe parameters per orb: (base_x_frac,
         # base_y_frac, drift_speed, drift_phase, breathe_speed,
-        # breathe_phase, parallax). Parallax is the orb's share of the
-        # pointer bias — mixed signs so the field shears gently around the
-        # cursor instead of sliding as one rigid sheet, which is what sells
-        # depth at a 2% displacement.
+        # breathe_phase, parallax, scale). Parallax is the orb's share of
+        # the pointer bias — mixed signs so the field shears gently around
+        # the cursor instead of sliding as one rigid sheet, which is what
+        # sells depth at a 2% displacement. `scale` is the orb's size as a
+        # fraction of the full blob: the last two are the DEEP layer —
+        # smaller, dimmer (see the peaks in _build_layer) and leaning
+        # hardest on the pointer, so they read as sitting behind the
+        # foreground wash instead of alongside it.
         self._orb_motion = [
-            (0.16, -0.06, 0.055, 0.0, 0.42, 0.0,  1.0),
-            (1.02,  0.28, 0.041, 2.1, 0.37, 1.3, -0.65),
-            (0.70,  1.06, 0.048, 4.0, 0.31, 3.4,  0.45),
+            (0.16, -0.06, 0.055, 0.0, 0.42, 0.0,  1.00, 1.00),
+            (1.02,  0.28, 0.041, 2.1, 0.37, 1.3, -0.65, 1.00),
+            (0.70,  1.06, 0.048, 4.0, 0.31, 3.4,  0.45, 1.00),
+            (0.44,  0.34, 0.067, 1.1, 0.53, 2.2, -1.40, 0.52),
+            (0.86,  0.72, 0.073, 5.2, 0.61, 0.7,  1.25, 0.44),
         ]
         # Smoothed pointer bias, each axis in [-0.5, 0.5]; eased toward the
         # cursor in _tick and back to neutral when it leaves the window.
@@ -1631,15 +1689,28 @@ class AmbientGlow(QWidget):
     def _build_particles(self):
         rng = random.Random(7)   # fixed seed → stable, reproducible scatter
         self._particles = []
-        for _ in range(self._N_PARTICLES):
-            self._particles.append({
-                "x": rng.random(),
-                "y": rng.random(),
-                "r": rng.uniform(0.7, 2.0),
-                "spd": rng.uniform(0.008, 0.028),   # frac of height / second, upward
-                "tw": rng.random() * math.tau,       # twinkle phase
-                "tws": rng.uniform(0.6, 1.5),        # twinkle speed
-            })
+        for share, (r_lo, r_hi), (s_lo, s_hi), dim in self._PARTICLE_TIERS:
+            for _ in range(round(self._N_PARTICLES * share)):
+                radius = rng.uniform(r_lo, r_hi)
+                # Core radius -> full texture span (core + glow tail),
+                # snapped to an even pixel so the star can be blitted at
+                # its texture's native size. Six buckets cover the whole
+                # 0.5-2.7px radius range; see _star_pixmap for why that
+                # quantisation is what makes the density affordable.
+                span = max(4, round(radius * 6.0 / 2.0) * 2)
+                self._particles.append({
+                    "x": rng.random(),
+                    "y": rng.random(),
+                    "px": span,
+                    "spd": rng.uniform(s_lo, s_hi),  # frac of height / s, upward
+                    # A whisper of lateral drift, signed per star: without
+                    # it 126 stars rising on exactly parallel tracks read
+                    # as a texture being scrolled rather than as a field.
+                    "sway": rng.uniform(-0.10, 0.10),
+                    "tw": rng.random() * math.tau,   # twinkle phase
+                    "tws": rng.uniform(0.5, 1.4),    # twinkle speed
+                    "dim": dim,                      # tier alpha scale
+                })
 
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
@@ -1648,6 +1719,7 @@ class AmbientGlow(QWidget):
         self._c3 = QColor(t["accent3"])
         self._light = t["name"] == "light"
         self._orb_cache.clear()   # colors changed — cached orb pixmaps stale
+        self._star_cache.clear()  # ...the star texture is per-theme too...
         self._layer = None        # ...and so is the composited orb layer
         self.update()
 
@@ -1723,6 +1795,14 @@ class AmbientGlow(QWidget):
             pt["y"] -= pt["spd"] * dt
             if pt["y"] < -0.03:
                 pt["y"] += 1.06   # wrap back to just below the bottom edge
+            # Sway is integrated, not sampled: a star that drifts sideways
+            # keeps whatever ground it gained, so identical seeds do not
+            # snap back into their starting columns every cycle.
+            pt["x"] += pt["sway"] * dt * 0.02
+            if pt["x"] < -0.03:
+                pt["x"] += 1.06
+            elif pt["x"] > 1.03:
+                pt["x"] -= 1.06
         self.update()
 
     # -- orb pixmap cache -------------------------------------
@@ -1771,10 +1851,53 @@ class AmbientGlow(QWidget):
         self._orb_cache[key] = pm
         return pm
 
+    # -- star textures ----------------------------------------
+    # A soft-glow texture per (theme colour, size), blitted 1:1.
+    #
+    # The field used to be flat drawEllipse() calls, which is why it could
+    # only ever be a scatter of hard little dots: at 1-3px an antialiased
+    # disc has no falloff to speak of, so raising the count just made the
+    # canvas look speckled. A texture with a bright core and a wide tail
+    # reads as LIGHT at any size, which is what lets the count triple
+    # without the background turning into noise.
+    #
+    # SIZES ARE QUANTISED (even pixels, see _build_particles) so every
+    # star can be blitted at its texture's native size. That is the whole
+    # performance story: the first cut scaled one 32px texture to each
+    # star's exact span, and 126 smooth-scaled blits cost 1.5ms a paint —
+    # on a widget that repaints ~26 times a second under the animations
+    # above it. Native-size blits take a straight alpha-blend path and
+    # cost a third of that, and the twinkle rides on opacity, where the
+    # eye reads it as brightness anyway.
+    def _star_pixmap(self, color: QColor, size: int) -> QPixmap:
+        pm = self._star_cache.get((color.rgb(), size))
+        if pm is not None:
+            return pm
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        pp = QPainter(pm)
+        pp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        grad = QRadialGradient(size / 2.0, size / 2.0, size / 2.0)
+        core = QColor(color)
+        core.setAlphaF(1.0)
+        grad.setColorAt(0.0, core)
+        waist = QColor(color)
+        waist.setAlphaF(0.42)
+        grad.setColorAt(0.30, waist)
+        tail = QColor(color)
+        tail.setAlphaF(0.0)
+        grad.setColorAt(1.0, tail)
+        pp.setPen(Qt.PenStyle.NoPen)
+        pp.setBrush(grad)
+        pp.drawEllipse(0, 0, size, size)
+        pp.end()
+        self._star_cache[(color.rgb(), size)] = pm
+        return pm
+
     # -- composited orb layer ---------------------------------
-    # The three orbs are drawn ONCE into a widget-sized layer and then
-    # blitted as a single pixmap, instead of three smooth-scaled blits per
-    # frame. This matters because the glow is repainted far more often than
+    # The orbs are drawn ONCE into a widget-sized layer and then blitted as
+    # a single pixmap, instead of one smooth-scaled blit per orb per frame.
+    # This matters because the glow is repainted far more often than
     # its own 28fps timer asks: it is the bottom widget in the shell, so
     # every animation above it (the two BreathingIcons, ~60fps each) forces
     # a partial repaint underneath. Measured at idle: 3.55 paintEvents per
@@ -1803,7 +1926,7 @@ class AmbientGlow(QWidget):
         return self._layer
 
     def _build_layer(self, w: int, h: int) -> QPixmap:
-        """Composite the three drifting/breathing orbs into one transparent
+        """Composite the five drifting/breathing orbs into one transparent
         pixmap. Orb blending among themselves stays SourceOver exactly as
         before; the light-mode Multiply is applied when the finished layer
         is blitted onto the canvas (see paintEvent)."""
@@ -1826,10 +1949,17 @@ class AmbientGlow(QWidget):
         # Dark is untouched: there the wash SCREENS onto an obsidian canvas
         # that has room to receive it, which is the whole reason the two
         # modes use opposite blend modes in the first place.
-        peaks = (0.055, 0.05, 0.045) if self._light else (0.17, 0.12, 0.11)
-        colors = (self._c1, self._c3, self._c2)   # indigo, magenta, violet
+        # The last two entries are the DEEP layer (see _orb_motion): they
+        # are smaller, so at an equal peak they would read as two bright
+        # spots rather than as distance — depth comes from dimming them in
+        # step with their size. In light mode they are dimmer again,
+        # because the whole light wash has to stay under the "tint the
+        # paper, don't dye it" ceiling above.
+        peaks = ((0.055, 0.05, 0.045, 0.035, 0.03) if self._light
+                 else (0.17, 0.12, 0.11, 0.095, 0.085))
+        colors = (self._c1, self._c3, self._c2, self._c2, self._c3)
         amp_x, amp_y = w * 0.06, h * 0.06
-        for i, (bx, by, dspd, dph, bspd, bph, par) in enumerate(self._orb_motion):
+        for i, (bx, by, dspd, dph, bspd, bph, par, scale) in enumerate(self._orb_motion):
             dx = math.sin(self._t * dspd * math.tau + dph) * amp_x
             dy = math.cos(self._t * dspd * math.tau * 0.8 + dph) * amp_y
             # pointer lean — pre-smoothed in _tick, scaled per orb. At the
@@ -1838,11 +1968,12 @@ class AmbientGlow(QWidget):
             # argument as the drift itself (see _LAYER_MS note above).
             dx += self._bias_x * w * self._POINTER_GAIN * par
             dy += self._bias_y * h * self._POINTER_GAIN * par
-            cx = bx * w + dx - diameter / 2.0
-            cy = by * h + dy - diameter / 2.0
+            size = int(diameter * scale)
+            cx = bx * w + dx - size / 2.0
+            cy = by * h + dy - size / 2.0
             breathe = 1.0 + 0.16 * math.sin(self._t * bspd * math.tau + bph)
             p.setOpacity(max(0.0, min(1.0, breathe)))
-            p.drawPixmap(QRect(int(cx), int(cy), diameter, diameter),
+            p.drawPixmap(QRect(int(cx), int(cy), size, size),
                          self._orb_pixmap(colors[i], peaks[i]))
         p.end()
         return layer
@@ -1890,22 +2021,26 @@ class AmbientGlow(QWidget):
         else:
             base = QColor(200, 214, 255)   # cool starlight on deep space
             pmax = 0.34
-        p.setPen(Qt.PenStyle.NoPen)
         # Most repaints here are small regions dirtied by the animations
-        # sitting above this widget, so skip the motes outside them — Qt
-        # would clip the drawing anyway, but not the per-particle QColor
-        # construction and trig that precede it.
-        dirty = e.rect().adjusted(-3, -3, 3, 3)
+        # sitting above this widget, so skip the stars outside them — Qt
+        # would clip the drawing anyway, but not the per-particle trig and
+        # texture lookup that precede it. The margin covers the glow's
+        # tail, which reaches ~3x the star's core radius.
+        dirty = QRectF(e.rect().adjusted(-12, -12, 12, 12))
         for pt in self._particles:
             x, y = pt["x"] * w, pt["y"] * h
-            if not dirty.contains(int(x), int(y)):
+            if not dirty.contains(x, y):
                 continue
             tw = 0.5 + 0.5 * math.sin(self._t * pt["tws"] * math.tau + pt["tw"])
-            col = QColor(base)
-            col.setAlphaF(pmax * (0.25 + 0.75 * tw))
-            p.setBrush(col)
-            r = pt["r"] * (0.7 + 0.5 * tw)
-            p.drawEllipse(QPointF(x, y), r, r)
+            # Twinkle is carried entirely by OPACITY: a star that visibly
+            # swells and shrinks reads as a pulsing dot, where one that
+            # only brightens reads as atmosphere — and a fixed size is
+            # what keeps every blit on the native-size fast path.
+            p.setOpacity(pmax * pt["dim"] * (0.22 + 0.78 * tw))
+            span = pt["px"]
+            p.drawPixmap(QPointF(x - span / 2.0, y - span / 2.0),
+                         self._star_pixmap(base, span))
+        p.setOpacity(1.0)
         p.end()
 
 
@@ -2178,7 +2313,7 @@ class ConfirmDialog(PulseDialog):
                 "background: transparent; border: none;")
             lay.addWidget(warn)
 
-        lay.addSpacing(8)
+        lay.addSpacing(TH.SPACE["sm"])
         row = QHBoxLayout()
         row.addStretch()
 
@@ -2240,7 +2375,7 @@ class RevertChoiceDialog(PulseDialog):
         body.setStyleSheet(TH.label_qss(t, "body"))
         lay.addWidget(body)
 
-        lay.addSpacing(8)
+        lay.addSpacing(TH.SPACE["sm"])
         row = QHBoxLayout()
         row.setSpacing(TH.SPACE["sm"])
         row.addStretch()
@@ -2300,8 +2435,9 @@ class PlaybookStepRow(QFrame):
         self.setObjectName("playbookStep")
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 7, 10, 7)
-        lay.setSpacing(10)
+        lay.setContentsMargins(TH.SPACE["md"], TH.SPACE["sm"],
+                               TH.SPACE["md"], TH.SPACE["sm"])
+        lay.setSpacing(TH.SPACE["md"])
 
         self._lamp = QLabel()
         self._lamp.setFixedWidth(16)
@@ -2309,7 +2445,7 @@ class PlaybookStepRow(QFrame):
         lay.addWidget(self._lamp, 0, Qt.AlignmentFlag.AlignTop)
 
         text_col = QVBoxLayout()
-        text_col.setSpacing(1)
+        text_col.setSpacing(TH.SPACE["xxs"])
         self._title = QLabel(f"{index + 1}.  {step.title}")
         text_col.addWidget(self._title)
         self._detail = QLabel(step.note or step.task)
@@ -2419,7 +2555,7 @@ class PlaybookDialog(PulseDialog):
 
         # -- playbook picker: a row of pills ---------------------------
         picker = QHBoxLayout()
-        picker.setSpacing(8)
+        picker.setSpacing(TH.SPACE["sm"])
         self._pills: list[QPushButton] = []
         for playbook in playbooks:
             pill = QPushButton(f"{playbook.icon}  {playbook.name}")
@@ -2637,8 +2773,8 @@ def report_row(t: dict, label: str, value: str, tone: str = "",
     holder = QWidget()
     holder.setStyleSheet("background: transparent;")
     line = QHBoxLayout(holder)
-    line.setContentsMargins(0, 2, 0, 2)
-    line.setSpacing(10)
+    line.setContentsMargins(0, TH.SPACE["xxs"], 0, TH.SPACE["xxs"])
+    line.setSpacing(TH.SPACE["md"])
     left = QLabel(label)
     # `text_muted`, not the caption role's `text_faint`. text_faint is
     # pinned at exactly 4.55:1 on the CARD, and a report row renders on the
@@ -3982,7 +4118,7 @@ class DnsSwitcherDialog(InspectorDialog):
 
         # One row of choices per adapter. Automatic comes FIRST — see the
         # class docstring; the undo is not a footnote.
-        strip, row = _chip_strip(self._t, 40)
+        strip, row = _chip_strip(self._t)
         row.addWidget(self._profile_button(
             name, self.DHCP_KEY, "Automatic (DHCP)", active == self.DHCP_KEY))
         for profile in self._profiles:
@@ -4000,7 +4136,7 @@ class DnsSwitcherDialog(InspectorDialog):
     def _profile_button(self, adapter: str, key: str, label: str,
                         current: bool) -> QPushButton:
         btn = QPushButton(label.replace("&", "&&"))
-        btn.setFixedHeight(32)
+        btn.setFixedHeight(_CHIP_H)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(TH.catalog_tab_qss(self._t, self._accent, current))
         # The active profile is shown as the selected pill and does
@@ -4263,7 +4399,7 @@ class CloseConfirmDialog(PulseDialog):
         body.setStyleSheet(TH.label_qss(t, "body"))
         lay.addWidget(body)
 
-        lay.addSpacing(8)
+        lay.addSpacing(TH.SPACE["sm"])
         row = QHBoxLayout()
         row.addStretch()
 
@@ -4331,7 +4467,7 @@ class ElevatePromptDialog(PulseDialog):
         body.setStyleSheet(TH.label_qss(t, "body"))
         lay.addWidget(body)
 
-        lay.addSpacing(8)
+        lay.addSpacing(TH.SPACE["sm"])
         row = QHBoxLayout()
         row.addStretch()
 
@@ -4465,9 +4601,9 @@ class HubDialog(PulseDialog):
             # swallow the headers.
             for gi, group in enumerate(groups):
                 if gi > 0:
-                    host_lay.addSpacing(10)
+                    host_lay.addSpacing(TH.SPACE["md"])
                 head_row = QHBoxLayout()
-                head_row.setSpacing(12)
+                head_row.setSpacing(TH.SPACE["md"])
                 header = QLabel(group["title"])
                 header.setStyleSheet(TH.hub_group_header_qss(t, accent))
                 head_row.addWidget(header)
@@ -4504,7 +4640,7 @@ class HubDialog(PulseDialog):
         # left over after the header/footer instead of stopping short.
         lay.addWidget(scroll, 1)
 
-        lay.addSpacing(4)
+        lay.addSpacing(TH.SPACE["xs"])
         row = QHBoxLayout()
         row.addStretch()
         close = QPushButton("Close")
@@ -4794,15 +4930,15 @@ class ActivityDrawer(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(8)
+        outer.setSpacing(TH.SPACE["sm"])
 
         # -- always-visible rail ------------------------------
         self._rail = QFrame()
         self._rail.setObjectName("activityRail")
         self._rail.setFixedHeight(44)
         rail = QHBoxLayout(self._rail)
-        rail.setContentsMargins(14, 0, 8, 0)
-        rail.setSpacing(10)
+        rail.setContentsMargins(TH.SPACE["lg"], 0, TH.SPACE["sm"], 0)
+        rail.setSpacing(TH.SPACE["md"])
 
         self.status_dot = StatusDot("●")
         self.status_dot.setFixedWidth(12)
@@ -4878,7 +5014,7 @@ class ActivityDrawer(QWidget):
         self._body = QWidget()
         body = QVBoxLayout(self._body)
         body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(8)
+        body.setSpacing(TH.SPACE["sm"])
         self.console = LiveConsole(t)
         self.console.setFixedHeight(172)
         body.addWidget(self.console)
@@ -5285,9 +5421,18 @@ class SoftwareCatalogDialog(PulseDialog):
     MANUAL-FIRST, unlike the old per-pack selector. Those dialogs arrived
     pre-checked because a card had already promised "the pack"; a 43-row
     catalog making the same promise would open with 43 apps queued and put
-    the user to work untangling it. Nothing here is pre-ticked, the
-    bundles offer the one-click path, and the deploy button stays inert
-    until something is actually chosen.
+    the user to work untangling it. Nothing here is pre-ticked and the
+    deploy button stays inert until something is actually chosen.
+
+    ONE FILTER ROW, no quick-select bundles. The dialog used to carry a
+    second strip of "Java / University Stack" / "AI / Python Stack" /
+    "Web Dev Stack" buttons under the tabs. They were a THIRD way to
+    narrow a list that already has two (tabs by category, field by name),
+    they only applied to one of the five tabs, and they answered a
+    question — "which five apps does a Java course need?" — that the
+    Development & Tools tab answers by simply being read. Removing the
+    row also removes the only control in the dialog that appeared and
+    disappeared as you changed tabs.
 
     After Accepted, exactly one of these is populated:
       `selected_ids`     ticked AppIds for the bulk winget deploy
@@ -5300,8 +5445,7 @@ class SoftwareCatalogDialog(PulseDialog):
     ALL_KEY = ""
 
     def __init__(self, parent: QWidget, item: dict, t: dict,
-                 sections: list[dict], bundles: list[dict],
-                 bundle_section: str = ""):
+                 sections: list[dict]):
         super().__init__(parent)
         self._t = t
         self.selected_ids: list[str] = []
@@ -5315,7 +5459,6 @@ class SoftwareCatalogDialog(PulseDialog):
         self._tab_buttons: dict[str, QPushButton] = {}
         self._active_tab = self.ALL_KEY
         self._query = ""
-        self._bundle_section = bundle_section
         accent = t["accent"]
 
         panel = _dialog_chrome(self, t, accent, responsive=True)
@@ -5336,11 +5479,14 @@ class SoftwareCatalogDialog(PulseDialog):
         lay.addWidget(self._blurb)
 
         # -- tab bar + in-list search ----------------------------
-        # One row: the tabs narrow by CATEGORY, the field narrows by NAME.
-        # Side by side because they compose — "development" + "sql" is a
-        # question neither can answer alone.
+        # THE one filter row, and the only one: the tabs narrow by
+        # CATEGORY, the field narrows by NAME, and nothing else in this
+        # dialog narrows anything. Side by side because they compose —
+        # "development" + "sql" is a question neither can answer alone.
+        # Both controls share a top edge — see _CHIP_H and the AlignTop
+        # below.
         filter_row = QHBoxLayout()
-        filter_row.setSpacing(8)
+        filter_row.setSpacing(TH.SPACE["sm"])
 
         # The tabs live in a horizontally scrolling strip, NOT directly in
         # the row — five labelled pills want ~1300px against a panel that
@@ -5351,13 +5497,13 @@ class SoftwareCatalogDialog(PulseDialog):
         # nothing, because each section's icon still leads its group header
         # a few pixels below, which is where the tab/content association
         # actually gets made.
-        tab_strip, tab_lay = _chip_strip(t, 36)
+        tab_strip, tab_lay = _chip_strip(t, _CHIP_H)
         for key, label in ([(self.ALL_KEY, f"All ({total})")] +
                            [(s["key"], f"{s['title']}"
                              f" ({sum(len(x) for _g, x in s['groups'])})")
                             for s in sections]):
             btn = QPushButton(label.replace("&", "&&"))
-            btn.setFixedHeight(30)
+            btn.setFixedHeight(_CHIP_H)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _c=False, k=key: self._set_tab(k))
             self._tab_buttons[key] = btn
@@ -5367,31 +5513,19 @@ class SoftwareCatalogDialog(PulseDialog):
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Filter apps…")
-        self._search.setFixedSize(180, 30)
+        self._search.setFixedSize(180, _CHIP_H)
         self._search.setClearButtonEnabled(True)
         self._search.setStyleSheet(TH.catalog_search_qss(t, accent))
         self._search.textChanged.connect(self._on_query)
-        filter_row.addWidget(self._search, 0, Qt.AlignmentFlag.AlignVCenter)
+        # Top, not centre: the strip is taller than its pills by exactly
+        # the scrollbar lane, so a centred field would drift half a lane
+        # down the moment the tabs overflow and the bar appears.
+        filter_row.addWidget(self._search, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(filter_row)
-
-        # -- quick-select bundles (development tab only) ----------
-        # Same scrolling strip as the tabs: three bundle buttons reported a
-        # 924px minimum, which the old Dev Hub dialog silently inherited too.
-        self._bundle_host, bundle_row = _chip_strip(t, 40)
-        for bundle in bundles:
-            btn = QPushButton(f"{bundle['icon']}  {bundle['title']}".replace("&", "&&"))
-            btn.setFixedHeight(34)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(TH.wizard_link_qss(t, accent))
-            btn.clicked.connect(
-                lambda _c=False, ids=bundle["app_ids"]: self._apply_bundle(ids))
-            bundle_row.addWidget(btn)
-        bundle_row.addStretch()
-        lay.addWidget(self._bundle_host)
 
         # -- select-all / select-none + live counter -------------
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(16)
+        toolbar.setSpacing(TH.SPACE["lg"])
         self._all_btn = QPushButton("Select All")
         self._all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._all_btn.setStyleSheet(TH.link_button_qss(t, accent))
@@ -5456,7 +5590,7 @@ class SoftwareCatalogDialog(PulseDialog):
         scroll.setWidget(host)
         lay.addWidget(scroll, 1)
 
-        lay.addSpacing(4)
+        lay.addSpacing(TH.SPACE["xs"])
         footer = QHBoxLayout()
         footer.addStretch()
         cancel = QPushButton("Cancel")
@@ -5507,11 +5641,6 @@ class SoftwareCatalogDialog(PulseDialog):
         for header, _section_key, ids in self._headers:
             header.setVisible(any(self._row_matches(aid) for aid in ids))
         self._empty.setVisible(visible == 0)
-        # Bundles tick development-tab tools, so they'd be a dead control
-        # anywhere else. Hidden rather than disabled: a permanently greyed
-        # row of buttons is just clutter that explains nothing.
-        self._bundle_host.setVisible(
-            self._active_tab in (self.ALL_KEY, self._bundle_section))
         self._all_btn.setEnabled(visible > 0)
         self._none_btn.setEnabled(visible > 0)
         self._sync_count()
@@ -5524,12 +5653,6 @@ class SoftwareCatalogDialog(PulseDialog):
         """Scoped to what is on screen — see the class docstring."""
         for app_id in self._visible_ids():
             self._rows[app_id].checkbox.setChecked(checked)
-
-    def _apply_bundle(self, app_ids: list[str]):
-        for app_id in app_ids:
-            row = self._rows.get(app_id)
-            if row is not None:
-                row.checkbox.setChecked(True)
 
     def _refresh_runtime_suggestion(self, runtime_id: str):
         """Recompute a runtime row's highlight from scratch: on whenever it
@@ -5746,8 +5869,9 @@ class CommandPalette(PulseDialog):
         panel = _dialog_chrome(self, t, t["accent"], width=560, anchor="top")
 
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(14, 14, 14, 10)
-        lay.setSpacing(8)
+        lay.setContentsMargins(TH.SPACE["lg"], TH.SPACE["lg"],
+                               TH.SPACE["lg"], TH.SPACE["md"])
+        lay.setSpacing(TH.SPACE["sm"])
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search apps, tweaks and tools…")
@@ -5916,7 +6040,7 @@ class OfficeWizardDialog(PulseDialog):
 
         head = QHBoxLayout()
         title_col = QVBoxLayout()
-        title_col.setSpacing(2)
+        title_col.setSpacing(TH.SPACE["xxs"])
         title = QLabel("📄  Microsoft Office Deployment")
         title.setStyleSheet(TH.label_qss(t, "dialog"))
         title_col.addWidget(title)
@@ -5929,6 +6053,7 @@ class OfficeWizardDialog(PulseDialog):
 
         self._pages: dict[str, int] = {}
         self._stack = QStackedWidget()
+        self._stack.setStyleSheet(TH.stack_qss())
         for name, builder in (
             ("choice", self._build_choice_page),
             ("auto_confirm", self._build_auto_page),
@@ -5994,7 +6119,7 @@ class OfficeWizardDialog(PulseDialog):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(12)
+        lay.setSpacing(TH.SPACE["md"])
 
         intro = QLabel(
             "Office ships as one bundle through Microsoft's official "
@@ -6050,7 +6175,7 @@ class OfficeWizardDialog(PulseDialog):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(14)
+        lay.setSpacing(TH.SPACE["lg"])
 
         info = QLabel(
             "Pulse will download the official Office Click-to-Run client "
@@ -6099,7 +6224,7 @@ class OfficeWizardDialog(PulseDialog):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setSpacing(TH.SPACE["md"])
 
         steps = [
             ("1", "Open the Deployment Tool below, run it, and extract it "
@@ -6112,7 +6237,7 @@ class OfficeWizardDialog(PulseDialog):
         ]
         for num, text in steps:
             row = QHBoxLayout()
-            row.setSpacing(10)
+            row.setSpacing(TH.SPACE["md"])
             badge = QLabel(num)
             badge.setFixedSize(22, 22)
             badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -6153,7 +6278,7 @@ class OfficeWizardDialog(PulseDialog):
         page = QWidget()
         self._locate_lay = QVBoxLayout(page)
         self._locate_lay.setContentsMargins(0, 0, 0, 0)
-        self._locate_lay.setSpacing(10)
+        self._locate_lay.setSpacing(TH.SPACE["md"])
         return page
 
     def _locate_back(self):
@@ -6315,7 +6440,7 @@ class OfficeWizardDialog(PulseDialog):
         page = QWidget()
         self._confirm_lay = QVBoxLayout(page)
         self._confirm_lay.setContentsMargins(0, 0, 0, 0)
-        self._confirm_lay.setSpacing(14)
+        self._confirm_lay.setSpacing(TH.SPACE["lg"])
         return page
 
     def _render_confirm(self):
@@ -6538,11 +6663,12 @@ class DevHubRow(QFrame):
         self._app_name = app_name
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 10, 14, 10)
-        outer.setSpacing(2)
+        outer.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
+                                 TH.SPACE["lg"], TH.SPACE["md"])
+        outer.setSpacing(TH.SPACE["xxs"])
 
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(TH.SPACE["md"])
         # Instant visual recognition: the app's own icon when it is
         # installed here, its official brand mark from the bundled asset
         # set otherwise. The app_id is what keys the brand lookup, so it
@@ -6629,11 +6755,12 @@ class UpdateRow(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 10, 14, 10)
-        outer.setSpacing(2)
+        outer.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
+                                 TH.SPACE["lg"], TH.SPACE["md"])
+        outer.setSpacing(TH.SPACE["xxs"])
 
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(TH.SPACE["md"])
         self.checkbox = QCheckBox(name)
         self.checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         self.checkbox.setChecked(True)
@@ -6728,6 +6855,7 @@ class UpdateCenterDialog(PulseDialog):
         lay.addWidget(self._subtitle)
 
         self._stack = QStackedWidget()
+        self._stack.setStyleSheet(TH.stack_qss())
         lay.addWidget(self._stack, 1)
         self._loading_page = self._build_loading_page()
         self._stack.addWidget(self._loading_page)
@@ -6746,8 +6874,8 @@ class UpdateCenterDialog(PulseDialog):
         t = self._t
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 34, 0, 28)
-        lay.setSpacing(16)
+        lay.setContentsMargins(0, TH.SPACE["xxl"], 0, TH.SPACE["xl"])
+        lay.setSpacing(TH.SPACE["lg"])
         lay.addStretch()
         self._shimmer = ShimmerBar(height=6)
         self._shimmer.set_theme(t)
@@ -6772,8 +6900,8 @@ class UpdateCenterDialog(PulseDialog):
         t = self._t
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 30, 0, 24)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, TH.SPACE["xxl"], 0, TH.SPACE["xl"])
+        lay.setSpacing(TH.SPACE["md"])
         lay.addStretch()
         icon = QLabel("✅")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -6806,8 +6934,8 @@ class UpdateCenterDialog(PulseDialog):
         t = self._t
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 30, 0, 24)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, TH.SPACE["xxl"], 0, TH.SPACE["xl"])
+        lay.setSpacing(TH.SPACE["md"])
         lay.addStretch()
         icon = QLabel("⚠️")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -6848,10 +6976,10 @@ class UpdateCenterDialog(PulseDialog):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setSpacing(TH.SPACE["md"])
 
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(16)
+        toolbar.setSpacing(TH.SPACE["lg"])
         all_btn = QPushButton("Select All")
         all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         all_btn.setStyleSheet(TH.link_button_qss(t, accent))
@@ -6884,7 +7012,7 @@ class UpdateCenterDialog(PulseDialog):
         scroll.setWidget(self._host)
         lay.addWidget(scroll, 1)
 
-        lay.addSpacing(4)
+        lay.addSpacing(TH.SPACE["xs"])
         row = QHBoxLayout()
         row.addStretch()
 
@@ -7057,13 +7185,14 @@ class StartupRow(QFrame):
         self._recommendation = str(item.get("Recommendation") or "Review")
 
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(14, 12, 14, 12)
-        outer.setSpacing(12)
+        outer.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
+                                 TH.SPACE["lg"], TH.SPACE["md"])
+        outer.setSpacing(TH.SPACE["md"])
 
         col = QVBoxLayout()
-        col.setSpacing(4)
+        col.setSpacing(TH.SPACE["xs"])
         name_row = QHBoxLayout()
-        name_row.setSpacing(8)
+        name_row.setSpacing(TH.SPACE["sm"])
         self._name = QLabel(str(item.get("Name", "")))
         name_row.addWidget(self._name)
         self._impact_badge = QLabel(f"{self._impact.upper()} IMPACT")
@@ -7146,7 +7275,7 @@ class StartupManagerDialog(PulseDialog):
 
         head = QHBoxLayout()
         title_col = QVBoxLayout()
-        title_col.setSpacing(2)
+        title_col.setSpacing(TH.SPACE["xxs"])
         title = QLabel("🚀  Startup Manager")
         title.setStyleSheet(TH.label_qss(t, "dialog"))
         title_col.addWidget(title)
@@ -7159,6 +7288,7 @@ class StartupManagerDialog(PulseDialog):
         lay.addLayout(head)
 
         self._stack = QStackedWidget()
+        self._stack.setStyleSheet(TH.stack_qss())
         lay.addWidget(self._stack, 1)
         self._loading_page = self._build_loading_page()
         self._stack.addWidget(self._loading_page)
@@ -7183,8 +7313,8 @@ class StartupManagerDialog(PulseDialog):
         t = self._t
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 34, 0, 28)
-        lay.setSpacing(16)
+        lay.setContentsMargins(0, TH.SPACE["xxl"], 0, TH.SPACE["xl"])
+        lay.setSpacing(TH.SPACE["lg"])
         lay.addStretch()
         self._shimmer = ShimmerBar(height=6)
         self._shimmer.set_theme(t)
@@ -7209,8 +7339,8 @@ class StartupManagerDialog(PulseDialog):
         t = self._t
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 30, 0, 24)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, TH.SPACE["xxl"], 0, TH.SPACE["xl"])
+        lay.setSpacing(TH.SPACE["md"])
         lay.addStretch()
         icon = QLabel("⚠️")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -7245,10 +7375,10 @@ class StartupManagerDialog(PulseDialog):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setSpacing(TH.SPACE["md"])
 
         summary = QHBoxLayout()
-        summary.setSpacing(8)
+        summary.setSpacing(TH.SPACE["sm"])
         self._chip_enabled = QLabel("")
         self._chip_enabled.setStyleSheet(TH.stat_chip_qss(t, "neutral"))
         summary.addWidget(self._chip_enabled)

@@ -921,22 +921,19 @@ class TestSoftwareCatalogMirror:
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         assert not dupes, f"app listed in more than one catalog section: {dupes}"
 
-    def test_every_bundle_names_a_real_catalog_app(self):
-        """A bundle button that ticks nothing is a dead control."""
-        from frontend.menu_structure import CATALOG_BUNDLES, catalog_app_ids
-        known = set(catalog_app_ids())
-        for bundle in CATALOG_BUNDLES:
-            unknown = sorted(set(bundle["app_ids"]) - known)
-            assert not unknown, (
-                f"bundle {bundle['key']!r} names non-catalog app(s): {unknown}")
-
-    def test_the_bundle_section_exists(self):
-        from frontend.menu_structure import (
-            CATALOG_BUNDLE_SECTION, SOFTWARE_CATALOG)
-        keys = {s["key"] for s in SOFTWARE_CATALOG}
-        assert CATALOG_BUNDLE_SECTION in keys, (
-            f"bundles are pinned to section {CATALOG_BUNDLE_SECTION!r}, "
-            f"which is not one of {sorted(keys)} — the row would never show")
+    def test_quick_select_bundles_stay_gone(self):
+        """The catalog filters by CATEGORY (tabs) and by NAME (field), and
+        by nothing else. The removed third control — a row of stack
+        buttons scoped to one tab out of five — left a data structure on
+        both sides of the GUI/backend line; a re-declared one here is the
+        first symptom of the row growing back."""
+        from frontend import menu_structure as MS
+        for name in ("CATALOG_BUNDLES", "CATALOG_BUNDLE_SECTION"):
+            assert not hasattr(MS, name), f"{name} is back — so is the chip row"
+        catalogs = open(os.path.join(_ROOT, "src/backend/modules/01-Catalogs.ps1"),
+                        encoding="utf-8-sig").read()
+        assert "$Script:DevHubBundles = " not in catalogs, (
+            "the backend mirror of the removed bundle row is back")
 
     def test_dependency_hints_point_inside_the_catalog(self):
         """A 'needs Java JDK' caption whose target is not in the catalog

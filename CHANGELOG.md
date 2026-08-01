@@ -14,7 +14,53 @@ GUI version, with core changes called out explicitly.
 
 ## [Unreleased]
 
+### Removed
+- **The Software Catalog's quick-select stack chips** — *Java / University
+  Stack*, *AI / Python Stack* and *Web Dev Stack*. They were a third way
+  to narrow a list that already narrows two ways (tabs by category, field
+  by name), they applied to one tab out of five, and they were the only
+  control in the dialog that appeared and disappeared as the tab changed.
+  The Development & Tools tab answers the same question by being read.
+  `CATALOG_BUNDLES` / `CATALOG_BUNDLE_SECTION` and their backend mirror
+  `$Script:DevHubBundles` are gone with them (nothing in the backend ever
+  read the mirror), and `test_contract.py` now fails if either comes back.
+
 ### Added
+- **A denser, deeper ambient field.** The background wash went from three
+  orbs and 42 flat motes to **five orbs and 126 stars in three depth
+  tiers** — far stars small, dim and slow; near ones larger, brighter and
+  quicker — plus two smaller, dimmer orbs that lean hardest on the pointer
+  parallax, so the field has a front and a back instead of reading as one
+  sheet. Stars are now cached soft-glow textures blitted at native size
+  rather than antialiased ellipses, which is what makes 3x the density
+  cost *less* than the old field did (0.26ms per paint for 126, against
+  0.17ms for 42); the first cut scaled one texture per star and cost
+  1.5ms, which is the difference between a blit and a resample.
+  - Density is not intensity: per-star alpha and the light-mode orb peaks
+    are unchanged in character, and the light canvas still measures as the
+    neutral system grey the palette specifies (mean channel spread 3.9,
+    against 10.4 for the peaks that once dyed it lavender). Four new
+    ambient contract tests pin the tier structure, the texture cache, that
+    wash measurement and the orb layer's 10Hz rebuild budget.
+- **Two new spacing steps and a test that enforces the whole scale.**
+  `SPACE["xxs"]` (2px, leading inside one text block) and `SPACE["xxl"]`
+  (32px, air around an empty state) close the ramp at both ends, and
+  `test_layout_contract.py::test_every_layout_measurement_comes_off_the_scale`
+  now walks the frontend's AST and fails on any `setSpacing` /
+  `addSpacing` / `setContentsMargins` literal that is not a scale step.
+  57 calls had drifted back to hand-picked numbers (1, 2, 3, 6, 7, 9, 10,
+  14, 18, 20, 28, 30, 34) — every one within 2px of a step it could have
+  used, which is precisely the "almost aligned" feel the scale exists to
+  prevent. All 57 now come off the scale.
+- **A guard against stock platform chrome.** Stacks, scroll areas and
+  self-scrolling lists are the only widgets that paint Windows' own
+  chrome when left unstyled, and four surfaces were: the Office wizard,
+  the Update Center and the Startup Manager each drew a sunken Fusion
+  frame around their pages, and the Ctrl+K palette and both card grids
+  showed stock scrollbars with arrow buttons. `theme.stack_qss()` is now
+  the one place a stack is styled, `command_list_qss` carries the shared
+  scrollbar rules, and a new test constructs every dialog and page and
+  fails on any unstyled one.
 - **Activation Status** — a new read-only card under *Safety & Recovery*
   reporting Windows and Office licence state. It answers the three
   questions a technician actually has about a machine: is it licensed,

@@ -62,12 +62,11 @@ Item schema:
              the UNIFIED software hub: one scrollable list of every
              installable app, with a sub-category tab bar (All / Browsers &
              Media / Development & Tools / Gaming Launchers / System
-             Runtimes & Utilities) filtering it in place, quick-select
-             bundles, dependency hints and the same per-row "..."
-             install-options wizard every other selector uses. Checked
-             before "wizard"/"confirm". Sourced from SOFTWARE_CATALOG /
-             CATALOG_BUNDLES below, which mirror $Apps_CatalogAll and
-             $Script:DevHubBundles in 01-Catalogs.ps1 (same IDs, same
+             Runtimes & Utilities) filtering it in place, dependency hints
+             and the same per-row "..." install-options wizard every other
+             selector uses. Checked before "wizard"/"confirm". Sourced from
+             SOFTWARE_CATALOG below, which mirrors $Apps_CatalogAll in
+             01-Catalogs.ps1 (same IDs, same
              order) - the backend is the source of truth for what winget ID
              each entry installs; the GUI list is only its mirror. The
              ticked AppIds go to core.ps1 via -AppIds, and because the tabs
@@ -329,25 +328,13 @@ SOFTWARE_CATALOG = [
     },
 ]
 
-#: Quick-select stacks for the catalog's Development & Tools tab — each
-#: just TICKS the listed AppIds; nothing is forced and the user can still
-#: deselect any of them before deploying. Mirrors $Script:DevHubBundles.
-#: Kept scoped to the development tab: a "Java / University Stack" button
-#: floating above a list of browsers would be noise, so the catalog shows
-#: the bundle row only while that tab is active.
-CATALOG_BUNDLES = [
-    {"key": "java-university", "icon": "🎓", "title": "Java / University Stack",
-     "app_ids": ["EclipseAdoptium.Temurin.21.JDK", "Apache.NetBeans",
-                 "JetBrains.IntelliJIDEA.Community", "Git.Git", "Microsoft.VisualStudioCode"]},
-    {"key": "ai-python", "icon": "🧠", "title": "AI / Python Stack",
-     "app_ids": ["Python.Python.3.12", "Ollama.Ollama", "OpenWebUI.OpenWebUI", "Microsoft.VisualStudioCode"]},
-    {"key": "web-dev", "icon": "🌐", "title": "Web Dev Stack",
-     "app_ids": ["OpenJS.NodeJS.LTS", "Git.Git", "Microsoft.VisualStudioCode", "Postman.Postman"]},
-]
-
-#: The tab whose bundle row is shown. Data, not a hard-coded string in the
-#: dialog, so moving the bundles to another section is a one-line change.
-CATALOG_BUNDLE_SECTION = "development"
+# There are NO quick-select bundles. CATALOG_BUNDLES / CATALOG_BUNDLE_SECTION
+# used to declare three stacks ("Java / University", "AI / Python", "Web
+# Dev") that the catalog rendered as a second strip of buttons under the
+# tab bar, scoped to the Development & Tools tab. They were a third way to
+# narrow a list that already has two, they existed on one tab out of five,
+# and the tab itself answers the same question by being read. The row went
+# with them — along with $Script:DevHubBundles, which mirrored it.
 
 
 def catalog_tools(section_key: str = "") -> list[tuple]:
