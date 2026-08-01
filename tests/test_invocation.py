@@ -230,10 +230,24 @@ class TestLiveInvocation:
         assert marker in out
 
     def test_appids_shape_binds(self):
+        # A REAL -AppIds task (the unified catalog deploy). A retired task
+        # name would still satisfy the assertion below by falling through
+        # to the dispatcher's unknown-task branch, which reaches a verdict
+        # without ever reading -AppIds — passing while testing nothing.
         out = self._run(PowerShellTask(
-            _CORE, "InstallEssentialApps", dry_run=True,
+            _CORE, "InstallCatalogApps", dry_run=True,
             app_ids=["Mozilla.Firefox", "7zip.7zip"]))
-        assert "##PULSE##" in out
+        assert "##PULSE##SUCCESS" in out
+        # Both picks reached the deploy queue, and nothing else in the
+        # 43-app catalog did. Asserted on the per-app TARGET banners rather
+        # than the summary counts: whether an app lands in "installed" or
+        # "already up to date" depends on what this machine happens to have,
+        # so a count assertion passes or fails by accident.
+        assert "TARGET: Mozilla Firefox" in out
+        assert "TARGET: 7-Zip" in out
+        for other in ("Google Chrome", "Steam", "Docker Desktop"):
+            assert f"TARGET: {other}" not in out, (
+                f"-AppIds did not narrow the catalog: {other} was queued too")
 
     def test_startup_id_task_reaches_a_verdict(self):
         """Deliberately weak, and labelled as such.
@@ -336,6 +350,6 @@ class TestParameterBinding:
 
     def test_appids_stays_one_string_for_the_backend_to_split(self, tmp_path):
         bound = self._bound(tmp_path, PowerShellTask(
-            _CORE, "InstallEssentialApps",
+            _CORE, "InstallCatalogApps",
             app_ids=["Mozilla.Firefox", "7zip.7zip"]))
         assert bound["AppIds"] == "Mozilla.Firefox,7zip.7zip"

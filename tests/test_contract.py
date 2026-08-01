@@ -254,6 +254,87 @@ class TestAppIcons:
         assert "_monogram_pixmap" not in code
         assert "initial" not in code.lower().split('"""')[-1]
 
+    def test_every_catalog_app_has_a_bundled_mark(self):
+        """100% coverage: no catalog row falls back to the neutral glyph.
+
+        The placeholder is honest, but a list where some rows carry a logo
+        and others carry an identical grey parcel reads as half-finished —
+        and the fallback BELOW it (the installed app's own icon) only fires
+        on machines where that app happens to be installed, so coverage
+        that relies on it is coverage that differs per machine. Every
+        catalog AppId therefore ships a mark in the repo.
+        """
+        import json
+        from frontend.menu_structure import catalog_app_ids
+
+        manifest = json.load(open(
+            os.path.join(_ROOT, "assets/appicons/manifest.json"),
+            encoding="utf-8"))
+        missing = [app_id for app_id in catalog_app_ids()
+                   if app_id not in manifest]
+        assert not missing, (
+            f"catalog apps with no bundled mark: {missing}\n"
+            "  add an <AppId>.svg to assets/appicons/ and register it in "
+            "tools/fetch_app_icons.py (ICON_MAP for a real brand logo, "
+            "DRAWN_MARKS for a Pulse-drawn pictogram)")
+
+    def test_drawn_marks_survive_a_fetch_run(self):
+        """tools/fetch_app_icons.py rebuilds manifest.json from scratch on
+        every run. The hand-drawn entries are not fetched, so unless the
+        tool folds them back in, a routine re-fetch silently deletes ten
+        marks and drops those rows to the placeholder — a regression
+        introduced by the very tool that maintains the icon set."""
+        tool = open(os.path.join(_ROOT, "tools/fetch_app_icons.py"),
+                    encoding="utf-8").read()
+        assert "DRAWN_MARKS" in tool, "the drawn-mark register is gone"
+        write_at = tool.index("json.dump(manifest")
+        assert "DRAWN_MARKS.items()" in tool[:write_at], (
+            "fetch_app_icons.py writes the manifest without merging "
+            "DRAWN_MARKS first — a re-fetch would erase the drawn marks")
+
+    def test_drawn_marks_are_flagged_and_present(self):
+        """A drawn pictogram must be identifiable as one. Losing the flag
+        would leave the set claiming ten logos it does not have."""
+        import json
+        manifest = json.load(open(
+            os.path.join(_ROOT, "assets/appicons/manifest.json"),
+            encoding="utf-8"))
+        tool = open(os.path.join(_ROOT, "tools/fetch_app_icons.py"),
+                    encoding="utf-8").read()
+        # anchor on the ASSIGNMENT, not the first mention — the name also
+        # appears in ICON_MAP's comment above, and starting there swept the
+        # whole of ICON_MAP into the "declared" set
+        body = tool[tool.index("DRAWN_MARKS: dict"):tool.index("def _get(")]
+        declared = set(re.findall(r'^\s{4}"([^"]+)":', body, re.M))
+        assert declared, "DRAWN_MARKS did not parse"
+        flagged = {a for a, e in manifest.items() if e.get("drawn")}
+        assert declared == flagged, (
+            f"declared but unflagged: {sorted(declared - flagged)}; "
+            f"flagged but undeclared: {sorted(flagged - declared)}")
+        for app_id in declared:
+            path = os.path.join(_ROOT, "assets/appicons",
+                                manifest[app_id]["file"])
+            assert os.path.isfile(path), f"{app_id}: {path} is missing"
+
+    def test_drawn_marks_carry_no_letterforms(self):
+        """The rule the neutral glyph was introduced to enforce: a
+        pictogram describes what the software does; a bare initial in a
+        tile pretends to be branding. SVG <text> is how that would creep
+        back in — a drawn mark must be paths only."""
+        import json
+        manifest = json.load(open(
+            os.path.join(_ROOT, "assets/appicons/manifest.json"),
+            encoding="utf-8"))
+        offenders = []
+        for app_id, entry in manifest.items():
+            if not entry.get("drawn"):
+                continue
+            svg = open(os.path.join(_ROOT, "assets/appicons", entry["file"]),
+                       encoding="utf-8").read()
+            if "<text" in svg or "<tspan" in svg:
+                offenders.append(app_id)
+        assert not offenders, f"drawn marks using letterforms: {offenders}"
+
     def test_every_mapped_app_is_a_real_catalog_entry(self):
         """tools/fetch_app_icons.py's map is keyed by winget AppId. A key
         that matches no catalog app is a typo that silently downloads an
@@ -587,6 +668,101 @@ def test_every_bound_shortcut_is_documented(window):
         if key.startswith("Ctrl+") and not key[-1].isdigit()
         and key not in documented)
     assert not undocumented, f"bound but not in SHORTCUTS: {undocumented}"
+
+
+class TestSoftwareCatalogMirror:
+    """The unified catalog's frontend/backend mirror.
+
+    SOFTWARE_CATALOG (GUI) and $Apps_CatalogAll (backend) are two spellings
+    of one list: the GUI decides what the user can tick, the backend
+    decides what each tick installs, and -AppIds is the only thing joining
+    them. A drift is silent and one-directional — an id the GUI offers but
+    the backend's list omits is simply filtered out of the deploy queue
+    (see Invoke-GuiBulkDeploy's $SelectedIds contract), so the user ticks
+    an app, gets a clean SUCCESS, and never receives it. The old per-card
+    lists carried the same contract in a comment and nothing enforced it.
+    """
+
+    @staticmethod
+    def _backend_ids() -> list[str]:
+        """$Apps_CatalogAll, resolved to a flat id list. Parsed from the
+        SOURCE rather than by running PowerShell so the test stays fast and
+        works anywhere; the array is a plain concatenation of the per-group
+        arrays, so each one is expanded in the order the union names them.
+
+        Comments are stripped FIRST. 01-Catalogs.ps1 documents PowerShell's
+        single-element-array flattening pitfall with a literal
+        `@("id","name")` example, and an array body that runs up to the
+        next top-level `$` swallows the comment block sitting above it —
+        which silently added a phantom "id" entry to the expected list."""
+        raw = open(_CATALOGS, encoding="utf-8-sig").read()
+        src = "\n".join(re.sub(r"#.*$", "", line)
+                        for line in raw.splitlines())
+
+        def array_ids(name: str) -> list[str]:
+            start = src.index(f"${name} = ")
+            body = src[start:src.index("\n$", start + 1)]
+            return re.findall(r'@\("([^"]+)",', body)
+
+        union_line = re.search(r'\$Apps_CatalogAll\s*=\s*(.+)', src).group(1)
+        members = re.findall(r'\$(Apps_\w+|Runtimes)', union_line)
+        ids: list[str] = []
+        for member in members:
+            expanded = (["Apps_DevRuntimes", "Apps_DevIDEs", "Apps_DevAI",
+                         "Apps_DevData", "Apps_DevContainers"]
+                        if member == "Apps_DevHubAll" else [member])
+            for name in expanded:
+                ids.extend(array_ids(name))
+        return ids
+
+    def test_the_backend_list_was_parsed(self):
+        """Guard the parser — a silently-empty list would make the equality
+        assertion below pass for the wrong reason."""
+        assert len(self._backend_ids()) > 30
+
+    def test_gui_catalog_mirrors_the_backend_exactly(self):
+        from frontend.menu_structure import catalog_app_ids
+        gui = catalog_app_ids()
+        backend = self._backend_ids()
+        assert gui == backend, (
+            "SOFTWARE_CATALOG and $Apps_CatalogAll disagree.\n"
+            f"  only in the GUI:     {sorted(set(gui) - set(backend))}\n"
+            f"  only in the backend: {sorted(set(backend) - set(gui))}\n"
+            "  (order matters too — the deploy log follows catalog order)")
+
+    def test_no_app_appears_twice(self):
+        from frontend.menu_structure import catalog_app_ids
+        ids = catalog_app_ids()
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        assert not dupes, f"app listed in more than one catalog section: {dupes}"
+
+    def test_every_bundle_names_a_real_catalog_app(self):
+        """A bundle button that ticks nothing is a dead control."""
+        from frontend.menu_structure import CATALOG_BUNDLES, catalog_app_ids
+        known = set(catalog_app_ids())
+        for bundle in CATALOG_BUNDLES:
+            unknown = sorted(set(bundle["app_ids"]) - known)
+            assert not unknown, (
+                f"bundle {bundle['key']!r} names non-catalog app(s): {unknown}")
+
+    def test_the_bundle_section_exists(self):
+        from frontend.menu_structure import (
+            CATALOG_BUNDLE_SECTION, SOFTWARE_CATALOG)
+        keys = {s["key"] for s in SOFTWARE_CATALOG}
+        assert CATALOG_BUNDLE_SECTION in keys, (
+            f"bundles are pinned to section {CATALOG_BUNDLE_SECTION!r}, "
+            f"which is not one of {sorted(keys)} — the row would never show")
+
+    def test_dependency_hints_point_inside_the_catalog(self):
+        """A 'needs Java JDK' caption whose target is not in the catalog
+        sends the user looking for a row that does not exist."""
+        from frontend.menu_structure import catalog_app_ids, catalog_tools
+        known = set(catalog_app_ids())
+        for tool in catalog_tools():
+            requires_id = tool[4]
+            assert requires_id is None or requires_id in known, (
+                f"{tool[0]} declares a dependency on {requires_id}, "
+                "which is not in the catalog")
 
 
 def test_command_palette_entries_are_runnable(qapp):

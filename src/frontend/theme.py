@@ -779,11 +779,12 @@ def nav_button_qss(t: dict) -> str:
 def card_qss(t: dict, accent: str, danger: bool = False,
              featured: bool = False) -> str:
     # The featured (hero) card paints its OWN squircle background, Aurora lit
-    # edge and hover tint (widgets.GlassCard._paint_featured). QSS must
-    # therefore draw NOTHING in every state — a rounded-rect fill would peek
-    # out past the squircle's continuous corners. It's only ever a hub card
-    # (set in main.CategoryPage), which never enters the running/flash
-    # states, so losing those QSS rules here costs nothing.
+    # edge, hover tint AND running/flash wash
+    # (widgets.GlassCard._paint_featured). QSS must therefore draw NOTHING in
+    # every state — a rounded-rect fill would peek out past the squircle's
+    # continuous corners. The state rules below are not "lost" for it: the
+    # painter reproduces them at this same STATE_TINT weight, which it has to
+    # since the v1.0 RC hero (Software Catalog) runs a real task.
     if featured:
         return "GlassCard { background: transparent; border: none; }"
     line = t["danger_line"] if danger else t["card_line"]
@@ -958,29 +959,6 @@ def nav_pill_qss(t: dict) -> str:
         QPushButton:pressed {{
             background: {alpha(t['accent'], 0.16)};
             border: 1px solid {alpha(t['accent'], 0.55)};
-        }}
-    """
-
-
-def filter_input_qss(t: dict, accent: str) -> str:
-    """The category header's inline filter field. Quieter than the Ctrl+K
-    palette input (this is a refinement of a page you're already on, not a
-    global launcher), so it sits at panel tone until focused, when it takes
-    the module's own accent."""
-    return f"""
-        QLineEdit {{
-            background: {t['panel']};
-            border: 1px solid {t['panel_line']};
-            border-radius: {RADIUS['control']}px;
-            color: {t['text']};
-            font-size: 12px;
-            padding: 0 10px;
-            selection-background-color: {alpha(accent, 0.35)};
-        }}
-        QLineEdit:hover {{ border: 1px solid {alpha(accent, 0.35)}; }}
-        QLineEdit:focus {{
-            border: 1px solid {alpha(accent, 0.65)};
-            background: {t['card']};
         }}
     """
 
@@ -1344,7 +1322,7 @@ def dialog_panel_qss(t: dict, accent: str) -> str:
     reads as depth-consistent with the surface that opened it instead of a
     flatter, unrelated modal — paired with paint_bevel_frame on the
     DepthCard panel that hosts this (see widgets.ConfirmDialog /
-    AppSelectorDialog / CommandPalette)."""
+    SoftwareCatalogDialog / CommandPalette)."""
     return f"""
         QFrame {{
             background-color: {glass_fill(t, t['dialog_bg'], sheen_stop=0.18)};
@@ -1550,10 +1528,10 @@ def warning_banner_qss(t: dict) -> str:
 
 
 def dev_hub_row_qss(t: dict) -> str:
-    """Selector row (Dev Hub AND every Software Management app pack — the
-    one unified row style) with a 'suggested' state: a soft amber
+    """Selector row (the Software Catalog AND the Update Center — the one
+    unified row style) with a 'suggested' state: a soft amber
     highlight when this tool is a checked-off IDE's unmet runtime
-    dependency (see widgets.DevHubRow / DevHubSelectorDialog's
+    dependency (see widgets.DevHubRow / SoftwareCatalogDialog's
     dependency-hint nudge — 'subtly suggests', never auto-forces a check).
     Hover lifts the fill as well as the border — border-only hover read as
     inert next to GlassCard, whose hover changes both."""
@@ -1570,6 +1548,84 @@ def dev_hub_row_qss(t: dict) -> str:
         QFrame[suggested="true"] {{
             border: 1px solid {alpha(t['warn'], 0.55)};
             background: {alpha(t['warn'], 0.07)};
+        }}
+    """
+
+
+def catalog_tab_qss(t: dict, accent: str, active: bool) -> str:
+    """One pill in the Software Catalog's sub-category tab bar.
+
+    A SEGMENTED CONTROL, not a QTabWidget: the tabs filter a single
+    continuous list in place rather than swapping five separate pages, and
+    the selection has to survive a scroll position and a live checkbox
+    state that both belong to the list underneath. Qt's tab frame would
+    also drag in its own platform-styled pane border, which is the one
+    piece of stock chrome this dialog has no way to theme cleanly.
+
+    The active pill is the ONLY filled surface in the row. An inactive pill
+    is transparent with a hairline, so the bar reads as one control with a
+    current position instead of five competing buttons — and because the
+    fill carries the accent at low alpha rather than at full strength, the
+    label stays on the theme's own text tone in both modes and never has
+    to fight a saturated backdrop for contrast (the badge-tint trap the
+    palette notes warn about).
+    """
+    if active:
+        return f"""
+            QPushButton {{
+                background: {alpha(accent, 0.16)};
+                border: 1px solid {alpha(accent, 0.55)};
+                border-radius: {RADIUS['chip']}px;
+                color: {t['text']};
+                font-size: 11px; font-weight: 700;
+                padding: 0 12px;
+            }}
+            QPushButton:hover {{ background: {alpha(accent, 0.22)}; }}
+        """
+    return f"""
+        QPushButton {{
+            background: transparent;
+            border: 1px solid {t['panel_line']};
+            border-radius: {RADIUS['chip']}px;
+            color: {t['text_muted']};
+            font-size: 11px; font-weight: 600;
+            padding: 0 12px;
+        }}
+        QPushButton:hover {{
+            background: {alpha(accent, 0.08)};
+            border: 1px solid {alpha(accent, 0.38)};
+            color: {t['text']};
+        }}
+    """
+
+
+def catalog_search_qss(t: dict, accent: str) -> str:
+    """The Software Catalog's in-list filter field.
+
+    This does NOT reopen the v1.0 "two search boxes" problem the category
+    page's status filter closed. That rule is about two inputs answering
+    the SAME question on the SAME screen: the page's old free-text box and
+    the sidebar's global-search doorway both meant "find me a thing in
+    Pulse". This box lives inside a modal that is already scoped to one
+    list of 43 rows, the Ctrl+K palette is unreachable while it is up, and
+    the question it answers — "narrow THESE rows" — has no other control.
+    Sizing and material match command_input_qss's quieter sibling so the
+    two never read as rival implementations of one idea.
+    """
+    return f"""
+        QLineEdit {{
+            background: {t['panel']};
+            border: 1px solid {t['panel_line']};
+            border-radius: {RADIUS['control']}px;
+            color: {t['text']};
+            font-size: 12px;
+            padding: 0 10px;
+            selection-background-color: {alpha(accent, 0.35)};
+        }}
+        QLineEdit:hover {{ border: 1px solid {alpha(accent, 0.35)}; }}
+        QLineEdit:focus {{
+            border: 1px solid {alpha(accent, 0.65)};
+            background: {t['card']};
         }}
     """
 
@@ -1855,25 +1911,6 @@ def telemetry_qss(t: dict) -> str:
             background: {glass_fill(t, t['card'])};
             border: 1px solid {t['card_line']};
             border-radius: {RADIUS['card']}px;
-        }}
-    """
-
-
-def telemetry_plaque_qss(t: dict, accent: str) -> str:
-    """The small tinted well behind each metric glyph in the status strip
-    (v1.0). The same jewel-plaque language the cards and sidebar use
-    (icon_plaque_qss), shrunk to strip scale — a soft vertical accent
-    gradient and a firm hairline — so the OS/CPU/RAM glyphs read as part of
-    one system rather than as three bare emoji floating in a bar. The three
-    metrics carry the three brand accents, which is where the strip picks up
-    its 'glassmorphism accents'."""
-    fill = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-            f"stop:0 {alpha(accent, 0.22)}, stop:1 {alpha(accent, 0.11)})")
-    return f"""
-        QLabel {{
-            background: {fill};
-            border: 1px solid {alpha(accent, 0.38)};
-            border-radius: {RADIUS['plaque']}px;
         }}
     """
 

@@ -47,6 +47,14 @@ class PlaybookStep:
     note: str = ""
     optional: bool = False
 
+    #: AppIds passed through to core.ps1 as -AppIds, for the install tasks
+    #: whose scope is a SELECTION rather than the whole task. Required once
+    #: the four per-pack install tasks merged into InstallCatalogApps: that
+    #: task with no selection deploys the entire 43-app catalog, so a
+    #: playbook step that means "the gaming launchers" has to say which
+    #: ones. An empty tuple keeps every other step's behaviour identical.
+    app_ids: tuple[str, ...] = ()
+
     #: Resolved from the live catalog at load time — the same dict a card
     #: click would pass to request_task, so timeouts and confirm flags come
     #: from one place and cannot drift.
@@ -144,10 +152,17 @@ def parse_playbook(raw: dict, source: str = "") -> Playbook:
             raise PlaybookError(
                 f"{where}: step {index} names unknown task '{task}'. "
                 "It must match a `task` in menu_structure.py.")
+        raw_app_ids = entry.get("app_ids") or []
+        if not isinstance(raw_app_ids, list) or not all(
+                isinstance(a, str) for a in raw_app_ids):
+            raise PlaybookError(
+                f"{where}: step {index} has an 'app_ids' that is not a list "
+                "of strings")
         steps.append(PlaybookStep(
             task=task,
             note=str(entry.get("note") or ""),
             optional=bool(entry.get("optional")),
+            app_ids=tuple(a.strip() for a in raw_app_ids if a.strip()),
             item=catalog[task],
         ))
 
@@ -319,6 +334,7 @@ class PlaybookRunner(QObject):
         worker = PowerShellTask(
             self.ps1_path, step.task,
             timeout=step.item.get("timeout", DEFAULT_PLAYBOOK_TIMEOUT),
+            app_ids=list(step.app_ids),
             dry_run=self.run.dry_run)
         worker.moveToThread(thread)
 

@@ -25,8 +25,14 @@
       "note": "Flushes DNS and resets the network stack."
     },
     {
-      "task": "InstallGamingApps",
+      "task": "InstallCatalogApps",
       "note": "Launchers plus the matching GPU suite.",
+      "app_ids": [
+        "Valve.Steam",
+        "EpicGames.EpicGamesLauncher",
+        "RockstarGames.Launcher",
+        "BlueStacks.BlueStacks"
+      ],
       "optional": true
     }
   ]

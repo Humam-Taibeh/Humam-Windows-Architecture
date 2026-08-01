@@ -43,9 +43,9 @@ from frontend.animations import (
     paint_nav_indicator, paint_ripple_frame, paint_top_sheen, squircle_path,
 )
 from frontend import theme as TH
-# Data-only module (no widget imports), so this cannot cycle: the palette
-# shares search_haystack with the category-page filter (see _refilter).
-from frontend.menu_structure import search_haystack
+# Data-only module (no widget imports), so this cannot cycle: the command
+# palette scores against its structured search fields (see _match_entry).
+from frontend import menu_structure as MS
 # Update Center / Startup Manager (v6.3) run their own background scans and
 # per-item actions independently of main.py's single-task console pipeline
 # (both are modal dialogs that fully cover it anyway) - the one deliberate
@@ -122,7 +122,7 @@ class PulseDialog(QDialog):
 # Center, Startup Manager, and a hub's own landing screen) shares this one
 # DYNAMIC sizing rule — global theme consistency means these can never
 # quietly drift apart the way UpdateCenterDialog (640px) and
-# AppSelectorDialog (560px) once had, and a fixed pixel box can never look
+# the app selector (560px) once had, and a fixed pixel box can never look
 # cramped on a big display or oversized on a small one. Both dimensions
 # scale off the HOST WINDOW's *current* size (re-applied live on resize by
 # refit_dialog below), landing mid-band of the brief's percentages, with a
@@ -193,6 +193,38 @@ def _selector_panel_size(dialog: QDialog) -> tuple[int, int]:
                 min(_SELECTOR_WIDTH_MAX, round(host.width() * _SELECTOR_WIDTH_FRACTION)))
     height = max(_SELECTOR_HEIGHT_MIN, round(host.height() * _SELECTOR_HEIGHT_FRACTION))
     return (width, height)
+
+
+def _chip_strip(t: dict, height: int) -> tuple[QScrollArea, QHBoxLayout]:
+    """A single-line, horizontally scrolling row of pills — returns the
+    (strip, layout) so the caller just addWidget()s its buttons.
+
+    Exists because a responsive selector panel takes its width from a
+    content floor that OVERRIDES both the 1100px cap and the host window
+    (see _content_width_floor). A plain QHBoxLayout of labelled buttons
+    reports the sum of their widths as its minimum, so one row of five
+    category tabs — or three bundle buttons — silently dragged the whole
+    dialog wider than the window containing it. A scroll area reports a
+    small minimum instead, so the panel stays inside its band and the
+    overflow becomes scrollable rather than clipped.
+    """
+    strip = QScrollArea()
+    strip.setWidgetResizable(True)
+    strip.setFixedHeight(height)
+    strip.setFrameShape(QFrame.Shape.NoFrame)
+    strip.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    strip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    strip.setStyleSheet(TH.scroll_area_qss(t))
+    strip.viewport().setStyleSheet("background: transparent;")
+    strip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    host = QWidget()
+    host.setStyleSheet("background: transparent;")
+    lay = QHBoxLayout(host)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(6)
+    strip.setWidget(host)
+    return strip, lay
 
 
 def _dialog_chrome(dialog: PulseDialog, t: dict, accent: str,
@@ -1415,8 +1447,18 @@ class GlassCard(QFrame):
     def _paint_featured(self, p: QPainter):
         """The hero card's fully-painted material: a squircle (continuous-
         corner) glass surface on the top elevation tier, a hover-reactive
-        accent wash, and the signature Aurora lit edge. Only ever a hub card,
-        so no running/flash QSS state is lost by owning the background."""
+        accent wash, and the signature Aurora lit edge.
+
+        A featured card owns its whole background, which means card_qss
+        draws nothing for it in ANY state — so the running / flash verdict
+        tints have to be painted here or they simply do not appear. That
+        was free while the hero could only ever be a hub container (hubs
+        open a dialog; they never run a task). The v1.0 RC Software
+        Catalog card IS the hero and DOES run a task, so the state is
+        painted rather than dropped: without this, clicking the app's most
+        prominent card would be the one click in Pulse that gives no
+        visual acknowledgement it started or how it ended.
+        """
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         path = squircle_path(self.rect().adjusted(1, 1, -1, -1), 20)
         # frosted-glass fill: top sheen falling into the card_hi base
@@ -1433,8 +1475,37 @@ class GlassCard(QFrame):
             wash.setAlphaF(0.07 * self._glow.intensity)
             p.setBrush(wash)
             p.drawPath(path)
+        # verdict / busy state, at the same weight card_qss uses for a
+        # plain card so the two read as one system
+        state = self._featured_state_color()
+        if state is not None:
+            p.setBrush(state)
+            p.drawPath(path)
+            pen = QPen(QColor(state.red(), state.green(), state.blue()), 1.6)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+            p.setPen(Qt.PenStyle.NoPen)
+            return          # the state edge REPLACES the aurora, not stacks on it
         paint_aurora_edge(p, path, self._aur1, self._aur2, self._aur3,
                           width=1.6, intensity=0.95)
+
+    def _featured_state_color(self) -> QColor | None:
+        """The running/flash wash for a featured card, or None when idle.
+        Reads the same dynamic properties card_qss's selectors do, so the
+        hero can never disagree with an ordinary card about its state."""
+        tokens = self._tokens or {}
+        if self.property("flash") == "ok":
+            key = "ok"
+        elif self.property("flash") == "err":
+            key = "err"
+        elif self.property("running"):
+            key = "accent"
+        else:
+            return None
+        color = QColor(tokens.get(key, "#7d9bff"))
+        color.setAlphaF(TH.STATE_TINT)
+        return color
 
     def paintEvent(self, e):
         super().paintEvent(e)  # QSS glass background/border first (transparent if featured)
@@ -4256,18 +4327,30 @@ class ToggleSwitch(QWidget):
 # ============================================================
 #  APP SELECTOR DIALOG — unified with the Dev Hub pattern
 # ============================================================
-class AppSelectorDialog(PulseDialog):
-    """The selector for every `apps` catalog card (Essential Apps, Gaming
-    Launchers, Diagnostics, Core API Runtimes…).
+class SoftwareCatalogDialog(PulseDialog):
+    """THE unified software hub — every installable app Pulse offers, in
+    one scrollable list, filtered in place by a sub-category tab bar.
 
-    v6.2: rebuilt on the exact same components and layout grammar as the
-    Developer & University Hub — the same DevHubRow (checkbox + per-tool
-    '⋯' install-options wizard), the same Select All / Deselect All
-    toolbar with a live '<n> selected' counter, and the same
-    'Deploy Selected (n)' primary action — so every section of Software
-    Management reads as one product, not two generations of UI. Rows here
-    arrive pre-checked (the card promised a curated pack); the Dev Hub
-    stays manual-first.
+    This replaced AppSelectorDialog and DevHubSelectorDialog, which were
+    two dialogs over four separate cards (Essential Apps, Dev Hub, Gaming,
+    Diagnostics). That layout meant a user who wanted VLC, Docker and Steam
+    ran three deploys from three places, and it gave "where do I get X?"
+    four possible answers. One catalog, one deploy, one answer.
+
+    THE TABS FILTER; THEY DO NOT PAGE. Every row is built once and merely
+    hidden, so a tick survives a tab change and "Deploy Selected" can span
+    sub-categories — which is the entire point of merging. It also means
+    the selection counter is global while Select All / Deselect All are
+    scoped to what is currently on screen: a "Select All" that silently
+    ticked 43 rows across four hidden tabs would be a trap, and one that
+    could not tick the 14 rows you are looking at would be useless.
+
+    MANUAL-FIRST, unlike the old per-pack selector. Those dialogs arrived
+    pre-checked because a card had already promised "the pack"; a 43-row
+    catalog making the same promise would open with 43 apps queued and put
+    the user to work untangling it. Nothing here is pre-ticked, the
+    bundles offer the one-click path, and the deploy button stays inert
+    until something is actually chosen.
 
     After Accepted, exactly one of these is populated:
       `selected_ids`     ticked AppIds for the bulk winget deploy
@@ -4275,59 +4358,122 @@ class AppSelectorDialog(PulseDialog):
                           for a single InstallLocalFile run
     """
 
-    def __init__(self, parent: QWidget, item: dict, t: dict):
+    #: The "no sub-category" tab. Empty string so it can be compared with a
+    #: section key directly and passed straight to catalog_tools().
+    ALL_KEY = ""
+
+    def __init__(self, parent: QWidget, item: dict, t: dict,
+                 sections: list[dict], bundles: list[dict],
+                 bundle_section: str = ""):
         super().__init__(parent)
         self._t = t
         self.selected_ids: list[str] = []
         self.local_installer: tuple[str, str] | None = None
         self._rows: dict[str, DevHubRow] = {}
-        self._tool_meta: dict[str, tuple[str, str]] = {}  # id -> (name, url)
+        self._tool_meta: dict[str, tuple[str, str]] = {}   # id -> (name, url)
+        self._row_section: dict[str, str] = {}             # id -> section key
+        self._row_haystack: dict[str, str] = {}            # id -> searchable text
+        self._dependents: dict[str, list[str]] = {}        # requires_id -> [ids]
+        self._headers: list[tuple[QWidget, str, list[str]]] = []  # (w, section, ids)
+        self._tab_buttons: dict[str, QPushButton] = {}
+        self._active_tab = self.ALL_KEY
+        self._query = ""
+        self._bundle_section = bundle_section
         accent = t["accent"]
 
-        # Normalize catalog entries: (id, name[, desc[, url]]) → 4-tuple.
-        apps: list[tuple[str, str, str, str]] = []
-        for entry in item.get("apps", []):
-            app_id, app_name = entry[0], entry[1]
-            desc = entry[2] if len(entry) > 2 else ""
-            url = entry[3] if len(entry) > 3 else ""
-            apps.append((app_id, app_name, desc, url))
-
         panel = _dialog_chrome(self, t, accent, responsive=True)
+        lay = dialog_body(panel, "sm")
 
-        lay = dialog_body(panel, "md")
+        total = sum(len(tools) for s in sections
+                    for _g, tools in s["groups"])
 
         head = QLabel(f"{item['icon']}  {item['title']}")
         head.setStyleSheet(TH.label_qss(t, "dialog"))
         lay.addWidget(head)
 
-        sub = QLabel(f"All {len(apps)} apps are pre-selected — untick anything "
-                     "you don't want, or use a row's ⋯ for more install options.")
-        sub.setWordWrap(True)
-        sub.setStyleSheet(TH.label_qss(t, "body"))
-        lay.addWidget(sub)
+        self._blurb = QLabel(
+            f"All {total} apps in one place. Nothing is pre-selected — tick "
+            "what you want, filter by sub-category, then deploy in one pass.")
+        self._blurb.setWordWrap(True)
+        self._blurb.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(self._blurb)
+
+        # -- tab bar + in-list search ----------------------------
+        # One row: the tabs narrow by CATEGORY, the field narrows by NAME.
+        # Side by side because they compose — "development" + "sql" is a
+        # question neither can answer alone.
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+
+        # The tabs live in a horizontally scrolling strip, NOT directly in
+        # the row — five labelled pills want ~1300px against a panel that
+        # caps at 1100. See _chip_strip.
+        #
+        # No emoji on the tabs, deliberately: it buys ~140px across the row
+        # (more tabs visible before the strip has to scroll) and loses
+        # nothing, because each section's icon still leads its group header
+        # a few pixels below, which is where the tab/content association
+        # actually gets made.
+        tab_strip, tab_lay = _chip_strip(t, 36)
+        for key, label in ([(self.ALL_KEY, f"All ({total})")] +
+                           [(s["key"], f"{s['title']}"
+                             f" ({sum(len(x) for _g, x in s['groups'])})")
+                            for s in sections]):
+            btn = QPushButton(label.replace("&", "&&"))
+            btn.setFixedHeight(30)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _c=False, k=key: self._set_tab(k))
+            self._tab_buttons[key] = btn
+            tab_lay.addWidget(btn)
+        tab_lay.addStretch()
+        filter_row.addWidget(tab_strip, 1)
+
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Filter apps…")
+        self._search.setFixedSize(180, 30)
+        self._search.setClearButtonEnabled(True)
+        self._search.setStyleSheet(TH.catalog_search_qss(t, accent))
+        self._search.textChanged.connect(self._on_query)
+        filter_row.addWidget(self._search, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(filter_row)
+
+        # -- quick-select bundles (development tab only) ----------
+        # Same scrolling strip as the tabs: three bundle buttons reported a
+        # 924px minimum, which the old Dev Hub dialog silently inherited too.
+        self._bundle_host, bundle_row = _chip_strip(t, 40)
+        for bundle in bundles:
+            btn = QPushButton(f"{bundle['icon']}  {bundle['title']}".replace("&", "&&"))
+            btn.setFixedHeight(34)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(TH.wizard_link_qss(t, accent))
+            btn.clicked.connect(
+                lambda _c=False, ids=bundle["app_ids"]: self._apply_bundle(ids))
+            bundle_row.addWidget(btn)
+        bundle_row.addStretch()
+        lay.addWidget(self._bundle_host)
 
         # -- select-all / select-none + live counter -------------
         toolbar = QHBoxLayout()
         toolbar.setSpacing(16)
-        all_btn = QPushButton("Select All")
-        all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        all_btn.setStyleSheet(TH.link_button_qss(t, accent))
-        all_btn.clicked.connect(lambda: self._set_all(True))
-        toolbar.addWidget(all_btn)
+        self._all_btn = QPushButton("Select All")
+        self._all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._all_btn.setStyleSheet(TH.link_button_qss(t, accent))
+        self._all_btn.clicked.connect(lambda: self._set_visible_checked(True))
+        toolbar.addWidget(self._all_btn)
 
-        none_btn = QPushButton("Deselect All")
-        none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        none_btn.setStyleSheet(TH.link_button_qss(t, accent))
-        none_btn.clicked.connect(lambda: self._set_all(False))
-        toolbar.addWidget(none_btn)
+        self._none_btn = QPushButton("Deselect All")
+        self._none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._none_btn.setStyleSheet(TH.link_button_qss(t, accent))
+        self._none_btn.clicked.connect(lambda: self._set_visible_checked(False))
+        toolbar.addWidget(self._none_btn)
         toolbar.addStretch()
 
-        self._count_label = QLabel("")
+        self._count_label = QLabel("0 selected")
         self._count_label.setStyleSheet(TH.label_qss(t, "caption"))
         toolbar.addWidget(self._count_label)
         lay.addLayout(toolbar)
 
-        # -- scrollable row list ----------------------------------
+        # -- the one continuous list ------------------------------
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -4336,53 +4482,163 @@ class AppSelectorDialog(PulseDialog):
         host = QWidget()
         host.setStyleSheet("background: transparent;")
         host_lay = scroll_host_layout(host, "sm")
-        for app_id, app_name, desc, url in apps:
-            row = DevHubRow(app_id, app_name, desc, None, None, t, checked=True)
-            row.checkbox.toggled.connect(self._update_count)
-            row.options_requested.connect(self._open_tool_wizard)
-            self._rows[app_id] = row
-            self._tool_meta[app_id] = (app_name, url)
-            host_lay.addWidget(row)
+
+        for section in sections:
+            for group_title, tools in section["groups"]:
+                ids = [tool[0] for tool in tools]
+                # A group header is shown when the group names itself;
+                # otherwise the SECTION's own title stands in, so the "All"
+                # tab never presents a wall of rows with no dividers.
+                header = QLabel(group_title or f"{section['icon']}  {section['title']}")
+                header.setStyleSheet(TH.label_qss(t, "section"))
+                host_lay.addWidget(header)
+                self._headers.append((header, section["key"], ids))
+                for app_id, name, desc, url, req_id, req_name in tools:
+                    row = DevHubRow(app_id, name, desc, req_id, req_name, t)
+                    row.checkbox.toggled.connect(
+                        lambda checked, aid=app_id: self._on_row_toggled(aid, checked))
+                    row.options_requested.connect(self._open_tool_wizard)
+                    self._rows[app_id] = row
+                    self._tool_meta[app_id] = (name, url)
+                    self._row_section[app_id] = section["key"]
+                    self._row_haystack[app_id] = f"{name} {desc} {app_id}".lower()
+                    if req_id:
+                        self._dependents.setdefault(req_id, []).append(app_id)
+                    host_lay.addWidget(row)
+
+        # Empty state — a filter that matches nothing must say so, for the
+        # same reason CategoryPage carries one: a blank list is
+        # indistinguishable from a broken dialog.
+        self._empty = QLabel("No apps match that filter.")
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.setStyleSheet(TH.empty_state_qss(t))
+        self._empty.hide()
+        host_lay.addWidget(self._empty)
         host_lay.addStretch()
+
         scroll.setWidget(host)
-        # Stretch factor, not a maximumHeight cap — see HubDialog's note;
-        # the panel is now a fixed size derived from the host window.
         lay.addWidget(scroll, 1)
 
         lay.addSpacing(4)
-        row = QHBoxLayout()
-        row.addStretch()
-
+        footer = QHBoxLayout()
+        footer.addStretch()
         cancel = QPushButton("Cancel")
         cancel.setFixedSize(96, 36)
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel.setStyleSheet(TH.dialog_cancel_qss(t))
         cancel.clicked.connect(self.reject)
-        row.addWidget(cancel)
+        footer.addWidget(cancel)
 
         self._deploy_btn = QPushButton("Deploy Selected")
-        self._deploy_btn.setFixedSize(160, 36)
+        self._deploy_btn.setFixedSize(170, 36)
         self._deploy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._deploy_btn.setStyleSheet(TH.dialog_go_qss(t, accent))
         self._deploy_btn.clicked.connect(self._accept_selection)
-        row.addWidget(self._deploy_btn)
-        lay.addLayout(row)
+        footer.addWidget(self._deploy_btn)
+        lay.addLayout(footer)
 
-        self._update_count()
+        self._set_tab(self.ALL_KEY)
+
+    # -- tab / search filtering ------------------------------------
+    def _set_tab(self, key: str):
+        self._active_tab = key
+        accent = self._t["accent"]
+        for tab_key, btn in self._tab_buttons.items():
+            btn.setStyleSheet(
+                TH.catalog_tab_qss(self._t, accent, tab_key == key))
+        self._apply_filter()
+
+    def _on_query(self, text: str):
+        self._query = text.strip().lower()
+        self._apply_filter()
+
+    def _row_matches(self, app_id: str) -> bool:
+        if self._active_tab and self._row_section.get(app_id) != self._active_tab:
+            return False
+        return not self._query or self._query in self._row_haystack.get(app_id, "")
+
+    def _apply_filter(self):
+        """Show/hide rows and their headers, then sync the affordances that
+        describe the visible set."""
+        visible = 0
+        for app_id, row in self._rows.items():
+            shown = self._row_matches(app_id)
+            row.setVisible(shown)
+            visible += shown
+        # A header survives only while at least one of its own rows does —
+        # otherwise a filtered list grows orphan titles over empty space.
+        for header, _section_key, ids in self._headers:
+            header.setVisible(any(self._row_matches(aid) for aid in ids))
+        self._empty.setVisible(visible == 0)
+        # Bundles tick development-tab tools, so they'd be a dead control
+        # anywhere else. Hidden rather than disabled: a permanently greyed
+        # row of buttons is just clutter that explains nothing.
+        self._bundle_host.setVisible(
+            self._active_tab in (self.ALL_KEY, self._bundle_section))
+        self._all_btn.setEnabled(visible > 0)
+        self._none_btn.setEnabled(visible > 0)
+        self._sync_count()
 
     # -- selection state ------------------------------------------
-    def _set_all(self, checked: bool):
-        for row in self._rows.values():
-            row.checkbox.setChecked(checked)
+    def _visible_ids(self) -> list[str]:
+        return [aid for aid in self._rows if self._row_matches(aid)]
 
-    def _update_count(self, _checked: bool = False):
-        count = sum(1 for r in self._rows.values() if r.is_checked())
-        self._count_label.setText(f"{count} selected")
+    def _set_visible_checked(self, checked: bool):
+        """Scoped to what is on screen — see the class docstring."""
+        for app_id in self._visible_ids():
+            self._rows[app_id].checkbox.setChecked(checked)
+
+    def _apply_bundle(self, app_ids: list[str]):
+        for app_id in app_ids:
+            row = self._rows.get(app_id)
+            if row is not None:
+                row.checkbox.setChecked(True)
+
+    def _refresh_runtime_suggestion(self, runtime_id: str):
+        """Recompute a runtime row's highlight from scratch: on whenever it
+        is unchecked AND at least one of its (possibly several — both
+        NetBeans and IntelliJ need Java) dependents is checked."""
+        runtime_row = self._rows.get(runtime_id)
+        if runtime_row is None:
+            return
+        dependents = self._dependents.get(runtime_id, [])
+        needs_it = (not runtime_row.is_checked()) and any(
+            self._rows[d].is_checked() for d in dependents if d in self._rows)
+        runtime_row.set_suggested(needs_it)
+
+    def _on_row_toggled(self, app_id: str, _checked: bool):
+        row = self._rows.get(app_id)
+        if row is not None and row.requires_id:
+            self._refresh_runtime_suggestion(row.requires_id)
+        if app_id in self._dependents:
+            self._refresh_runtime_suggestion(app_id)
+        self._sync_count()
+
+    def _sync_count(self):
+        """The counter is GLOBAL (a tick on a hidden tab still deploys), and
+        says so explicitly whenever the visible set is narrower than the
+        whole catalog — otherwise '5 selected' on a tab showing four rows
+        looks like a bug rather than a feature."""
+        count = self.checked_count()
+        narrowed = bool(self._active_tab) or bool(self._query)
+        self._count_label.setText(
+            f"{count} selected across all categories" if count and narrowed
+            else f"{count} selected")
         self._deploy_btn.setText(
             f"Deploy Selected ({count})" if count else "Deploy Selected")
+        self._deploy_btn.setEnabled(count > 0)
+
+    def checked_count(self) -> int:
+        return sum(1 for r in self._rows.values() if r.is_checked())
 
     def _accept_selection(self):
-        self.selected_ids = [aid for aid, row in self._rows.items() if row.is_checked()]
+        # Catalog ORDER, not click order: dict preserves insertion, and the
+        # rows were inserted in $Apps_CatalogAll's order, so the deploy log
+        # reads down the list the user just looked at.
+        self.selected_ids = [aid for aid, row in self._rows.items()
+                             if row.is_checked()]
+        if not self.selected_ids:
+            return
         self.accept()
 
     # -- per-tool wizard --------------------------------------------
@@ -4393,7 +4649,8 @@ class AppSelectorDialog(PulseDialog):
         if wizard.exec() != QDialog.DialogCode.Accepted:
             return
         if wizard.mode == "winget":
-            self._set_all(False)
+            for row in self._rows.values():
+                row.checkbox.setChecked(False)
             self._rows[app_id].checkbox.setChecked(True)
             self._accept_selection()
         elif wizard.mode == "local" and wizard.local_path:
@@ -4403,6 +4660,7 @@ class AppSelectorDialog(PulseDialog):
     def showEvent(self, e):
         super().showEvent(e)
         _present_dialog(self)
+        self._search.setFocus()
 
 
 # ============================================================
@@ -4411,7 +4669,11 @@ class AppSelectorDialog(PulseDialog):
 def _fuzzy_score(needle: str, haystack: str) -> int | None:
     """Subsequence fuzzy match: every needle char must appear in haystack
     in order (case handled by the caller); tighter, earlier matches score
-    higher. Returns None when needle is not a subsequence of haystack."""
+    higher. Returns None when needle is not a subsequence of haystack.
+
+    ONLY EVER APPLIED TO A SHORT FIELD (a title), never to a concatenation
+    of everything an item knows about — see _match_entry.
+    """
     if not needle:
         return 0
     pos = 0
@@ -4428,10 +4690,110 @@ def _fuzzy_score(needle: str, haystack: str) -> int | None:
     return score
 
 
+def _word_start(haystack: str, needle: str) -> bool:
+    """True when `needle` begins a word in `haystack` — 'disk' matches
+    'CrystalDiskInfo' and 'Drive Space Report', but not 'Rockstar'."""
+    idx = haystack.find(needle)
+    while idx != -1:
+        if idx == 0 or not haystack[idx - 1].isalnum():
+            return True
+        idx = haystack.find(needle, idx + 1)
+    return False
+
+
+#: Score floors for each way a query can match, most specific first. Gaps
+#: are wide enough that a weaker KIND of match can never outrank a stronger
+#: one on tie-breaks alone — the defect this table replaced, where a
+#: coincidental letter-scatter across a 1500-character blob outranked a
+#: literal app-name hit.
+_MATCH_EXACT_TITLE = 1000
+_MATCH_TITLE_PREFIX = 900
+_MATCH_TITLE_WORD = 820
+_MATCH_TITLE_SUB = 760
+_MATCH_CONTENT_EXACT = 700
+_MATCH_CONTENT_WORD = 640
+_MATCH_CONTENT_SUB = 580
+_MATCH_CATEGORY = 420
+_MATCH_DESC_WORD = 360
+_MATCH_DESC_SUB = 300
+_MATCH_FUZZY_TITLE = 200
+
+
+def _match_entry(query: str, item: dict, category: str) -> tuple[int, str] | None:
+    """(score, matched_content) for one palette entry, or None.
+
+    `matched_content` names the CONTAINED thing that matched, when that is
+    why the row is in the results — "Software Catalog" surfacing for
+    "spotify" has to be able to say *why*, or it reads as a random hit.
+    Empty when the item matched on its own title, description or module.
+
+    Structured on purpose. The previous implementation fuzzy-matched one
+    concatenated string per item; because that string folds in every app a
+    card can install, the Software Catalog's ran ~1500 characters and
+    matched almost any query as a subsequence — while scoring lower than
+    short unrelated titles that happened to contain the same letters. The
+    measured result was that "spotify" ranked Startup Manager first,
+    "docker" did not return the catalog at all, and "vlc" led with
+    Activation Status. Every one of those is the palette failing the exact
+    promise its docstring makes.
+    """
+    if not query:
+        return (0, "")
+
+    title = item.get("title", "").lower()
+    desc = item.get("desc", "").lower()
+    note = item.get("note", "").lower()
+    cat = category.lower()
+
+    # -- the item itself ------------------------------------------
+    if title == query:
+        return (_MATCH_EXACT_TITLE, "")
+    if title.startswith(query):
+        return (_MATCH_TITLE_PREFIX - len(title), "")
+    if query in title:
+        base = _MATCH_TITLE_WORD if _word_start(title, query) else _MATCH_TITLE_SUB
+        return (base - len(title), "")
+
+    # -- what it contains -----------------------------------------
+    # Best single match wins, so one precise hit is not diluted by 42
+    # misses sitting next to it in the same card.
+    best: tuple[int, str] | None = None
+    for name in MS.search_contents(item):
+        low = name.lower()
+        if low == query:
+            score = _MATCH_CONTENT_EXACT
+        elif query in low:
+            score = ((_MATCH_CONTENT_WORD if _word_start(low, query)
+                      else _MATCH_CONTENT_SUB) - len(low))
+        else:
+            continue
+        if best is None or score > best[0]:
+            best = (score, name)
+    if best is not None:
+        return best
+
+    # -- weaker context -------------------------------------------
+    if query in cat:
+        return (_MATCH_CATEGORY - len(cat), "")
+    if query in desc:
+        base = _MATCH_DESC_WORD if _word_start(desc, query) else _MATCH_DESC_SUB
+        return (base - len(desc), "")
+    if query in note:
+        return (_MATCH_DESC_SUB - len(note), "")
+
+    # -- last resort: initials / abbreviations, TITLE ONLY ---------
+    # Keeps "sfc", "odt" and "cdi" style shorthand working without letting
+    # a long contents blob match everything.
+    fuzzy = _fuzzy_score(query, title)
+    if fuzzy is not None:
+        return (_MATCH_FUZZY_TITLE + fuzzy - len(title), "")
+    return None
+
+
 class CommandPalette(PulseDialog):
     """Ctrl+K quick launcher — fuzzy search over every task defined in
     menu_structure.py. Built fresh on each open (like ConfirmDialog /
-    AppSelectorDialog: transient, no live re-theme needed) and driven
+    SoftwareCatalogDialog: transient, no live re-theme needed) and driven
     through the same accept()/reject() + `chosen_item` pattern, so the
     caller launches the pick through the app's normal request_task()
     pipeline — confirmations, the app selector, and the concurrency guard
@@ -4465,6 +4827,19 @@ class CommandPalette(PulseDialog):
         self._list.itemActivated.connect(self._activate)
         lay.addWidget(self._list)
 
+        # A query that matches nothing used to leave an empty bordered box
+        # under the field, which is indistinguishable from the palette
+        # having broken. Every other search surface in the app already
+        # states its empty result (CategoryPage._empty,
+        # SoftwareCatalogDialog._empty); this one is now consistent with
+        # them, and the list is HIDDEN rather than left blank so the panel
+        # shrinks to the message instead of framing a void.
+        self._empty = QLabel("No apps, tweaks or tools match that search.")
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.setStyleSheet(TH.empty_state_qss(t))
+        self._empty.hide()
+        lay.addWidget(self._empty)
+
         self._refilter("")
 
     # -- filtering / selection ----------------------------------
@@ -4473,20 +4848,25 @@ class CommandPalette(PulseDialog):
         query = text.strip().lower()
         scored = []
         for item, category in self._entries:
-            # search_haystack, not a local title+desc string: the palette
-            # promises "any app, tweak or tool", and the haystack is where
-            # catalog app names and Dev Hub tools are folded in. Sharing it
-            # with the category-page filter keeps the two surfaces honest
-            # with each other — findable in one place means findable in
-            # both.
-            haystack = f"{search_haystack(item)} {category.lower()}"
-            score = _fuzzy_score(query, haystack)
-            if query and score is None:
+            hit = _match_entry(query, item, category)
+            if hit is None:
                 continue
-            scored.append((score or 0, item, category))
-        scored.sort(key=lambda row: -row[0])
-        for _, item, category in scored[: self.MAX_RESULTS]:
-            row = QListWidgetItem(f"{item['icon']}  {item['title']}   ·   {category}")
+            scored.append((hit[0], hit[1], item, category))
+        # Sort by score, then by title, so equal scores order predictably
+        # instead of by whatever iteration order the catalog happened to
+        # have — a result list that reshuffles between identical queries
+        # reads as broken.
+        scored.sort(key=lambda row: (-row[0], row[2].get("title", "")))
+
+        self._empty.setVisible(bool(query) and not scored)
+        self._list.setVisible(bool(scored))
+
+        for _score, matched, item, category in scored[: self.MAX_RESULTS]:
+            # When the hit came from something the card CONTAINS, say so.
+            # "Software Catalog" appearing for "spotify" is correct but
+            # looks arbitrary without the reason attached.
+            trail = f"{category}  ·  installs {matched}" if matched else category
+            row = QListWidgetItem(f"{item['icon']}  {item['title']}   ·   {trail}")
             row.setData(Qt.ItemDataRole.UserRole, item)
             self._list.addItem(row)
         if self._list.count():
@@ -5197,13 +5577,18 @@ class ToolInstallWizardDialog(PulseDialog):
 #  DEV HUB ROW — checkbox + dependency hint + per-tool "..." wizard
 # ============================================================
 class DevHubRow(QFrame):
-    """One tool inside DevHubSelectorDialog. Manual-first: unchecked by
+    """One app row inside SoftwareCatalogDialog. Manual-first: unchecked by
     default. `requires_name`, when given, renders a small "needs X" caption
     — a passive hint, never an auto-check. The "⋯" button opens
     ToolInstallWizardDialog for just this tool, independent of the
     checkbox — picking Path A there short-circuits straight to "select
-    only this row and deploy" (see DevHubSelectorDialog._open_tool_wizard),
-    Path C hands back a local installer instead."""
+    only this row and deploy" (see
+    SoftwareCatalogDialog._open_tool_wizard), Path C hands back a local
+    installer instead.
+
+    Still named for the Dev Hub that introduced it: the catalog absorbed
+    that hub, and this row is the one selector row shape the whole app
+    uses (Update Center's UpdateRow is deliberately built to match)."""
 
     options_requested = Signal(str)  # app_id
 
@@ -5275,194 +5660,6 @@ class DevHubRow(QFrame):
         self.setProperty("suggested", on)
         self.style().unpolish(self)
         self.style().polish(self)
-
-
-# ============================================================
-#  DEV HUB SELECTOR — sections, bundles, master toggle, dependency hints
-# ============================================================
-class DevHubSelectorDialog(PulseDialog):
-    """The Developer & University Hub's tool picker: section-grouped
-    checkboxes (Core Runtimes, IDEs, AI, Databases, Containers), one-click
-    quick-select bundles, a master Select All/Deselect All, live dependency
-    hints, and a per-row "⋯" that opens ToolInstallWizardDialog for a
-    single tool. Manual-first throughout — nothing is pre-checked.
-
-    `groups` / `bundles` are passed in rather than imported, keeping this
-    file a pure component library (see the module docstring) — the caller
-    (main.py) sources them from menu_structure.DEV_HUB_GROUPS/BUNDLES.
-
-    After Accepted, exactly one of these is populated:
-      `selected_ids`     bulk InstallDevHub deploy (checkbox selection, or
-                          a single-tool Path A short-circuit from the wizard)
-      `local_installer`  (app_name, file_path) for a single InstallLocalFile
-                          run, from a per-row wizard's Path C
-    """
-
-    def __init__(self, parent: QWidget, t: dict,
-                 groups: list[tuple[str, list[tuple]]], bundles: list[dict]):
-        super().__init__(parent)
-        self._t = t
-        self.selected_ids: list[str] = []
-        self.local_installer: tuple[str, str] | None = None
-        self._rows: dict[str, DevHubRow] = {}
-        self._tool_meta: dict[str, tuple[str, str]] = {}  # id -> (name, url)
-        self._dependents: dict[str, list[str]] = {}        # requires_id -> [dependent ids]
-
-        panel = _dialog_chrome(self, t, t["accent"], responsive=True)
-
-        lay = dialog_body(panel, "sm")
-
-        head = QLabel("🎓  Developer Toolkit")
-        head.setStyleSheet(TH.label_qss(t, "dialog"))
-        lay.addWidget(head)
-
-        sub = QLabel("Nothing is pre-selected — tick exactly what you need, "
-                      "or start from a bundle below.")
-        sub.setWordWrap(True)
-        sub.setStyleSheet(TH.label_qss(t, "body"))
-        lay.addWidget(sub)
-
-        # -- quick-select bundles --------------------------------
-        bundle_row = QHBoxLayout()
-        bundle_row.setSpacing(8)
-        for bundle in bundles:
-            btn = QPushButton(f"{bundle['icon']}  {bundle['title']}".replace("&", "&&"))
-            btn.setFixedHeight(38)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(TH.wizard_link_qss(t, t["accent"]))
-            btn.clicked.connect(lambda checked=False, ids=bundle["app_ids"]: self._apply_bundle(ids))
-            bundle_row.addWidget(btn)
-        lay.addLayout(bundle_row)
-
-        # -- master select all/none -------------------------------
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(16)
-        all_btn = QPushButton("Select All")
-        all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        all_btn.setStyleSheet(TH.link_button_qss(t, t["accent"]))
-        all_btn.clicked.connect(lambda: self._set_all(True))
-        toolbar.addWidget(all_btn)
-
-        none_btn = QPushButton("Deselect All")
-        none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        none_btn.setStyleSheet(TH.link_button_qss(t, t["accent"]))
-        none_btn.clicked.connect(lambda: self._set_all(False))
-        toolbar.addWidget(none_btn)
-        toolbar.addStretch()
-
-        self._count_label = QLabel("0 selected")
-        self._count_label.setStyleSheet(TH.label_qss(t, "caption"))
-        toolbar.addWidget(self._count_label)
-        lay.addLayout(toolbar)
-
-        # -- scrollable, section-grouped checkbox list -------------
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(TH.scroll_area_qss(t))
-
-        host = QWidget()
-        host.setStyleSheet("background: transparent;")
-        host_lay = scroll_host_layout(host, "md")
-
-        for group_title, tools in groups:
-            section = QLabel(group_title)
-            section.setStyleSheet(TH.label_qss(t, "section"))
-            host_lay.addWidget(section)
-            for app_id, app_name, desc, url, req_id, req_name in tools:
-                row = DevHubRow(app_id, app_name, desc, req_id, req_name, t)
-                row.checkbox.toggled.connect(
-                    lambda checked, aid=app_id: self._on_row_toggled(aid, checked))
-                row.options_requested.connect(self._open_tool_wizard)
-                self._rows[app_id] = row
-                self._tool_meta[app_id] = (app_name, url)
-                if req_id:
-                    self._dependents.setdefault(req_id, []).append(app_id)
-                host_lay.addWidget(row)
-        host_lay.addStretch()
-        scroll.setWidget(host)
-        lay.addWidget(scroll, 1)
-
-        lay.addSpacing(4)
-        row = QHBoxLayout()
-        row.addStretch()
-        cancel = QPushButton("Cancel")
-        cancel.setFixedSize(96, 36)
-        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        cancel.setStyleSheet(TH.dialog_cancel_qss(t))
-        cancel.clicked.connect(self.reject)
-        row.addWidget(cancel)
-
-        self._deploy_btn = QPushButton("Deploy Selected")
-        self._deploy_btn.setFixedSize(156, 36)
-        self._deploy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._deploy_btn.setStyleSheet(TH.dialog_go_qss(t, t["accent"]))
-        self._deploy_btn.clicked.connect(self._accept_selection)
-        row.addWidget(self._deploy_btn)
-        lay.addLayout(row)
-
-    # -- selection state ------------------------------------------
-    def _set_all(self, checked: bool):
-        for row in self._rows.values():
-            row.checkbox.setChecked(checked)
-
-    def _apply_bundle(self, app_ids: list[str]):
-        for app_id in app_ids:
-            row = self._rows.get(app_id)
-            if row is not None:
-                row.checkbox.setChecked(True)
-
-    def _refresh_runtime_suggestion(self, runtime_id: str):
-        """Recompute a runtime row's highlight from scratch: on whenever
-        it's unchecked AND at least one of its (possibly several — e.g.
-        both NetBeans and IntelliJ need Java) dependents is checked.
-        Recomputing fresh rather than reacting to just the row that
-        changed is what keeps this correct when more than one dependent
-        shares the same runtime."""
-        runtime_row = self._rows.get(runtime_id)
-        if runtime_row is None:
-            return
-        dependents = self._dependents.get(runtime_id, [])
-        needs_it = (not runtime_row.is_checked()) and any(
-            self._rows[d].is_checked() for d in dependents if d in self._rows)
-        runtime_row.set_suggested(needs_it)
-
-    def _on_row_toggled(self, app_id: str, checked: bool):
-        # Live dependency nudge: checking an IDE softly highlights its
-        # still-unchecked runtime; unchecking it (or the runtime getting
-        # checked) clears the highlight. Never touches another checkbox.
-        row = self._rows.get(app_id)
-        if row is not None and row.requires_id:
-            self._refresh_runtime_suggestion(row.requires_id)
-        if app_id in self._dependents:
-            self._refresh_runtime_suggestion(app_id)
-
-        count = sum(1 for r in self._rows.values() if r.is_checked())
-        self._count_label.setText(f"{count} selected")
-        self._deploy_btn.setText(f"Deploy Selected ({count})" if count else "Deploy Selected")
-
-    def _accept_selection(self):
-        self.selected_ids = [aid for aid, row in self._rows.items() if row.is_checked()]
-        self.accept()
-
-    # -- per-tool wizard --------------------------------------------
-    def _open_tool_wizard(self, app_id: str):
-        name, url = self._tool_meta.get(app_id, (app_id, ""))
-        desc = self._rows[app_id].checkbox.toolTip()
-        wizard = ToolInstallWizardDialog(self, app_id, name, desc, url, self._t)
-        if wizard.exec() != QDialog.DialogCode.Accepted:
-            return
-        if wizard.mode == "winget":
-            self._set_all(False)
-            self._rows[app_id].checkbox.setChecked(True)
-            self._accept_selection()
-        elif wizard.mode == "local" and wizard.local_path:
-            self.local_installer = (name, wizard.local_path)
-            self.accept()
-
-    def showEvent(self, e):
-        super().showEvent(e)
-        _present_dialog(self)
 
 
 # ============================================================
@@ -5556,7 +5753,7 @@ class UpdateCenterDialog(PulseDialog):
     """'Check for Updates': runs a live background winget scan (task
     ScanForUpdates), then presents a version audit (current vs. available)
     per app in the exact same panel geometry, row styling and action-row
-    layout as AppSelectorDialog — same width, same padding, same single
+    layout as SoftwareCatalogDialog — same width, same padding, same single
     primary CTA — so the two feel like the same screen with different
     data, not two different dialogs. It never installs anything itself.
 
@@ -5566,7 +5763,7 @@ class UpdateCenterDialog(PulseDialog):
       request_task()/_start_task() pipeline — the same live console, Stop
       button and toast machinery as every other bulk deploy.
       Accepted + local_installer set -> caller runs task InstallLocalFile,
-      exactly like AppSelectorDialog/DevHubSelectorDialog's row wizards.
+      exactly like SoftwareCatalogDialog's row wizards.
       Rejected -> nothing to do.
     """
 
@@ -5703,7 +5900,7 @@ class UpdateCenterDialog(PulseDialog):
         return page
 
     def _build_results_page(self) -> QWidget:
-        """Deliberately mirrors AppSelectorDialog's results layout line for
+        """Deliberately mirrors SoftwareCatalogDialog's results layout line for
         line: Select All / Deselect All / stretch / count on the left
         toolbar (Rescan joins the left cluster so the right edge stays
         exactly the count label, like every other selector), the same
@@ -5847,7 +6044,7 @@ class UpdateCenterDialog(PulseDialog):
             row.options_requested.connect(self._open_tool_wizard)
             self._rows[app_id] = row
             self._host_lay.insertWidget(self._host_lay.count() - 1, row)
-        # Same sentence shape AppSelectorDialog uses for its curated packs —
+        # Same sentence shape SoftwareCatalogDialog uses for its selection —
         # one consistent voice across every selector in the app.
         self._subtitle.setText(
             f"All {len(self._rows)} updates are pre-selected — untick anything you don't "
@@ -5987,7 +6184,7 @@ class StartupManagerDialog(PulseDialog):
     entry under the backend's recommendation, and lets the user flip each
     one live via ToggleSwitch — every click round-trips through its own
     worker immediately. Nothing is handed back to the caller: this dialog
-    is fully self-contained (unlike AppSelectorDialog/UpdateCenterDialog,
+    is fully self-contained (unlike SoftwareCatalogDialog/UpdateCenterDialog,
     which only decide what a *later* task should run), so main.py just
     opens it and moves on when it closes."""
 

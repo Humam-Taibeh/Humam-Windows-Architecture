@@ -52,37 +52,37 @@ Item schema:
              badges ACTION DUE once `recurring` days have elapsed since its
              last run, and otherwise shows only its "Ran 3d ago" caption.
              See recurring_days() below and main.PulseApp._card_badge.
-    apps     list[tuple]  (AppId, DisplayName, Description, OfficialUrl)
-             4-tuples - when present, the GUI opens the unified selector
-             overlay (same elite row pattern as the Developer Hub: checkbox
-             + per-tool "..." install-options wizard) and only the ticked
-             AppIds are sent to core.ps1 via -AppIds. Description/Url are
-             GUI-only metadata (tooltip + the wizard's official-site link);
-             legacy 2-tuples (AppId, DisplayName) are still accepted. The
-             AppId list MUST mirror the corresponding $Apps_* / $Runtimes
-             array in src/backend/modules/01-Catalogs.ps1 exactly (same
-             IDs, same order) - the backend is the source of truth for what
-             winget ID each entry installs; this list is only the GUI's
-             mirror of it.
     wizard   str   when present, the GUI opens a dedicated multi-step wizard
-             dialog instead of the app selector / confirm dialog (checked
-             before both). Currently only "office" -> widgets.OfficeWizardDialog,
+             dialog instead of the catalog / confirm dialog (checked before
+             both). Currently only "office" -> widgets.OfficeWizardDialog,
              which resolves a setup.exe/configuration.xml pair and passes
              them to core.ps1 as -OfficeSetupPath/-OfficeConfigPath. A task
-             using "wizard" should not also set "apps" or "confirm".
-    devhub   bool   when True, the GUI opens widgets.DevHubSelectorDialog
-             (section-grouped checkboxes, quick-select bundles, dependency
-             hints, per-tool "..." install-options button) instead of the
-             plain app selector. Checked before "wizard"/"apps"/"confirm".
-             Sourced from DEV_HUB_GROUPS/DEV_HUB_BUNDLES below, which mirror
-             $Apps_DevRuntimes/DevIDEs/DevAI/DevData/DevContainers and
-             $Script:DevHubBundles/DevHubDependencyHints in 01-Catalogs.ps1.
+             using "wizard" should not also set "catalog" or "confirm".
+    catalog  bool   when True, the GUI opens widgets.SoftwareCatalogDialog —
+             the UNIFIED software hub: one scrollable list of every
+             installable app, with a sub-category tab bar (All / Browsers &
+             Media / Development & Tools / Gaming Launchers / System
+             Runtimes & Utilities) filtering it in place, quick-select
+             bundles, dependency hints and the same per-row "..."
+             install-options wizard every other selector uses. Checked
+             before "wizard"/"confirm". Sourced from SOFTWARE_CATALOG /
+             CATALOG_BUNDLES below, which mirror $Apps_CatalogAll and
+             $Script:DevHubBundles in 01-Catalogs.ps1 (same IDs, same
+             order) - the backend is the source of truth for what winget ID
+             each entry installs; the GUI list is only its mirror. The
+             ticked AppIds go to core.ps1 via -AppIds, and because the tabs
+             filter one list rather than paging between several, a single
+             deploy can span sub-categories.
+
+             This REPLACED a per-card `apps` list (4-tuples of AppId /
+             DisplayName / Description / Url), which existed once per app
+             pack and gave the app four different front doors.
     update_center  bool  when True, the GUI opens widgets.UpdateCenterDialog
              instead of every other selector — it runs its own live winget
              scan (task ScanForUpdates), shows a current-vs-available
              version audit, and hands back the ticked AppIds. main.py then
              runs "task" (UpdateSelectedApps) with those AppIds through the
-             normal pipeline, exactly like an "apps" selection would.
+             normal pipeline, exactly like a catalog selection would.
     startup_manager  bool  when True, the GUI opens
              widgets.StartupManagerDialog instead of running "task"
              directly — a self-contained optimization hub (scan, group by
@@ -96,8 +96,8 @@ Item schema:
              one runs it through request_task() exactly as if it had lived
              on the page directly. This is what lets a category collapse
              to a handful of primary cards without deleting any actions —
-             see CATEGORIES["software"] for the 4-hub Software Management
-             layout. iter_leaf_items() below expands every hub so leaf
+             see the System Tools & Utilities hub in CATEGORIES["software"].
+             iter_leaf_items() below expands every hub so leaf
              actions stay reachable from the Ctrl+K command palette.
              A hub may instead supply `groups` (list of
              {"title": str, "items": list[dict]}) in place of a flat
@@ -110,84 +110,232 @@ Item schema:
 """
 
 # ============================================================
-#  DEVELOPER & UNIVERSITY HUB DATA
-#  Mirrors 01-Catalogs.ps1's $Apps_DevRuntimes / DevIDEs / DevAI / DevData /
-#  DevContainers (same IDs, same order, group-for-group) plus
-#  $Script:DevHubBundles / DevHubDependencyHints. The backend is still the
-#  source of truth for what winget ID each entry installs and which task
-#  name runs the bulk deploy (InstallDevHub) - this is the GUI's mirror,
-#  extended with the description/URL/dependency-hint metadata the richer
-#  DevHubSelectorDialog needs that a plain (AppId, DisplayName) pair can't
-#  carry.
+#  THE UNIFIED SOFTWARE CATALOG  (v1.0 RC)
+#
+#  ONE list of every installable app the GUI offers, split into the four
+#  sub-categories the catalog's tab bar filters by. This replaced FOUR
+#  separate cards — Essential Apps, Developer & University Hub, Gaming
+#  Launchers, Hardware Diagnostics — each with its own dispatcher case and
+#  its own selector dialog. That split made "where do I get Docker?" and
+#  "where do I get VLC?" different questions with different answers, and
+#  made a mixed selection (one browser, one IDE, one launcher) impossible
+#  without three separate deploys. The tabs are a VIEW over this single
+#  list, not four lists behind a shared frame.
+#
+#  Mirrors 01-Catalogs.ps1's $Apps_CatalogAll — same IDs, SAME ORDER,
+#  section for section. The backend stays the source of truth for what
+#  winget ID each entry installs; this is the GUI's mirror, extended with
+#  the description / URL / dependency-hint metadata a bare (AppId,
+#  DisplayName) pair cannot carry.
+#
+#  Section schema:
+#     key    str   stable id used by the tab bar and by tests
+#     icon   str   emoji shown on the tab
+#     title  str   the tab's label
+#     blurb  str   one line under the catalog header when the tab is active
+#     groups list[(group_title, tools)]  — a group_title of "" renders the
+#            tools with no sub-header (a section that needs no internal
+#            division); anything else renders as a small section header
+#            inside the tab, so a 16-entry tab stays scannable.
 #
 #  Each tool entry: (AppId, DisplayName, WhyYouNeedIt, OfficialUrl,
 #                     RequiresAppId | None, RequiresDisplayName | None)
 # ============================================================
-DEV_HUB_GROUPS = [
-    ("🧩 Core Runtimes & Compilers", [
-        ("Python.Python.3.12", "Python 3.12",
-         "General-purpose language for scripting, data science and AI/ML projects.",
-         "https://www.python.org/downloads/", None, None),
-        ("EclipseAdoptium.Temurin.21.JDK", "Java JDK (Temurin 21)",
-         "The Java Development Kit — compiles and runs Java projects; NetBeans and IntelliJ both need this.",
-         "https://adoptium.net/temurin/releases/", None, None),
-        ("OpenJS.NodeJS.LTS", "Node.js (LTS)",
-         "JavaScript runtime for web backends, build tools and npm packages.",
-         "https://nodejs.org/en/download", None, None),
-        ("Git.Git", "Git / Git Bash",
-         "Version control — track changes and collaborate on any codebase.",
-         "https://git-scm.com/downloads", None, None),
-        ("MSYS2.MSYS2", "GCC / MinGW-w64 Compiler",
-         "C/C++ compiler toolchain for native Windows builds.",
-         "https://www.msys2.org/", None, None),
-    ]),
-    ("🛠️ IDEs & Editors", [
-        ("Microsoft.VisualStudioCode", "VS Code",
-         "Lightweight, extensible code editor — the daily driver for most languages.",
-         "https://code.visualstudio.com/download", None, None),
-        ("Anysphere.Cursor", "Cursor IDE",
-         "AI-native code editor built on VS Code, with built-in AI pair programming.",
-         "https://cursor.sh/", None, None),
-        ("JetBrains.PyCharm.Community", "PyCharm Community",
-         "Full-featured Python IDE with debugging, refactoring and test tools.",
-         "https://www.jetbrains.com/pycharm/download/",
-         "Python.Python.3.12", "Python 3.12"),
-        ("JetBrains.IntelliJIDEA.Community", "IntelliJ IDEA Community",
-         "Full-featured Java IDE with deep code intelligence and refactoring.",
-         "https://www.jetbrains.com/idea/download/",
-         "EclipseAdoptium.Temurin.21.JDK", "Java JDK"),
-        ("Apache.NetBeans", "NetBeans IDE",
-         "Java IDE popular in university courses — project templates and a visual GUI builder.",
-         "https://netbeans.apache.org/download/index.html",
-         "EclipseAdoptium.Temurin.21.JDK", "Java JDK"),
-    ]),
-    ("🧠 AI & Local LLM Stack", [
-        ("Ollama.Ollama", "Ollama (Local LLM Runner)",
-         "Run open-source LLMs (Llama, Mistral, etc.) locally — no cloud required.",
-         "https://ollama.com/download", None, None),
-        ("OpenWebUI.OpenWebUI", "Open WebUI (Local Chat Interface)",
-         "A ChatGPT-style web interface for models running in Ollama.",
-         "https://openwebui.com/", None, None),
-    ]),
-    ("🗄️ Databases & API Tools", [
-        ("DBeaver.DBeaver.Community", "DBeaver (Database Client)",
-         "Universal SQL client — browse and query almost any database.",
-         "https://dbeaver.io/download/", None, None),
-        ("Postman.Postman", "Postman (API Client)",
-         "Build, test and document REST/GraphQL APIs.",
-         "https://www.postman.com/downloads/", None, None),
-        ("Bruno.Bruno", "Bruno (Open-Source API Client)",
-         "A fast, open-source Postman alternative that stores collections as local files.",
-         "https://www.usebruno.com/downloads", None, None),
-    ]),
-    ("🐳 Containerization", [
-        ("Docker.DockerDesktop", "Docker Desktop",
-         "Build and run containers — package an app with everything it needs to run anywhere.",
-         "https://www.docker.com/products/docker-desktop/", None, None),
-    ]),
+SOFTWARE_CATALOG = [
+    {
+        "key": "browsers",
+        "icon": "🌐",
+        "title": "Browsers & Media",
+        "blurb": "Browsers, chat, media players and productivity essentials.",
+        "groups": [
+            ("", [
+                ("Google.Chrome", "Google Chrome",
+                 "Fast, secure web browser from Google.",
+                 "https://www.google.com/chrome/", None, None),
+                ("Brave.Brave", "Brave Browser",
+                 "Privacy-first Chromium browser with built-in ad blocking.",
+                 "https://brave.com/download/", None, None),
+                ("Mozilla.Firefox", "Mozilla Firefox",
+                 "Fast, independent browser built on open standards.",
+                 "https://www.mozilla.org/firefox/new/", None, None),
+                ("Microsoft.Edge", "Microsoft Edge",
+                 "Microsoft's Chromium browser — reinstalls cleanly here even after using Remove Microsoft Edge.",
+                 "https://www.microsoft.com/en-us/edge/download", None, None),
+                ("Telegram.TelegramDesktop", "Telegram Desktop",
+                 "Fast, secure cloud-based messaging.",
+                 "https://telegram.org/apps", None, None),
+                ("Spotify.Spotify", "Spotify (Win32)",
+                 "Music and podcast streaming client.",
+                 "https://www.spotify.com/download/windows/", None, None),
+                ("Discord.Discord", "Discord",
+                 "Voice, video and text chat for friends and communities.",
+                 "https://discord.com/download", None, None),
+                ("9NKSQCEZVDDB", "WhatsApp (Store)",
+                 "Official WhatsApp messenger for the desktop.",
+                 "https://www.whatsapp.com/download", None, None),
+                ("9PKTQ5699M62", "iCloud (Store)",
+                 "Access iCloud Photos, Drive and Passwords on Windows.",
+                 "https://www.apple.com/icloud/", None, None),
+                ("Apple.iTunes", "iTunes",
+                 "Media library and Apple device sync.",
+                 "https://www.apple.com/itunes/", None, None),
+                ("7zip.7zip", "7-Zip",
+                 "Open-source archiver with best-in-class compression.",
+                 "https://www.7-zip.org/", None, None),
+                ("VideoLAN.VLC", "VLC Media Player",
+                 "Plays practically every audio and video format ever made.",
+                 "https://www.videolan.org/vlc/", None, None),
+                ("TheDocumentFoundation.LibreOffice", "LibreOffice",
+                 "Free office suite — Writer, Calc, Impress and more.",
+                 "https://www.libreoffice.org/download/download-libreoffice/", None, None),
+                ("Notion.Notion", "Notion",
+                 "All-in-one notes, docs and project workspace.",
+                 "https://www.notion.com/desktop", None, None),
+            ]),
+        ],
+    },
+    {
+        "key": "development",
+        "icon": "🧑‍💻",
+        "title": "Development & Tools",
+        "blurb": "Runtimes, IDEs, AI tooling, databases and containers — "
+                 "the old Developer & University Hub, in the catalog.",
+        "groups": [
+            ("🧩 Core Runtimes & Compilers", [
+                ("Python.Python.3.12", "Python 3.12",
+                 "General-purpose language for scripting, data science and AI/ML projects.",
+                 "https://www.python.org/downloads/", None, None),
+                ("EclipseAdoptium.Temurin.21.JDK", "Java JDK (Temurin 21)",
+                 "The Java Development Kit — compiles and runs Java projects; NetBeans and IntelliJ both need this.",
+                 "https://adoptium.net/temurin/releases/", None, None),
+                ("OpenJS.NodeJS.LTS", "Node.js (LTS)",
+                 "JavaScript runtime for web backends, build tools and npm packages.",
+                 "https://nodejs.org/en/download", None, None),
+                ("Git.Git", "Git / Git Bash",
+                 "Version control — track changes and collaborate on any codebase.",
+                 "https://git-scm.com/downloads", None, None),
+                ("MSYS2.MSYS2", "GCC / MinGW-w64 Compiler",
+                 "C/C++ compiler toolchain for native Windows builds.",
+                 "https://www.msys2.org/", None, None),
+            ]),
+            ("🛠️ IDEs & Editors", [
+                ("Microsoft.VisualStudioCode", "VS Code",
+                 "Lightweight, extensible code editor — the daily driver for most languages.",
+                 "https://code.visualstudio.com/download", None, None),
+                ("Anysphere.Cursor", "Cursor IDE",
+                 "AI-native code editor built on VS Code, with built-in AI pair programming.",
+                 "https://cursor.sh/", None, None),
+                ("JetBrains.PyCharm.Community", "PyCharm Community",
+                 "Full-featured Python IDE with debugging, refactoring and test tools.",
+                 "https://www.jetbrains.com/pycharm/download/",
+                 "Python.Python.3.12", "Python 3.12"),
+                ("JetBrains.IntelliJIDEA.Community", "IntelliJ IDEA Community",
+                 "Full-featured Java IDE with deep code intelligence and refactoring.",
+                 "https://www.jetbrains.com/idea/download/",
+                 "EclipseAdoptium.Temurin.21.JDK", "Java JDK"),
+                ("Apache.NetBeans", "NetBeans IDE",
+                 "Java IDE popular in university courses — project templates and a visual GUI builder.",
+                 "https://netbeans.apache.org/download/index.html",
+                 "EclipseAdoptium.Temurin.21.JDK", "Java JDK"),
+            ]),
+            ("🧠 AI & Local LLM Stack", [
+                ("Ollama.Ollama", "Ollama (Local LLM Runner)",
+                 "Run open-source LLMs (Llama, Mistral, etc.) locally — no cloud required.",
+                 "https://ollama.com/download", None, None),
+                ("OpenWebUI.OpenWebUI", "Open WebUI (Local Chat Interface)",
+                 "A ChatGPT-style web interface for models running in Ollama.",
+                 "https://openwebui.com/", None, None),
+            ]),
+            ("🗄️ Databases & API Tools", [
+                ("DBeaver.DBeaver.Community", "DBeaver (Database Client)",
+                 "Universal SQL client — browse and query almost any database.",
+                 "https://dbeaver.io/download/", None, None),
+                ("Postman.Postman", "Postman (API Client)",
+                 "Build, test and document REST/GraphQL APIs.",
+                 "https://www.postman.com/downloads/", None, None),
+                ("Bruno.Bruno", "Bruno (Open-Source API Client)",
+                 "A fast, open-source Postman alternative that stores collections as local files.",
+                 "https://www.usebruno.com/downloads", None, None),
+            ]),
+            ("🐳 Containerization", [
+                ("Docker.DockerDesktop", "Docker Desktop",
+                 "Build and run containers — package an app with everything it needs to run anywhere.",
+                 "https://www.docker.com/products/docker-desktop/", None, None),
+            ]),
+        ],
+    },
+    {
+        "key": "gaming",
+        "icon": "🎮",
+        "title": "Gaming Launchers",
+        "blurb": "Game stores and launchers — the matching GPU vendor suite "
+                 "is added automatically when you pick any of these.",
+        "groups": [
+            ("", [
+                ("Valve.Steam", "Steam",
+                 "The largest PC game store and launcher.",
+                 "https://store.steampowered.com/about/", None, None),
+                ("EpicGames.EpicGamesLauncher", "Epic Games",
+                 "Epic's store and launcher — free weekly games included.",
+                 "https://store.epicgames.com/en-US/download", None, None),
+                ("RockstarGames.Launcher", "Rockstar Games",
+                 "Rockstar's launcher for GTA, Red Dead and more.",
+                 "https://socialclub.rockstargames.com/rockstar-games-launcher", None, None),
+                ("BlueStacks.BlueStacks", "BlueStacks 5",
+                 "Android app player — run mobile games on Windows.",
+                 "https://www.bluestacks.com/download.html", None, None),
+            ]),
+        ],
+    },
+    {
+        "key": "system",
+        "icon": "🧩",
+        "title": "System Runtimes & Utilities",
+        "blurb": "The prerequisite runtimes other software depends on, plus "
+                 "hardware monitoring and diagnostics tools.",
+        "groups": [
+            ("⚙️ Core API Runtimes", [
+                ("Microsoft.DirectX", "DirectX End-User Runtime",
+                 "Legacy DirectX libraries that older games still need.",
+                 "https://www.microsoft.com/en-us/download/details.aspx?id=35", None, None),
+                ("Microsoft.VCRedist.2015+.x64", "Visual C++ Redistributables",
+                 "C++ runtime DLLs required by countless Windows apps.",
+                 "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist", None, None),
+                ("Microsoft.DotNet.DesktopRuntime.8", ".NET Desktop Runtime",
+                 "Runs modern .NET desktop applications.",
+                 "https://dotnet.microsoft.com/en-us/download/dotnet/8.0", None, None),
+                ("Oracle.JavaRuntimeEnvironment", "Java Runtime Environment",
+                 "Runs Java desktop applications.",
+                 "https://www.java.com/en/download/", None, None),
+            ]),
+            ("🔬 Hardware Diagnostics", [
+                ("CPUID.CPU-Z", "CPU-Z",
+                 "CPU, motherboard and memory identification tool.",
+                 "https://www.cpuid.com/softwares/cpu-z.html", None, None),
+                ("TechPowerUp.GPU-Z", "GPU-Z",
+                 "Graphics card information, sensors and BIOS tools.",
+                 "https://www.techpowerup.com/gpuz/", None, None),
+                ("CPUID.HWMonitor", "HWMonitor",
+                 "Live voltages, temperatures and fan speeds.",
+                 "https://www.cpuid.com/softwares/hwmonitor.html", None, None),
+                ("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo",
+                 "Drive health and S.M.A.R.T. monitoring.",
+                 "https://crystalmark.info/en/software/crystaldiskinfo/", None, None),
+                ("Guru3D.Afterburner", "MSI Afterburner",
+                 "GPU overclocking and on-screen performance monitoring.",
+                 "https://www.msi.com/Landing/afterburner", None, None),
+            ]),
+        ],
+    },
 ]
 
-DEV_HUB_BUNDLES = [
+#: Quick-select stacks for the catalog's Development & Tools tab — each
+#: just TICKS the listed AppIds; nothing is forced and the user can still
+#: deselect any of them before deploying. Mirrors $Script:DevHubBundles.
+#: Kept scoped to the development tab: a "Java / University Stack" button
+#: floating above a list of browsers would be noise, so the catalog shows
+#: the bundle row only while that tab is active.
+CATALOG_BUNDLES = [
     {"key": "java-university", "icon": "🎓", "title": "Java / University Stack",
      "app_ids": ["EclipseAdoptium.Temurin.21.JDK", "Apache.NetBeans",
                  "JetBrains.IntelliJIDEA.Community", "Git.Git", "Microsoft.VisualStudioCode"]},
@@ -196,6 +344,27 @@ DEV_HUB_BUNDLES = [
     {"key": "web-dev", "icon": "🌐", "title": "Web Dev Stack",
      "app_ids": ["OpenJS.NodeJS.LTS", "Git.Git", "Microsoft.VisualStudioCode", "Postman.Postman"]},
 ]
+
+#: The tab whose bundle row is shown. Data, not a hard-coded string in the
+#: dialog, so moving the bundles to another section is a one-line change.
+CATALOG_BUNDLE_SECTION = "development"
+
+
+def catalog_tools(section_key: str = "") -> list[tuple]:
+    """Every tool 6-tuple in `section_key`, or in the WHOLE catalog when
+    the key is empty (the "All" tab). Flattens group structure — callers
+    that need the group headers walk SOFTWARE_CATALOG directly."""
+    return [tool
+            for section in SOFTWARE_CATALOG
+            if not section_key or section["key"] == section_key
+            for _group_title, tools in section["groups"]
+            for tool in tools]
+
+
+def catalog_app_ids(section_key: str = "") -> list[str]:
+    """AppIds in catalog order — the mirror of $Apps_CatalogAll when called
+    with no section key."""
+    return [tool[0] for tool in catalog_tools(section_key)]
 
 # ============================================================
 #  CATEGORIES  (rendered top-to-bottom in the sidebar)
@@ -212,152 +381,51 @@ CATEGORIES = [
         "tagline": "Deploy apps, runtimes and audit startup programs",
         "accent": "software",
         "items": [
-            # -- HUB 1: everyday consumer/productivity apps ---------------
-            {"icon": "🧰", "glyph": "globe", "title": "Browsers & Daily Apps",
-             "desc": "Browsers, chat, media and productivity essentials.",
-             "hub": True,
-             "items": [
-                 {"icon": "🌐", "title": "Browsers, Chat & Media",
-                  "desc": "Chrome, Brave, Discord, Spotify, VLC, 7-Zip and more.",
-                  "glyph": "globe", "task": "InstallEssentialApps", "timeout": 3600, "confirm": True,
-                  "apps": [
-                      ("Google.Chrome", "Google Chrome",
-                       "Fast, secure web browser from Google.",
-                       "https://www.google.com/chrome/"),
-                      ("Brave.Brave", "Brave Browser",
-                       "Privacy-first Chromium browser with built-in ad blocking.",
-                       "https://brave.com/download/"),
-                      ("Mozilla.Firefox", "Mozilla Firefox",
-                       "Fast, independent browser built on open standards.",
-                       "https://www.mozilla.org/firefox/new/"),
-                      ("Microsoft.Edge", "Microsoft Edge",
-                       "Microsoft's Chromium browser — reinstalls cleanly here even after using Remove Microsoft Edge.",
-                       "https://www.microsoft.com/en-us/edge/download"),
-                      ("Telegram.TelegramDesktop", "Telegram Desktop",
-                       "Fast, secure cloud-based messaging.",
-                       "https://telegram.org/apps"),
-                      ("Spotify.Spotify", "Spotify (Win32)",
-                       "Music and podcast streaming client.",
-                       "https://www.spotify.com/download/windows/"),
-                      ("Discord.Discord", "Discord",
-                       "Voice, video and text chat for friends and communities.",
-                       "https://discord.com/download"),
-                      ("9NKSQCEZVDDB", "WhatsApp (Store)",
-                       "Official WhatsApp messenger for the desktop.",
-                       "https://www.whatsapp.com/download"),
-                      ("9PKTQ5699M62", "iCloud (Store)",
-                       "Access iCloud Photos, Drive and Passwords on Windows.",
-                       "https://www.apple.com/icloud/"),
-                      ("Apple.iTunes", "iTunes",
-                       "Media library and Apple device sync.",
-                       "https://www.apple.com/itunes/"),
-                      ("7zip.7zip", "7-Zip",
-                       "Open-source archiver with best-in-class compression.",
-                       "https://www.7-zip.org/"),
-                      ("VideoLAN.VLC", "VLC Media Player",
-                       "Plays practically every audio and video format ever made.",
-                       "https://www.videolan.org/vlc/"),
-                      ("TheDocumentFoundation.LibreOffice", "LibreOffice",
-                       "Free office suite — Writer, Calc, Impress and more.",
-                       "https://www.libreoffice.org/download/download-libreoffice/"),
-                      ("Notion.Notion", "Notion",
-                       "All-in-one notes, docs and project workspace.",
-                       "https://www.notion.com/desktop"),
-                  ]},
-                 {"icon": "📄", "title": "Microsoft Office Suite",
-                  "desc": "Word, Excel, PowerPoint and Outlook via the official ODT.",
-                  "glyph": "document", "task": "InstallOfficeODT", "timeout": 3600, "wizard": "office"},
-                 # OneDrive install/restore was moved OUT of here to live
-                 # beside 'Purge OneDrive' under System Tools & Utilities (all
-                 # OneDrive tools in one place); Microsoft Teams was dropped
-                 # from the catalog entirely. This hub is now exactly three
-                 # core app selections: apps, Office and runtimes.
-                 {"icon": "🧩", "title": "Core API Runtimes",
-                  "desc": "DirectX, Visual C++, .NET and Java prerequisites.",
-                  "glyph": "puzzle", "task": "InstallRuntimes", "timeout": 3600, "confirm": True,
-                  "apps": [
-                      ("Microsoft.DirectX", "DirectX End-User Runtime",
-                       "Legacy DirectX libraries that older games still need.",
-                       "https://www.microsoft.com/en-us/download/details.aspx?id=35"),
-                      ("Microsoft.VCRedist.2015+.x64", "Visual C++ Redistributables",
-                       "C++ runtime DLLs required by countless Windows apps.",
-                       "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"),
-                      ("Microsoft.DotNet.DesktopRuntime.8", ".NET Desktop Runtime",
-                       "Runs modern .NET desktop applications.",
-                       "https://dotnet.microsoft.com/en-us/download/dotnet/8.0"),
-                      ("Oracle.JavaRuntimeEnvironment", "Java Runtime Environment",
-                       "Runs Java desktop applications.",
-                       "https://www.java.com/en/download/"),
-                  ]},
-             ]},
-            # -- HUB 2: developer tooling (single flow -> direct passthrough) --
-            {"icon": "🎓", "glyph": "code", "title": "Developer & University Hub",
-             "desc": "VS Code, Python, Java, Git, Node.js and more.",
-             "hub": True,
-             "items": [
-                 {"icon": "🎓", "title": "Developer & University Hub",
-                  "desc": "Runtimes, IDEs, AI tools, databases and containers.",
-                  "glyph": "code", "task": "InstallDevHub", "timeout": 3600, "devhub": True},
-             ]},
-            # -- HUB 3: gaming (single flow -> direct passthrough) --------
-            {"icon": "🎮", "glyph": "game", "title": "Gaming & Launchers",
-             "desc": "Steam, Epic, Rockstar and BlueStacks.",
-             "hub": True,
-             "items": [
-                 {"icon": "🎮", "title": "Gaming Launchers",
-                  "desc": "Steam, Epic and more — GPU software added automatically.",
-                  "glyph": "game", "task": "InstallGamingApps", "timeout": 3600, "confirm": True,
-                  "apps": [
-                      ("Valve.Steam", "Steam",
-                       "The largest PC game store and launcher.",
-                       "https://store.steampowered.com/about/"),
-                      ("EpicGames.EpicGamesLauncher", "Epic Games",
-                       "Epic's store and launcher — free weekly games included.",
-                       "https://store.epicgames.com/en-US/download"),
-                      ("RockstarGames.Launcher", "Rockstar Games",
-                       "Rockstar's launcher for GTA, Red Dead and more.",
-                       "https://socialclub.rockstargames.com/rockstar-games-launcher"),
-                      ("BlueStacks.BlueStacks", "BlueStacks 5",
-                       "Android app player — run mobile games on Windows.",
-                       "https://www.bluestacks.com/download.html"),
-                  ]},
-             ]},
-            # -- HUB 4: diagnostics, environment repair, optimization -----
+            # -- THE CATALOG: every installable app, one card -------------
             #
-            # Grouped, not flat: eight sub-actions read as clutter in one
+            # `catalog: True` opens widgets.SoftwareCatalogDialog — the
+            # tabbed hub sourced from SOFTWARE_CATALOG above. It is a
+            # RUNNABLE action, not a `hub` container: there is exactly one
+            # destination behind it, so wrapping it in a HubDialog would
+            # add a click that asks nothing. Featured position (index 0)
+            # gives it the bento hero treatment on the page.
+            {"icon": "📦", "glyph": "package", "title": "Software Catalog",
+             "desc": "Every app in one place — browsers, dev tools, games "
+                     "and runtimes, filtered by sub-category.",
+             "task": "InstallCatalogApps", "timeout": 3600, "catalog": True},
+            {"icon": "📄", "title": "Microsoft Office Suite",
+             "desc": "Word, Excel, PowerPoint and Outlook via the official ODT.",
+             "glyph": "document", "task": "InstallOfficeODT", "timeout": 3600,
+             "wizard": "office"},
+            # Office stays OUTSIDE the catalog deliberately: it ships as one
+            # Click-to-Run bundle with no per-app winget package, so it
+            # cannot be a row in a list whose every other row is a winget
+            # id. It gets the ODT wizard instead (see the 01-Catalogs.ps1
+            # note), and a catalog row that silently behaved completely
+            # differently from its neighbours would be the worse lie.
+            # -- HUB: environment repair, audits, remove/restore pairs ----
+            #
+            # Grouped, not flat: the sub-actions read as clutter in one
             # undifferentiated list, so they're split into three scannable
             # sub-groups the HubDialog renders under small "section" headers
-            # — Diagnostics & Optimization (the always-useful utilities),
-            # then the Edge and OneDrive remove/restore pairs kept together
-            # so each app's teardown and its counterpart restore sit side by
-            # side. `groups` is the grouped analogue of a hub's flat `items`;
+            # — Maintenance & Audits (the always-useful utilities), then the
+            # Edge and OneDrive remove/restore pairs kept together so each
+            # app's teardown and its counterpart restore sit side by side.
+            # `groups` is the grouped analogue of a hub's flat `items`;
             # menu_structure's hub_items() flattens it for the command
             # palette / counters and main.py's hub navigation.
+            #
+            # Hardware Diagnostics is NO LONGER here: CPU-Z, GPU-Z,
+            # HWMonitor, CrystalDiskInfo and Afterburner are installable
+            # apps, so they belong in the catalog (System Runtimes &
+            # Utilities tab) with every other installable app. What stays
+            # here is what this hub is actually for — tools that INSPECT or
+            # REPAIR this machine rather than download something.
             {"icon": "🛠️", "glyph": "tools", "title": "System Tools & Utilities",
-             "desc": "Diagnostics, environment repair and update audits.",
+             "desc": "Environment repair, startup audits and update scans.",
              "hub": True,
              "groups": [
-                 {"title": "DIAGNOSTICS & OPTIMIZATION", "items": [
-                     {"icon": "🔬", "title": "Hardware Diagnostics",
-                      "desc": "Monitors CPU, GPU, RAM and disk health.",
-                      "glyph": "diagnostics", "task": "InstallDiagnosticApps", "timeout": 3600, "confirm": True,
-                      "apps": [
-                          ("CPUID.CPU-Z", "CPU-Z",
-                           "CPU, motherboard and memory identification tool.",
-                           "https://www.cpuid.com/softwares/cpu-z.html"),
-                          ("TechPowerUp.GPU-Z", "GPU-Z",
-                           "Graphics card information, sensors and BIOS tools.",
-                           "https://www.techpowerup.com/gpuz/"),
-                          ("CPUID.HWMonitor", "HWMonitor",
-                           "Live voltages, temperatures and fan speeds.",
-                           "https://www.cpuid.com/softwares/hwmonitor.html"),
-                          ("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo",
-                           "Drive health and S.M.A.R.T. monitoring.",
-                           "https://crystalmark.info/en/software/crystaldiskinfo/"),
-                          ("Guru3D.Afterburner", "MSI Afterburner",
-                           "GPU overclocking and on-screen performance monitoring.",
-                           "https://www.msi.com/Landing/afterburner"),
-                      ]},
+                 {"title": "MAINTENANCE & AUDITS", "items": [
                      {"icon": "🧭", "title": "PATH Doctor",
                       "desc": "Makes Windows find your dev tools by name in any terminal.",
                       "glyph": "terminal", "task": "VerifyEnvironment", "timeout": 300},
@@ -571,13 +639,6 @@ def hub_items(hub: dict) -> list[dict]:
     return hub.get("items", [])
 
 
-def _count_leaves(items: list[dict]) -> int:
-    return sum(
-        _count_leaves(hub_items(it)) if it.get("hub") else 1
-        for it in items
-    )
-
-
 def find_action(cat_index: int, task: str) -> tuple[dict | None, str]:
     """(item, category_accent_KEY) for a runnable action located by its `task`
     name within CATEGORIES[cat_index], expanding hub containers recursively.
@@ -687,18 +748,46 @@ def search_haystack(item: dict) -> str:
 
     Three levels fold in, each for the same reason: hiding a genuine match
     because it lives one layer down is indistinguishable from the feature
-    not existing. Hub containers carry their sub-items' full haystacks;
-    an `apps` catalog card carries its app display names (v1.0 — typing
-    "spotify" must surface the installer that ships it); a devhub card
-    carries every Dev Hub tool name ("docker", "pycharm")."""
+    not existing. Hub containers carry their sub-items' full haystacks; and
+    the `catalog` card carries EVERY app in the unified catalog plus its
+    sub-category titles — typing "spotify", "docker" or "gaming" must all
+    surface the one card that installs them, which is the whole point of
+    collapsing four app cards into one.
+
+    Kept as the "is this findable at all?" predicate. RANKING must not use
+    it — see search_contents() and the note there."""
     parts = [item.get("title", ""), item.get("desc", ""), item.get("note", "")]
-    parts.extend(entry[1] for entry in item.get("apps", []) if len(entry) > 1)
-    if item.get("devhub"):
-        parts.extend(tool[1] for _title, tools in DEV_HUB_GROUPS
-                     for tool in tools)
-    if item.get("hub"):
-        parts.extend(search_haystack(sub) for sub in hub_items(item))
+    parts.extend(search_contents(item))
     return " ".join(parts).lower()
+
+
+def search_contents(item: dict) -> list[str]:
+    """The named things `item` CONTAINS, each as its own string — catalog
+    app names, a hub's sub-action titles.
+
+    Separate from search_haystack because collapsing them into one blob is
+    what broke the command palette's ranking. The Software Catalog card
+    contains 43 app names, so its flat haystack runs ~1500 characters; a
+    subsequence matcher over a string that long matches nearly any query
+    by accident, while scoring far WORSE than a short title that matched
+    the same letters by coincidence. Measured before this split: "spotify"
+    ranked Startup Manager first and "docker" did not surface the catalog
+    at all — even though the catalog is the only thing that installs
+    either, and the palette's own docstring promised it would.
+
+    Kept as a LIST so a scorer can ask "does any single contained name
+    contain the query?" (a real, precise hit) instead of "do these letters
+    appear somewhere across everything this card knows about" (noise).
+    """
+    names: list[str] = []
+    if item.get("catalog"):
+        names.extend(section["title"] for section in SOFTWARE_CATALOG)
+        names.extend(tool[1] for tool in catalog_tools())
+    if item.get("hub"):
+        for sub in hub_items(item):
+            names.append(sub.get("title", ""))
+            names.extend(search_contents(sub))
+    return [n for n in names if n]
 
 
 def accent_for_task(task: str | None) -> str:

@@ -37,7 +37,7 @@ from PySide6.QtCore import (
     QTimer, Signal,
 )
 from PySide6.QtGui import (
-    QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPalette, QShortcut,
+    QColor, QFont, QIcon, QKeySequence, QPalette, QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFrame, QGraphicsOpacityEffect,
@@ -59,21 +59,20 @@ from utils.helpers import (  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
-    CATEGORIES, DEV_HUB_BUNDLES, DEV_HUB_GROUPS, accent_for_task,
-    category_operations, find_action_anywhere, hub_items, iter_leaf_items,
-    recurring_days, requires_admin, search_haystack,
+    CATALOG_BUNDLE_SECTION, CATALOG_BUNDLES, CATEGORIES, SOFTWARE_CATALOG,
+    accent_for_task, category_operations, find_action_anywhere, hub_items,
+    iter_leaf_items, recurring_days, requires_admin,
 )
 from frontend.widgets import (  # noqa: E402
-    ActivationStatusDialog, ActivityDrawer, AmbientGlow, AppSelectorDialog,
+    ActivationStatusDialog, ActivityDrawer, AmbientGlow,
     BreathingIcon,
     CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
-    DevHubSelectorDialog,
     ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog, MeterBar,
     NavButton,
     NavPill, OfficeWizardDialog, PlaybookDialog, PulseDialog,
-    RecentOperationRow, RecentOperationsPanel, RevertChoiceDialog,
-    ResponsiveGridHost, ShortcutSheetDialog, StartupManagerDialog, TitleBar,
-    UpdateCenterDialog, refit_dialog,
+    RecentOperationsPanel, RevertChoiceDialog,
+    ResponsiveGridHost, ShortcutSheetDialog, SoftwareCatalogDialog,
+    StartupManagerDialog, TitleBar, UpdateCenterDialog, refit_dialog,
 )
 from frontend.playbooks import PlaybookRunner, load_playbooks  # noqa: E402
 
@@ -751,6 +750,7 @@ class CategoryPage(QWidget):
         self._visible: list[GlassCard] = []
         self._t = t
         self._cols = 0
+        self._applied_unit = 0     # see _relayout / _sparse_unit
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 6, 8, 6)
@@ -835,12 +835,14 @@ class CategoryPage(QWidget):
         grid_host.resized.connect(lambda w: self._relayout(self._columns_for(w)))
 
         for idx, item in enumerate(category["items"]):
-            # v7 bento: the first card of a hub landing page (Software
+            # v7 bento: the first card of a landing page (Software
             # Management) is the featured hero — squircle + Aurora lit edge on
-            # the top elevation tier. Only hub cards qualify (they never enter
-            # the running/flash states the featured card's painted background
-            # forgoes), so dense action pages just get the balanced fill grid.
-            featured = idx == 0 and bool(item.get("hub"))
+            # the top elevation tier. Reserved for the two card kinds that
+            # OPEN SOMETHING rather than acting immediately — a hub container
+            # or the software catalog — so dense action pages still get the
+            # balanced fill grid and no destructive one-click tweak is ever
+            # dressed as the page's centrepiece.
+            featured = idx == 0 and bool(item.get("hub") or item.get("catalog"))
             card = GlassCard(item, category["accent"], t, featured=featured)
             card.clicked.connect(
                 lambda it=item, c=card: self.task_requested.emit(it, c))
@@ -936,13 +938,20 @@ class CategoryPage(QWidget):
             filtered=filtering))
 
     def _relayout(self, cols: int):
-        if cols == self._cols:
+        # A sparse page also rebuilds when its shared column WIDTH changes,
+        # not only its column COUNT. Card minimums are resolved lazily by
+        # Qt, so the first pass after construction reads a smaller minimum
+        # than the cards finally want; with a count-only guard that stale
+        # width was latched forever and the row shipped mismatched tiles.
+        unit = self._sparse_unit() if self._sparse else 0
+        if cols == self._cols and unit == self._applied_unit:
             return
         self._cols = cols
+        self._applied_unit = unit
         for card in self.cards:
             self._grid.removeWidget(card)
         if self._sparse:
-            self._relayout_sparse(cols)
+            self._relayout_sparse(cols, unit)
             return
         for col in range(self.MAX_COLUMNS + 2):
             # +2 clears sparse-mode leftovers if a page ever flips modes —
@@ -970,9 +979,26 @@ class CategoryPage(QWidget):
         for i, card in enumerate(self._visible):
             self._grid.addWidget(card, i // cols, i % cols)
 
-    def _relayout_sparse(self, cols: int):
-        """Centered, width-capped composition for a page of ≤3 cards: the
-        cards sit in fixed SPARSE_CARD_W columns between two stretch
+    def _sparse_unit(self) -> int:
+        """The ONE column width every sparse card shares.
+
+        A column minimum is a floor, not a size: an unstretched column
+        still grows to the widest sizeHint it contains. The Software
+        Catalog hero carries a longer description than the cards beside
+        it, so only ITS column grew and a row meant to read as a set of
+        matching tiles shipped at 526px next to 430px.
+
+        Measured off sizeHint, NOT minimumSizeHint — the minimum is what a
+        card can be squeezed to (~214px, with its description wrapped
+        hard), which is not what the column actually resolves to and left
+        the mismatch in place."""
+        widest = max((c.sizeHint().width() for c in self.cards),
+                     default=self.SPARSE_CARD_W)
+        return max(self.SPARSE_CARD_W, widest)
+
+    def _relayout_sparse(self, cols: int, unit: int):
+        """Centered, equal-width composition for a page of ≤3 cards: the
+        cards sit in equal fixed-width columns between two stretch
         gutters, top-anchored with the slack below (the dashboard's v1.0
         row rule) — never two slabs stretched across the full canvas,
         never a row floating in the vertical middle."""
@@ -983,7 +1009,7 @@ class CategoryPage(QWidget):
         self._grid.setColumnStretch(0, 1)
         self._grid.setColumnStretch(n + 1, 1)
         for col in range(1, n + 1):
-            self._grid.setColumnMinimumWidth(col, self.SPARSE_CARD_W)
+            self._grid.setColumnMinimumWidth(col, unit)
         n_rows = (len(self._visible) + n - 1) // n
         for row in range(max(self._grid.rowCount(), n_rows) + 1):
             self._grid.setRowStretch(row, 1 if row == n_rows else 0)
@@ -1921,21 +1947,27 @@ class PulseApp(QMainWindow):
             else:
                 self.toasts.show("info", "No updates were selected — nothing to update.", 3500)
                 return
-        elif item.get("devhub"):
-            dialog = DevHubSelectorDialog(self, self.theme.t, DEV_HUB_GROUPS, DEV_HUB_BUNDLES)
+        elif item.get("catalog"):
+            # THE unified software hub — every installable app behind one
+            # card, tab-filtered by sub-category. Hands back exactly what
+            # the old per-pack selectors did, so everything downstream
+            # (concurrency guard, live console, toasts) is unchanged.
+            dialog = SoftwareCatalogDialog(
+                self, item, self.theme.t,
+                SOFTWARE_CATALOG, CATALOG_BUNDLES, CATALOG_BUNDLE_SECTION)
             if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
                 return
             if dialog.local_installer:
-                # A per-tool "⋯" wizard resolved to Path C (a local file) —
+                # A per-app "⋯" wizard resolved to Path C (a local file) —
                 # run the generic single-installer task instead of the bulk
-                # InstallDevHub deploy.
+                # InstallCatalogApps deploy.
                 local_installer = dialog.local_installer
                 item = {**item, "task": "InstallLocalFile"}
             elif dialog.selected_ids:
                 app_ids = dialog.selected_ids
             else:
                 self.toasts.show(
-                    "info", "No tools were selected — nothing to deploy.", 3500)
+                    "info", "No apps were selected — nothing to deploy.", 3500)
                 return
         elif item.get("wizard") == "office":
             wizard = OfficeWizardDialog(self, self.theme.t)
@@ -1951,21 +1983,6 @@ class PulseApp(QMainWindow):
             else:
                 self.toasts.show(
                     "info", "Office installation cancelled — no files were selected.", 3500)
-                return
-        elif item.get("apps"):
-            selector = AppSelectorDialog(self, item, self.theme.t)
-            if self._exec_dialog(selector) != QDialog.DialogCode.Accepted:
-                return
-            if selector.local_installer:
-                # A per-app "⋯" wizard resolved to Path C (a local file) —
-                # run the generic single-installer task instead of the
-                # bulk winget deploy. Same contract as the Dev Hub branch.
-                local_installer = selector.local_installer
-                item = {**item, "task": "InstallLocalFile"}
-            elif selector.selected_ids:
-                app_ids = selector.selected_ids
-            else:
-                self.toasts.show("info", "No apps were selected — nothing to deploy.", 3500)
                 return
         elif item.get("confirm"):
             dialog = ConfirmDialog(self, item, self.theme.t)

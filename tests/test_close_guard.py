@@ -51,7 +51,7 @@ def armed(window, monkeypatch):
     thread, worker = _FakeThread(True), _FakeWorker()
     window._thread = thread
     window._worker = worker
-    window._running_item = {"title": "Install Essential Apps", "task": "InstallEssentialApps"}
+    window._running_item = {"title": "Software Catalog", "task": "InstallCatalogApps"}
     yield window, thread, worker
     window._thread, window._worker, window._running_item = original
 
@@ -109,7 +109,7 @@ class TestPromptAppears:
         dialog = seen.get("dialog")
         assert isinstance(dialog, CloseConfirmDialog)
         labels = " ".join(lbl.text() for lbl in dialog.findChildren(QLabel))
-        assert "Install Essential Apps" in labels, (
+        assert "Software Catalog" in labels, (
             f"the prompt did not name the running task; labels were: {labels!r}")
 
     def test_declining_does_not_persist_geometry(self, armed, monkeypatch):

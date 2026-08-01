@@ -98,9 +98,10 @@ $Runtimes = @(
 #  DEVELOPER & UNIVERSITY HUB CATALOG
 #  Precisely separated from every other app list above - zero hardware
 #  drivers, zero general-purpose apps. Grouped into five sections purely
-#  for the Dev Hub selector's section headers; $Apps_DevHubAll (the flat
-#  concatenation, order preserved) is what Smart-Deploy/bulk-install
-#  actually iterates. Mirrored group-for-group by DEV_HUB_GROUPS in
+#  for section headers; $Apps_DevHubAll (the flat concatenation, order
+#  preserved) is what Smart-Deploy/bulk-install actually iterates, and it
+#  is also the "Development & Tools" slice of $Apps_CatalogAll. Mirrored
+#  group-for-group by SOFTWARE_CATALOG's "development" section in
 #  menu_structure.py.
 # ============================================================
 $Apps_DevRuntimes = @(
@@ -134,9 +135,44 @@ $Apps_DevData = @(
 $Apps_DevContainers = ,@("Docker.DockerDesktop", "Docker Desktop")
 $Apps_DevHubAll = @() + $Apps_DevRuntimes + $Apps_DevIDEs + $Apps_DevAI + $Apps_DevData + $Apps_DevContainers
 
-# Pre-configured quick-select bundles for the Dev Hub's checkbox selector -
-# each just ticks the listed AppIds; nothing is forced, the user can still
-# deselect any of them before deploying. Mirrored by DEV_HUB_BUNDLES.
+# ============================================================
+#  UNIFIED SOFTWARE CATALOG (v1.0 RC)
+#  THE flat list every GUI software install now deploys from - the single
+#  hub behind menu_structure.py's SOFTWARE_CATALOG and the one
+#  InstallCatalogApps dispatcher case.
+#
+#  Software Management used to spread installable apps across FOUR
+#  separate cards (Essential Apps / Dev Hub / Gaming / Diagnostics) with
+#  four dispatcher cases and four selector dialogs, so "where do I get
+#  Docker" and "where do I get VLC" had different answers and nothing let
+#  you pick one of each in a single pass. The GUI now shows one catalog
+#  with a sub-category tab bar; the tabs are a VIEW over this list, not
+#  four lists wearing a hat.
+#
+#  Order is load-bearing: it mirrors SOFTWARE_CATALOG's section order
+#  (Browsers & Media -> Development & Tools -> Gaming Launchers ->
+#  System Runtimes & Utilities) so the deploy log reads in the same order
+#  the user saw on screen. The per-category arrays above are NOT dead -
+#  console mode's App Deployment Hub (20-Menus.ps1) still walks them
+#  category by category, which is the right shape for a numbered text
+#  menu; only the GUI collapsed to one catalog.
+# ============================================================
+$Apps_CatalogAll = @() + $Apps_Basic + $Apps_DevHubAll + $Apps_Gaming + $Runtimes + $Apps_Tools
+
+# The two hardware-matched EXTRAS Smart-Deploy can append (a GPU vendor
+# suite, a motherboard suite) used to ride along unconditionally with the
+# Gaming and Diagnostics cards respectively. In a unified catalog they
+# must stay tied to INTENT, not fire on every deploy: picking only VLC
+# should not silently pull in an NVIDIA suite. InstallCatalogApps appends
+# each extra only when the user's selection actually intersects the list
+# that promised it.
+$Script:CatalogGpuExtraTriggerIds  = @($Apps_Gaming | ForEach-Object { $_[0] })
+$Script:CatalogMoboExtraTriggerIds = @($Apps_Tools  | ForEach-Object { $_[0] })
+
+# Pre-configured quick-select bundles for the Software Catalog's
+# Development & Tools tab - each just ticks the listed AppIds; nothing is
+# forced, the user can still deselect any of them before deploying.
+# Mirrored by CATALOG_BUNDLES in menu_structure.py.
 $Script:DevHubBundles = @(
     @{ Key = "java-university"; Icon = "🎓"; Title = "Java / University Stack"
        AppIds = @("EclipseAdoptium.Temurin.21.JDK", "Apache.NetBeans", "JetBrains.IntelliJIDEA.Community", "Git.Git", "Microsoft.VisualStudioCode") }
@@ -417,9 +453,8 @@ if (-not (Test-Path $Script:StartupBackupFolder) -and (Test-Path "$env:USERPROFI
 #  dispatcher so the user gets one clear message instead of a pile of
 #  access-denied noise)
 #
-#  Software-install/update tasks (InstallEssentialApps, InstallDevHub,
-#  InstallGamingApps, InstallDiagnosticApps, InstallRuntimes,
-#  UpdateSelectedApps) are deliberately NOT in this list: winget and every
+#  Software-install/update tasks (InstallCatalogApps, UpdateSelectedApps)
+#  are deliberately NOT in this list: winget and every
 #  individual installer already handle their own elevation needs (a
 #  machine-scope MSI still triggers its own UAC consent prompt when it
 #  genuinely needs one), and blanket-requiring Pulse itself to be

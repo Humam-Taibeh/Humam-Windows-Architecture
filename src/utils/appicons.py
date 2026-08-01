@@ -3,13 +3,29 @@ src/utils/appicons.py
 
 APP ICON RESOLUTION for Software Management rows.
 
-Every catalog row (AppSelectorDialog, Dev Hub, Update Center) shows a
-28px icon beside the app's name. Three sources, tried in order:
+Every catalog row (SoftwareCatalogDialog, Update Center) shows a 28px
+icon beside the app's name. Three sources, tried in order:
 
-  1. A BUNDLED BRAND MARK — assets/appicons/<AppId>.svg, fetched at BUILD
-     time by tools/fetch_app_icons.py from Simple Icons and rendered here
-     as vector, so it stays crisp at any size or DPI. Painted in the
-     brand's official colour, subject to the contrast guard below.
+  1. A BUNDLED VECTOR MARK — assets/appicons/<AppId>.svg, rendered here as
+     vector so it stays crisp at any size or DPI, painted in the mark's
+     own colour subject to the contrast guard below. Two kinds live here,
+     and the manifest's "drawn" flag distinguishes them:
+
+       - a BRAND mark, fetched at BUILD time by tools/fetch_app_icons.py
+         from Simple Icons — the vendor's authentic logo;
+
+       - a PULSE-DRAWN pictogram for the ten catalog apps that have no
+         authentic mark in any open, licensed set (every Microsoft product
+         mark was withdrawn from Simple Icons under Microsoft's trademark
+         policy; Cursor, BlueStacks, Open WebUI and the four hardware
+         utilities were never in it). These describe what the software
+         does — a code bracket for an editor, a CPU die for CPU-Z — rather
+         than imitating a logo, because an approximated Edge swirl drawn
+         from memory and shipped as Microsoft's own artwork would be a
+         fabrication, and the rule this module is built on is that a WRONG
+         logo is worse than no logo. What they buy is the thing that
+         actually mattered: every row is a crisp, distinct vector, so no
+         row reads as broken or unfinished.
 
      THIS OUTRANKS THE INSTALLED APP'S OWN ICON, which is not the obvious
      ordering and was arrived at by looking at the result. Windows' icon
@@ -24,10 +40,10 @@ Every catalog row (AppSelectorDialog, Dev Hub, Update Center) shows a
 
   2. THE INSTALLED APP'S OWN ICON — for software with no bundled mark
      that is already on this machine. Full colour, drawn by the vendor,
-     read out of the app's own binary. This is what covers the entries
-     Simple Icons cannot supply (see tools/fetch_app_icons.py's map): Edge
-     ships with Windows and VS Code is usually installed, so both
-     typically land here with their authentic icon.
+     read out of the app's own binary. Every CATALOG app now has a bundled
+     mark, so this tier no longer fires for them; it still covers the
+     Update Center, which lists whatever winget reports as upgradable and
+     is therefore not limited to the catalog.
 
   3. A NEUTRAL GLYPH — a soft rounded "package" mark in the theme's muted
      tone. This replaced the LETTER MONOGRAM plaques, which put a bare
@@ -35,6 +51,10 @@ Every catalog row (AppSelectorDialog, Dev Hub, Update Center) shows a
      belonged and read as an unfinished placeholder. A neutral mark that
      is identical for every unknown app says "no logo available"
      honestly; an invented letter tile pretends to be branding.
+
+     No catalog row reaches this any more (tests/test_contract.py pins
+     that), but it stays as the honest floor for the Update Center's
+     off-catalog entries.
 
 PULSE NEVER FETCHES ANYTHING. Step 2 reads files committed to the repo;
 the network lives entirely in the build-time tool. An elevated

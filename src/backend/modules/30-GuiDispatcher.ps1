@@ -170,8 +170,40 @@ function Invoke-GuiTask {
         switch ($TaskName) {
 
             # ============ 1. SOFTWARE MANAGEMENT ============
-            "InstallEssentialApps"   { Invoke-GuiBulkDeploy $Apps_Basic "Essential Apps" -SelectedIds $Script:SelectedAppIds; break }
-            "InstallDevHub"          { Invoke-GuiBulkDeploy $Apps_DevHubAll "Developer & University Hub" -SelectedIds $Script:SelectedAppIds; break }
+            # ONE case for every catalog install (v1.0 RC). The GUI's four
+            # separate app cards - Essential Apps, Dev Hub, Gaming,
+            # Diagnostics - collapsed into a single tabbed Software
+            # Catalog, so a selection can now span sub-categories (VLC +
+            # Docker + Steam in one pass) and there is nothing left for
+            # four sibling cases to disambiguate. $Apps_CatalogAll is the
+            # flat union in on-screen order; -SelectedIds narrows it to
+            # exactly what the user ticked, which is the only narrowing
+            # this task ever needed.
+            #
+            # The hardware-matched extras stay INTENT-GATED - see
+            # $Script:CatalogGpuExtraTriggerIds in 01-Catalogs.ps1. Under
+            # the old cards "install a GPU suite alongside" was implied by
+            # clicking the Gaming card at all; in one catalog that implicit
+            # consent is gone, so each extra is appended only when the
+            # selection actually reaches into the list that promised it.
+            "InstallCatalogApps" {
+                $HW = Hardware-Check
+                $Picked = $Script:SelectedAppIds
+                $WantsGaming = ($Picked.Count -eq 0) -or (@($Picked | Where-Object { $Script:CatalogGpuExtraTriggerIds  -contains $_ }).Count -gt 0)
+                $WantsDiag   = ($Picked.Count -eq 0) -or (@($Picked | Where-Object { $Script:CatalogMoboExtraTriggerIds -contains $_ }).Count -gt 0)
+                # At most ONE extra per run: Invoke-GuiBulkDeploy takes a
+                # single -ExtraAppId pair, and a selection spanning both
+                # gaming and diagnostics is the uncommon case. GPU wins -
+                # it is the one users notice missing.
+                if ($WantsGaming -and $HW.GPUApp) {
+                    Invoke-GuiBulkDeploy $Apps_CatalogAll "Software Catalog" -ExtraAppId $HW.GPUApp -ExtraAppName "GPU Software ($($HW.GPUName))" -SelectedIds $Picked
+                } elseif ($WantsDiag -and $HW.MoboApp) {
+                    Invoke-GuiBulkDeploy $Apps_CatalogAll "Software Catalog" -ExtraAppId $HW.MoboApp -ExtraAppName "Motherboard Suite ($($HW.MoboName))" -SelectedIds $Picked
+                } else {
+                    Invoke-GuiBulkDeploy $Apps_CatalogAll "Software Catalog" -SelectedIds $Picked
+                }
+                break
+            }
             "InstallLocalFile" {
                 if ([string]::IsNullOrWhiteSpace($LocalInstallerPath)) {
                     Write-Output "##PULSE##ERROR|No installer file was supplied."
@@ -186,25 +218,13 @@ function Invoke-GuiTask {
                 }
                 break
             }
-            "InstallGamingApps" {
-                $HW = Hardware-Check
-                if ($HW.GPUApp) {
-                    Invoke-GuiBulkDeploy $Apps_Gaming "Gaming Launchers" -ExtraAppId $HW.GPUApp -ExtraAppName "GPU Software ($($HW.GPUName))" -SelectedIds $Script:SelectedAppIds
-                } else {
-                    Invoke-GuiBulkDeploy $Apps_Gaming "Gaming Launchers" -SelectedIds $Script:SelectedAppIds
-                }
-                break
-            }
-            "InstallDiagnosticApps" {
-                $HW = Hardware-Check
-                if ($HW.MoboApp) {
-                    Invoke-GuiBulkDeploy $Apps_Tools "Hardware Diagnostics" -ExtraAppId $HW.MoboApp -ExtraAppName "Motherboard Suite ($($HW.MoboName))" -SelectedIds $Script:SelectedAppIds
-                } else {
-                    Invoke-GuiBulkDeploy $Apps_Tools "Hardware Diagnostics" -SelectedIds $Script:SelectedAppIds
-                }
-                break
-            }
-            "InstallRuntimes"        { Invoke-GuiBulkDeploy $Runtimes "Core API Runtimes" -SelectedIds $Script:SelectedAppIds; break }
+            # (InstallEssentialApps / InstallDevHub / InstallGamingApps /
+            #  InstallDiagnosticApps / InstallRuntimes all retired into
+            #  InstallCatalogApps above - the GUI no longer has four app
+            #  cards to route. Console mode never used these cases; it
+            #  walks $Apps_Basic / $Apps_Gaming / $Apps_Tools / $Runtimes
+            #  directly through Process-AppCategory in 20-Menus.ps1, so
+            #  those arrays remain live.)
             # (InstallOfficeApps retired: Microsoft Teams was dropped and
             #  OneDrive's GUI install/restore now runs through RestoreOneDrive
             #  under System Tools & Utilities. $Apps_OfficeCompanions survives
