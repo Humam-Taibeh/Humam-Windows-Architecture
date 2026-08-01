@@ -42,6 +42,14 @@ _PROGRAMMATIC = {
     "RevertDarkMode", "RevertDisableMouseAccel", "RevertMinimalistTaskbar",
     "RevertClassicContextMenu", "RevertGameMode", "RevertDisableTelemetry",
     "RevertDisableAdvertisingID", "RevertDisableActivityHistory",
+    # v1.0+ Phase 1 read-only inspectors. Same shape as HealthReport and
+    # ActivationStatus: the CARD is a GUI-local action ("@power_health",
+    # "@restore_points") because the report is rendered by a dialog that
+    # runs its own PowerShellTask, so these task names are reached from
+    # widgets.py rather than from a card's `task`. (StorageScan is NOT
+    # here — its card declares the task name directly, exactly like the
+    # Startup Manager's StartupReport.)
+    "PowerHealth", "RestorePoints",
 }
 
 
@@ -497,6 +505,93 @@ def test_activation_module_is_read_only():
         "own job, reached through the Settings deep link in the dialog.")
 
 
+_INSPECTORS = os.path.join(_ROOT, "src/backend/modules/14-Inspectors.ps1")
+
+
+class TestInspectorsAreReadOnly:
+    """14-Inspectors.ps1's hard contract (v1.0+ Phase 1).
+
+    Battery health, restore points and the storage scan all promise the
+    same thing in their headers: they read and format, and change nothing.
+    Two of them are one keyword away from being genuinely destructive — a
+    storage analyzer knows exactly where the biggest files are, and a
+    restore-point browser sits beside the API that reverts a machine — so
+    the promise is asserted rather than trusted.
+    """
+
+    @staticmethod
+    def _code() -> str:
+        source = open(_INSPECTORS, encoding="utf-8-sig").read()
+        code = "\n".join(line for line in source.splitlines()
+                         if not line.lstrip().startswith("#"))
+        return re.sub(r"<#.*?#>", "", code, flags=re.S)
+
+    def test_the_module_was_parsed(self):
+        assert "Get-PulseStorageScan" in self._code(), "the scan didn't parse"
+
+    def test_no_mutation_primitives(self):
+        forbidden = [
+            "Set-ItemProperty", "New-ItemProperty", "Remove-ItemProperty",
+            "New-Item", "Remove-Item", "Set-Item", "Set-Service",
+            "Set-Content", "Out-File", "Move-Item", "Copy-Item",
+            "Clear-Content", "reg add", "reg delete",
+            "Invoke-WebRequest", "Invoke-Expression", "Start-Process",
+        ]
+        code = self._code().lower()
+        found = sorted({c for c in forbidden if c.lower() in code})
+        assert not found, (
+            f"14-Inspectors.ps1 contains state-changing call(s): {found}. "
+            "These are REPORTS; the actions they suggest belong to the "
+            "Windows surfaces the dialogs hand off to.")
+
+    def test_storage_scan_cannot_delete(self):
+        """The decision recorded in the roadmap: Pulse finds the space, it
+        does not free it. Explorer owns the delete, with its own undo, its
+        own confirm and the Recycle Bin."""
+        code = self._code().lower()
+        for call in ("remove-item", "[io.file]::delete", "recycle"):
+            assert call not in code, (
+                f"the storage analyzer references {call!r} — it is strictly "
+                "read-only and hands paths to Explorer instead")
+
+    def test_restore_browser_cannot_roll_back(self):
+        """Listing checkpoints is a report; performing a System Restore is
+        a reboot-time operation owned by Microsoft's signed wizard."""
+        code = self._code().lower()
+        for call in ("restore-computer", "enable-computerrestore",
+                     "disable-computerrestore", "checkpoint-computer"):
+            assert call not in code, (
+                f"14-Inspectors.ps1 calls {call!r} — the browser reports "
+                "checkpoints and launches rstrui.exe; it never restores.")
+
+    def test_power_inspector_does_not_change_plans(self):
+        """Ultimate Power Plan (06-Tweaks) is what CHANGES a scheme. If the
+        inspector could too, the two would disagree about current state."""
+        code = self._code().lower()
+        for call in ("powercfg", "/setactive", "set-ciminstance"):
+            assert call not in code, (
+                f"14-Inspectors.ps1 references {call!r} — it reports the "
+                "active plan; changing one belongs to the tweak module.")
+
+
+def test_inspector_dialogs_never_delete(qapp):
+    """The GUI half of the same contract. A 'Reveal' that quietly became a
+    'Delete' would be invisible to the backend scan above."""
+    source = open(os.path.join(_ROOT, "src/frontend/widgets.py"),
+                  encoding="utf-8").read()
+    start = source.index("class StorageAnalyzerDialog")
+    end = source.index("class CloseConfirmDialog")
+    body = source[start:end]
+    for call in ("os.remove", "shutil.rmtree", "os.unlink", "send2trash",
+                 "QFile.remove"):
+        assert call not in body, (
+            f"StorageAnalyzerDialog references {call} — it reveals paths in "
+            "Explorer and never removes anything itself")
+    # and the reveal must be anchored, not a PATH search
+    assert "explorer.exe" in body and "SystemRoot" in body, (
+        "the Explorer hand-off must use an absolute System32-anchored path")
+
+
 def test_activation_dialog_hands_off_to_settings_only():
     """The frontend half of the activation contract (v1.0). The dialog's
     one actionable hand-off is Windows' own Settings page, opened as a URI
@@ -655,6 +750,70 @@ class TestThemes:
                 value = tokens[key]
                 assert re.fullmatch(r"#[0-9a-fA-F]{6}", value), (
                     f"{name}.{key} = {value!r} is not an opaque hex colour")
+
+    #: (text token, surface token, floor). Body copy is held to WCAG AA
+    #: (4.5:1); the muted and faint tiers are captions and secondary
+    #: labels at a larger effective weight, so they are held to the 3:1
+    #: large-text floor. Below those numbers the light theme washes out —
+    #: which is exactly how the v10 palette shipped, at 1.86-2.64:1.
+    _CONTRAST_PAIRS = [
+        ("text",       "dialog_bg", 4.5),
+        ("text",       "card",      4.5),
+        ("text",       "panel",     4.5),
+        ("text_muted", "panel",     3.0),
+        ("text_muted", "card",      3.0),
+        ("text_muted", "dialog_bg", 3.0),
+        ("text_faint", "card",      3.0),
+        ("text_faint", "dialog_bg", 3.0),
+    ]
+
+    @staticmethod
+    def _relative_luminance(color) -> float:
+        channels = []
+        for raw in (color.redF(), color.greenF(), color.blueF()):
+            channels.append(raw / 12.92 if raw <= 0.03928
+                            else ((raw + 0.055) / 1.055) ** 2.4)
+        r, g, b = channels
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def _contrast(self, fg, bg) -> float:
+        lf, lb = self._relative_luminance(fg), self._relative_luminance(bg)
+        hi, lo = max(lf, lb), min(lf, lb)
+        return (hi + 0.05) / (lo + 0.05)
+
+    def test_text_clears_its_contrast_floor_in_both_themes(self, qapp):
+        """Contrast regression guard (v1.0+ Phase 0).
+
+        A palette edit that looks fine on the author's monitor in their
+        preferred theme is the single easiest way to make the OTHER theme
+        unreadable, and nothing about it raises. This measures the pairs
+        the app actually paints, in both modes, against the floors the
+        v11 palette was solved for.
+        """
+        from frontend import theme as TH
+
+        failures = []
+        checked = 0
+        for name, tokens in self._themes(qapp).items():
+            for fg_key, bg_key, floor in self._CONTRAST_PAIRS:
+                # A missing token is a renamed token, not an exemption —
+                # skipping quietly is how this whole test becomes a no-op.
+                assert fg_key in tokens and bg_key in tokens, (
+                    f"{name}: contrast pair ({fg_key}, {bg_key}) names a "
+                    "token that no longer exists — update _CONTRAST_PAIRS")
+                checked += 1
+                # Surfaces may be rgba() over the canvas; composite them
+                # onto the solid shell colour first, or a translucent card
+                # measures against nothing and reports a fictional number.
+                bg = TH.to_qcolor(TH.blend(tokens["bg_solid"], tokens[bg_key]))
+                fg = TH.to_qcolor(tokens[fg_key])
+                ratio = self._contrast(fg, bg)
+                if ratio < floor:
+                    failures.append(
+                        f"{name}: {fg_key} on {bg_key} = {ratio:.2f}:1 "
+                        f"(floor {floor}:1)")
+        assert checked == 2 * len(self._CONTRAST_PAIRS), "not every pair ran"
+        assert not failures, "contrast floor breached:\n  " + "\n  ".join(failures)
 
 
 def test_every_bound_shortcut_is_documented(window):

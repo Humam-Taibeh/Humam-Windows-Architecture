@@ -380,7 +380,8 @@ class PowerShellTask(QObject):
                  app_ids: list[str] | None = None, dry_run: bool = False,
                  office_setup: str | None = None, office_config: str | None = None,
                  local_installer_path: str | None = None,
-                 startup_item_id: str | None = None):
+                 startup_item_id: str | None = None,
+                 scan_path: str | None = None):
         super().__init__()
         self.ps1_path = ps1_path
         self.task_name = task_name
@@ -393,6 +394,8 @@ class PowerShellTask(QObject):
         # Updater") was split into fragments that matched no item, so the
         # entry simply could not be disabled and the GUI blamed a stale list.
         self.startup_item_id = startup_item_id
+        # Storage Analyzer's scan root — see the argv note in _build_argv.
+        self.scan_path = scan_path
         # Resolved by the Office ODT wizard (widgets.OfficeWizardDialog)
         # before this worker is ever constructed — both set, or both None.
         self.office_setup = office_setup
@@ -466,6 +469,13 @@ class PowerShellTask(QObject):
         if self.local_installer_path:
             argv += ["-LocalInstallerPath",
                      validate_backend_arg("The installer path", self.local_installer_path)]
+        if self.scan_path:
+            # Its OWN parameter, never folded into -AppIds: that one is a
+            # comma-separated LIST and a Windows path may legitimately
+            # contain a comma ("C:\\Program Files\\Acme, Inc\\"), which
+            # would be split into fragments matching no directory.
+            argv += ["-ScanPath",
+                     validate_backend_arg("The scan path", self.scan_path)]
         if self.dry_run:
             argv.append("-WhatIf")
         return argv

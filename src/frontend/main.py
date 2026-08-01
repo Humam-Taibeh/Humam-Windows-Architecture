@@ -60,8 +60,8 @@ from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
     CATALOG_BUNDLE_SECTION, CATALOG_BUNDLES, CATEGORIES, SOFTWARE_CATALOG,
-    accent_for_task, category_operations, find_action_anywhere, hub_items,
-    iter_leaf_items, recurring_days, requires_admin,
+    accent_for_task, category_bands, category_operations, find_action_anywhere,
+    hub_items, iter_leaf_items, recurring_days, requires_admin,
 )
 from frontend.widgets import (  # noqa: E402
     ActivationStatusDialog, ActivityDrawer, AmbientGlow,
@@ -69,10 +69,11 @@ from frontend.widgets import (  # noqa: E402
     CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
     ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog, MeterBar,
     NavButton,
-    NavPill, OfficeWizardDialog, PlaybookDialog, PulseDialog,
-    RecentOperationsPanel, RevertChoiceDialog,
+    NavPill, OfficeWizardDialog, PlaybookDialog, PowerHealthDialog,
+    PulseDialog, RecentOperationsPanel, RestorePointDialog, RevertChoiceDialog,
     ResponsiveGridHost, ShortcutSheetDialog, SoftwareCatalogDialog,
-    StartupManagerDialog, TitleBar, UpdateCenterDialog, refit_dialog,
+    StartupManagerDialog, StorageAnalyzerDialog, TitleBar, UpdateCenterDialog,
+    refit_dialog,
 )
 from frontend.playbooks import PlaybookRunner, load_playbooks  # noqa: E402
 
@@ -720,14 +721,25 @@ class CategoryPage(QWidget):
     MAX_COLUMNS = 4
     MIN_CARD_W = 288   # v9.1: tighter cards → more columns, higher density
 
-    # v1.0 SPARSE MODE — pages with this many cards or fewer (Automation:
-    # 2) trade the fill-the-canvas grid for a centered, width-capped row.
-    # The equal-stretch grid is the right answer for 5+ cards; for two it
+    # SPARSE MODE — pages with this many cards or fewer trade the
+    # fill-the-canvas grid for a centered, width-capped row. The
+    # equal-stretch grid is the right answer for 3+ cards; for two it
     # produced two ~700px slabs floating mid-canvas with a void on every
     # side (see the v1.0 audit renders). Centered at a readable width and
     # top-anchored, the same two cards read as a deliberate composition.
-    SPARSE_MAX_CARDS = 3
+    #
+    # v1.0+ : 3 -> 2. The threshold was tuned for the 2-card Automation
+    # page, which no longer exists (it merged into Utilities & Tools). At
+    # 3 the only page it still caught was Software Management — a page it
+    # was never designed for, and one whose hero + 2 cards read better in
+    # the normal balanced grid. No page has 2 cards today, so this is now
+    # a dormant guard for a future short page rather than live styling.
+    SPARSE_MAX_CARDS = 2
     SPARSE_CARD_W = 430
+
+    #: Grid row the filtered-empty label is parked on — past any plausible
+    #: number of band-header + card rows a category page can produce.
+    _EMPTY_ROW = 900
 
     #: (label, badge-state key) for the header's status filter. "" is the
     #: unfiltered default; every other key is a state GlassCard can badge
@@ -748,6 +760,8 @@ class CategoryPage(QWidget):
         self.category = category
         self.cards: list[GlassCard] = []
         self._visible: list[GlassCard] = []
+        #: (header_widget | None, cards) per section band, render order.
+        self._bands: list[tuple[QWidget | None, list[GlassCard]]] = []
         self._t = t
         self._cols = 0
         self._applied_unit = 0     # see _relayout / _sparse_unit
@@ -834,22 +848,34 @@ class CategoryPage(QWidget):
         # the grid re-columns off its OWN width — see ResponsiveGridHost
         grid_host.resized.connect(lambda w: self._relayout(self._columns_for(w)))
 
-        for idx, item in enumerate(category["items"]):
-            # v7 bento: the first card of a landing page (Software
-            # Management) is the featured hero — squircle + Aurora lit edge on
-            # the top elevation tier. Reserved for the two card kinds that
-            # OPEN SOMETHING rather than acting immediately — a hub container
-            # or the software catalog — so dense action pages still get the
-            # balanced fill grid and no destructive one-click tweak is ever
-            # dressed as the page's centrepiece.
-            featured = idx == 0 and bool(item.get("hub") or item.get("catalog"))
-            card = GlassCard(item, category["accent"], t, featured=featured)
-            card.clicked.connect(
-                lambda it=item, c=card: self.task_requested.emit(it, c))
-            card.navigate.connect(
-                lambda direction, c=card: _focus_neighbour(
-                    self._visible, self._cols, c, direction))
-            self.cards.append(card)
+        # SECTION BANDS (v1.0+): one band per titled group, or a single
+        # untitled band for a flat category — see menu_structure.
+        # category_bands. Cards stay in ONE flat self.cards list in render
+        # order, so filtering, badge refresh and arrow-key navigation are
+        # completely unaware that bands exist; only _relayout draws them.
+        idx = 0
+        for band_title, band_items in category_bands(category):
+            band_cards: list[GlassCard] = []
+            for item in band_items:
+                # v7 bento: the first card of a landing page (Software
+                # Management) is the featured hero — squircle + Aurora lit
+                # edge on the top elevation tier. Reserved for the two card
+                # kinds that OPEN SOMETHING rather than acting immediately —
+                # a hub container or the software catalog — so dense action
+                # pages still get the balanced fill grid and no destructive
+                # one-click tweak is ever dressed as the page's centrepiece.
+                featured = idx == 0 and bool(item.get("hub") or item.get("catalog"))
+                card = GlassCard(item, category["accent"], t, featured=featured)
+                card.clicked.connect(
+                    lambda it=item, c=card: self.task_requested.emit(it, c))
+                card.navigate.connect(
+                    lambda direction, c=card: _focus_neighbour(
+                        self._visible, self._cols, c, direction))
+                self.cards.append(card)
+                band_cards.append(card)
+                idx += 1
+            header = self._band_header(band_title, t) if band_title else None
+            self._bands.append((header, band_cards))
         # Everything below re-columns over VISIBLE cards only, so filtering
         # reflows the grid instead of leaving holes where hidden cards were.
         self._visible = list(self.cards)
@@ -864,13 +890,46 @@ class CategoryPage(QWidget):
         self._empty = QLabel("No operations match that filter.")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty.hide()
-        self._grid.addWidget(self._empty, self.MAX_COLUMNS + 1, 0, 1, self.MAX_COLUMNS)
+        # Parked on a row far below any real content. It used to sit at
+        # MAX_COLUMNS+1 (row 5), which was safely past the end only while a
+        # page was a single unbanded block; a banded page interleaves header
+        # rows with card rows and reaches row 5 easily, which would have
+        # dropped the empty-state label into the middle of the grid.
+        self._grid.addWidget(self._empty, self._EMPTY_ROW, 0, 1, self.MAX_COLUMNS)
 
         self._scroll.setWidget(grid_host)
         self._scroll.viewport().setStyleSheet("background: transparent;")
         lay.addWidget(self._scroll, 1)
 
         self.apply_theme(t)
+
+    def _band_header(self, title: str, t: dict) -> QWidget:
+        """A section band's header: an accent-tinted title plus a 1px rule
+        fading out to the right.
+
+        Byte-for-byte the same construction a grouped HubDialog uses
+        (hub_group_header_qss / hub_group_rule_qss) — a band on a page and
+        a group inside a hub are the same idea at two scales, and giving
+        them two different looks would say they were different things.
+
+        Returned as ONE container widget so the grid can add, remove and
+        hide the title and its rule as a single unit; hiding them
+        separately is how a filtered-empty band leaves a stray rule
+        floating over the cards of the band below it.
+        """
+        host = QWidget()
+        host.setStyleSheet("background: transparent;")
+        row = QHBoxLayout(host)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+        label = QLabel(title)
+        label.setObjectName("bandTitle")
+        row.addWidget(label)
+        rule = QFrame()
+        rule.setObjectName("bandRule")
+        rule.setFixedHeight(1)
+        row.addWidget(rule, 1)
+        return host
 
     # -- responsive grid ------------------------------------------
     def _columns_for(self, viewport_w: int) -> int:
@@ -950,6 +1009,9 @@ class CategoryPage(QWidget):
         self._applied_unit = unit
         for card in self.cards:
             self._grid.removeWidget(card)
+        for header, _cards in self._bands:
+            if header is not None:
+                self._grid.removeWidget(header)
         if self._sparse:
             self._relayout_sparse(cols, unit)
             return
@@ -973,11 +1035,38 @@ class CategoryPage(QWidget):
         # eleven at any time, and those three floated in the middle of the
         # canvas with dead space above AND below. Anchoring to the top and
         # pushing all slack below reads as a deliberate result set.
-        n_rows = (len(self._visible) + cols - 1) // cols
-        for row in range(max(self._grid.rowCount(), n_rows) + 1):
-            self._grid.setRowStretch(row, 1 if row == n_rows else 0)
-        for i, card in enumerate(self._visible):
-            self._grid.addWidget(card, i // cols, i % cols)
+        shown = {id(c) for c in self._visible}
+        row = 0
+        for header, band_cards in self._bands:
+            visible_here = [c for c in band_cards if id(c) in shown]
+            # A band header lives only as long as one of its OWN cards
+            # does. Filtering to "Action due" can empty three of four
+            # bands, and a surviving title over the next band's cards
+            # mislabels them — worse than the wall the bands replaced.
+            if header is not None:
+                header.setVisible(bool(visible_here))
+                if visible_here:
+                    self._grid.addWidget(header, row, 0, 1, self.MAX_COLUMNS)
+                    row += 1
+            for i, card in enumerate(visible_here):
+                self._grid.addWidget(card, row + i // cols, i % cols)
+            if visible_here:
+                row += (len(visible_here) + cols - 1) // cols
+        # Content rows take NO stretch and one trailing row takes it all —
+        # the dashboard's rule (WelcomePage._relayout_actions), shared so
+        # every grid in the app anchors the same way.
+        #
+        # This replaces v7's equal-stretch-per-occupied-row, which existed
+        # to stop a short grid top-anchoring above a void. It solved that
+        # for a FULL page and created the mirror-image problem for a short
+        # one: cards are height-capped (CARD_MAX_H), so a stretched row
+        # cannot grow — it just centres its cards inside the slack. With
+        # the status filter a page can show three cards out of eleven at
+        # any time, and those three floated in the middle of the canvas
+        # with dead space above AND below. Anchoring to the top and pushing
+        # all slack below reads as a deliberate result set.
+        for r in range(max(self._grid.rowCount(), row) + 1):
+            self._grid.setRowStretch(r, 1 if r == row else 0)
 
     def _sparse_unit(self) -> int:
         """The ONE column width every sparse card shares.
@@ -1049,6 +1138,15 @@ class CategoryPage(QWidget):
         self._title.setStyleSheet(TH.label_qss(t, "title"))
         self._tagline.setStyleSheet(TH.label_qss(t, "tagline"))
         self._scroll.setStyleSheet(TH.scroll_area_qss(t))
+        for header, _cards in self._bands:
+            if header is None:
+                continue
+            title = header.findChild(QLabel, "bandTitle")
+            if title is not None:
+                title.setStyleSheet(TH.hub_group_header_qss(t, accent))
+            rule = header.findChild(QFrame, "bandRule")
+            if rule is not None:
+                rule.setStyleSheet(TH.hub_group_rule_qss(t, accent))
         for card in self.cards:
             card.apply_theme(t)
 
@@ -1933,6 +2031,12 @@ class PulseApp(QMainWindow):
             # open it and move on, exactly like a plain informational card.
             StartupManagerDialog(self, self.ps1_path, self.theme.t).exec()
             return
+        if item.get("storage_analyzer"):
+            # Same shape: a read-only scan that hands nothing back. It owns
+            # its own drive picker and re-scans in place, so there is no
+            # selection for the task pipeline to carry.
+            self._exec_dialog(StorageAnalyzerDialog(self, self.ps1_path, self.theme.t))
+            return
         if item.get("update_center"):
             dialog = UpdateCenterDialog(self, self.ps1_path, self.theme.t)
             if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
@@ -2133,6 +2237,15 @@ class PulseApp(QMainWindow):
             return
         if task == "@activation":
             self._open_activation_status()
+            return
+        # Read-only inspectors (Phase 1). Each runs its own PowerShellTask
+        # inside its dialog, exactly like the activation report, so opening
+        # one never occupies the shell's single-task pipeline.
+        if task == "@power_health":
+            self._exec_dialog(PowerHealthDialog(self, self.ps1_path, self.theme.t))
+            return
+        if task == "@restore_points":
+            self._exec_dialog(RestorePointDialog(self, self.ps1_path, self.theme.t))
             return
 
         desktop = resources.desktop_dir()

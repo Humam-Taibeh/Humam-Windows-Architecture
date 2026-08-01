@@ -86,6 +86,12 @@ param(
     [string]$OfficeSetupPath,
     [string]$OfficeConfigPath,
     [string]$LocalInstallerPath,
+    # Storage Analyzer's scan root ("D:\", "C:\Users\me\Downloads"). Its
+    # OWN parameter for the same reason $StartupItemId is: $AppIds is a
+    # comma-separated LIST, and a Windows path may legitimately contain a
+    # comma ("C:\Program Files\Acme, Inc\") which would be split into
+    # fragments that match no directory.
+    [string]$ScanPath,
     [switch]$WhatIf
 )
 

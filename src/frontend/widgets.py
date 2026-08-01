@@ -21,8 +21,9 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QDateTime, QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation,
-    QRect, QRectF, Qt, QThread, QTime, QTimer, QUrl, QVariantAnimation, Signal,
+    QDateTime, QEasingCurve, QEvent, QPoint, QPointF, QProcess,
+    QPropertyAnimation, QRect, QRectF, Qt, QThread, QTime, QTimer, QUrl,
+    QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
     QBrush, QColor, QCursor, QDesktopServices, QFont, QFontMetrics,
@@ -30,7 +31,7 @@ from PySide6.QtGui import (
     QTextCursor, QTextLayout, QTextOption,
 )
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QFileDialog, QFrame,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QPlainTextEdit, QPushButton, QScrollArea, QSizeGrip, QSizePolicy,
@@ -3281,6 +3282,605 @@ class ActivationStatusDialog(PulseDialog):
         if self._worker is not None:
             self._worker.cancel()
         super().reject()
+
+
+# ============================================================
+#  READ-ONLY INSPECTORS (v1.0+ Phase 1)
+# ============================================================
+def _system32(name: str) -> str:
+    """Absolute path to a stock Windows tool under System32.
+
+    The Python-side twin of the backend's Get-SystemBinary, and it exists
+    for the identical reason: a bare `explorer.exe` handed to QProcess is
+    a $env:PATH SEARCH, and PATH is assembled from HKCU, which an
+    unelevated user controls. Pulse can be running elevated. Anchoring the
+    path removes the hijack; see tests/test_contract.py's PATH contract,
+    which guards the PowerShell half of the same rule.
+    """
+    root = os.environ.get("SystemRoot") or r"C:\Windows"
+    return os.path.join(root, "System32", name)
+
+
+class InspectorDialog(PulseDialog):
+    """Shared shell for the read-only inspectors — Power Health, Restore
+    Points, Storage Analyzer.
+
+    Each runs its OWN PowerShellTask rather than going through main.py's
+    single-task pipeline, for the reason ActivationStatusDialog documents:
+    a self-contained panel that hands nothing back must not be able to
+    block a real operation just by being open.
+
+    THE SHARED CONTRACT, and the reason this is a base class rather than
+    three copies: all three are REPORTS. Every one of them reads, renders
+    and stops. None writes a value, deletes a file, or changes a setting —
+    where an action genuinely belongs (open Explorer, run System Restore)
+    they hand off to the Windows surface that owns it, visibly, and take
+    no further part. Subclasses supply a task name, a title and a
+    `_render`; they do not get a mutation path.
+    """
+
+    #: Subclasses override. `TASK` must be allow-listed in
+    #: tests/test_contract.py::_PROGRAMMATIC (it is reached from here, not
+    #: from a card's `task`) unless the card declares it directly.
+    TASK = ""
+    TITLE = ""
+    LOADING = "Reading…"
+    ACCENT_KEY = "information"
+    TIMEOUT = 120
+    _LABEL_W = 150
+
+    def __init__(self, parent: QWidget, ps1_path: str, t: dict):
+        super().__init__(parent)
+        self._t = t
+        self._ps1 = ps1_path
+        self._thread: QThread | None = None
+        self._worker: PowerShellTask | None = None
+
+        accent = TH.resolve_accent(t, self.ACCENT_KEY)
+        self._accent = accent
+        panel = _dialog_chrome(self, t, accent, responsive=True)
+        lay = dialog_body(panel)
+
+        head = QLabel(self.TITLE)
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
+        head.setWordWrap(True)
+        lay.addWidget(head)
+
+        self._status = QLabel(self.LOADING)
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(self._status)
+
+        self.build_controls(lay, t, accent)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(TH.scroll_area_qss(t))
+        self._host = QWidget()
+        self._host.setStyleSheet("background: transparent;")
+        self._host_lay = scroll_host_layout(self._host, "md")
+        self._host_lay.addStretch()
+        self._scroll.setWidget(self._host)
+        lay.addWidget(self._scroll, 1)
+
+        row = QHBoxLayout()
+        row.setSpacing(TH.SPACE["sm"])
+        row.addStretch()
+        for widget in self.action_buttons(t, accent):
+            row.addWidget(widget)
+        lay.addLayout(row)
+
+        QTimer.singleShot(0, self._start)
+
+    # -- subclass hooks -------------------------------------------
+    def build_controls(self, lay: QVBoxLayout, t: dict, accent: str):
+        """Optional controls between the status line and the report body
+        (the Storage Analyzer's drive picker). Default: nothing."""
+
+    def action_buttons(self, t: dict, accent: str) -> list[QPushButton]:
+        return [self._button("Close", TH.dialog_cancel_qss(t), self.reject, 88)]
+
+    def _render(self, report: dict):
+        raise NotImplementedError
+
+    def task_arguments(self) -> dict:
+        """Extra PowerShellTask kwargs (the Storage Analyzer's scan path)."""
+        return {}
+
+    # -- shared plumbing ------------------------------------------
+    def _button(self, text: str, style: str, slot, minimum: int) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setFixedHeight(36)
+        btn.setMinimumWidth(minimum)
+        btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(style)
+        btn.clicked.connect(slot)
+        return btn
+
+    def _start(self):
+        if not self._ps1:
+            self._status.setText("Engine unavailable — core.ps1 was not found.")
+            return
+        if self._worker is not None:      # a read is already in flight
+            return
+        self._status.setText(self.LOADING)
+        thread = QThread(self)
+        worker = PowerShellTask(self._ps1, self.TASK, timeout=self.TIMEOUT,
+                                **self.task_arguments())
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_report)
+        worker.failed.connect(self._on_failed)
+        for signal in (worker.finished, worker.failed, worker.cancelled):
+            signal.connect(thread.quit)
+        thread.finished.connect(self._cleanup)
+        self._thread, self._worker = thread, worker
+        thread.start()
+
+    def _on_report(self, result: TaskResult):
+        if not result.success or not isinstance(result.data, dict):
+            self._on_failed(result.message or "The report could not be read.")
+            return
+        self._clear()
+        self._render(result.data)
+
+    def _on_failed(self, message: str):
+        self._clear()
+        self._status.setText(message)
+
+    def _cleanup(self):
+        if self._worker is not None:
+            self._worker.deleteLater()
+            self._worker = None
+        if self._thread is not None:
+            self._thread.deleteLater()
+            self._thread = None
+
+    def _add(self, widget: QWidget):
+        self._host_lay.insertWidget(self._host_lay.count() - 1, widget)
+
+    def _clear(self):
+        """A re-read REPLACES the report rather than appending a second
+        copy of it — everything except the trailing stretch goes."""
+        while self._host_lay.count() > 1:
+            item = self._host_lay.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _card(self, title: str, badge: tuple[str, str] | None = None) -> ReportSubCard:
+        card = ReportSubCard(self._t, self._accent, title, badge)
+        self._add(card)
+        return card
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+    def reject(self):
+        # A scan in flight is killed rather than orphaned: the Storage
+        # Analyzer can be walking a whole drive, and a closed dialog whose
+        # PowerShell keeps churning is a background process the user has
+        # no surface left to stop.
+        if self._worker is not None:
+            self._worker.cancel()
+        super().reject()
+
+
+class PowerHealthDialog(InspectorDialog):
+    """F1 — battery wear, cycle count and the active power plan.
+
+    Windows already computes every number here; it buries them in a
+    `powercfg /batteryreport` HTML file nobody generates. The practical
+    result is that people discover their battery holds 62% of its design
+    capacity when it dies, rather than while it is still worth planning
+    around. This is that number, on demand, with no file written.
+    """
+
+    TASK = "PowerHealth"
+    TITLE = "🔋  Battery & Power Health"
+    LOADING = "Reading battery and power state…"
+    ACCENT_KEY = "information"
+
+    #: Windows' own Power & Sleep page — the hand-off for anything that
+    #: needs changing. Same posture as ActivationStatusDialog: report here,
+    #: change it in the surface that owns it.
+    SETTINGS_URI = "ms-settings:powersleep"
+
+    def action_buttons(self, t: dict, accent: str) -> list[QPushButton]:
+        return [
+            self._button("Close", TH.dialog_cancel_qss(t), self.reject, 88),
+            self._button("Re-check", TH.dialog_secondary_go_qss(t, accent),
+                         self._start, 110),
+            self._button("Power & Sleep Settings", TH.dialog_go_qss(t, accent),
+                         self._open_settings, 190),
+        ]
+
+    def _open_settings(self):
+        if not QDesktopServices.openUrl(QUrl(self.SETTINGS_URI)):
+            self._status.setText(
+                "Windows could not open the Power & Sleep page. "
+                "Open Settings › System › Power manually.")
+
+    @staticmethod
+    def _wear_tone(wear: float) -> str:
+        """Wear thresholds, named once. 20% is where a battery's runtime
+        drop becomes obvious in daily use; 40% is where most vendors
+        consider a cell end-of-life."""
+        if wear >= 40:
+            return "err"
+        if wear >= 20:
+            return "warn"
+        return "ok"
+
+    def _render(self, report: dict):
+        battery = report.get("battery") or {}
+        power = report.get("power") or {}
+
+        if not battery.get("installed"):
+            self._status.setText(
+                "No battery is installed — the power plan section still "
+                "applies.")
+            card = self._card("Battery")
+            card.note(str(battery.get("note")
+                          or "No battery detected on this machine."))
+        else:
+            wear = battery.get("wearPercent")
+            if wear is None:
+                badge = ("UNKNOWN", "")
+                self._status.setText(
+                    "A battery is present, but this firmware does not report "
+                    "its design capacity, so wear cannot be calculated.")
+            else:
+                health = round(100 - float(wear), 1)
+                badge = (f"{health}% HEALTH", self._wear_tone(float(wear)))
+                self._status.setText(
+                    f"This battery holds {health}% of the capacity it "
+                    f"shipped with ({wear}% wear).")
+            card = self._card("Battery", badge)
+
+            design = battery.get("designedCapacity")
+            full = battery.get("fullCapacity")
+            card.row("Design capacity",
+                     f"{int(design):,} mWh" if design else "Not reported",
+                     label_width=self._LABEL_W)
+            card.row("Full-charge capacity",
+                     f"{int(full):,} mWh" if full else "Not reported",
+                     label_width=self._LABEL_W)
+            cycles = battery.get("cycleCount")
+            card.row("Cycle count",
+                     str(cycles) if cycles else "Not reported by this firmware",
+                     label_width=self._LABEL_W)
+            charge = battery.get("chargePercent")
+            if charge is not None:
+                card.row("Current charge", f"{charge}%", label_width=self._LABEL_W)
+            on_ac = battery.get("onAcPower")
+            if on_ac is not None:
+                card.row("Power source", "AC adapter" if on_ac else "Battery",
+                         label_width=self._LABEL_W)
+            if cycles is None:
+                card.note("Cycle count is optional in the battery firmware "
+                          "specification — plenty of otherwise healthy "
+                          "laptops simply do not publish it.")
+
+        plan_card = self._card("Power plan")
+        if power.get("available"):
+            plan_card.row("Active plan", str(power.get("activeName") or "Unknown"),
+                          label_width=self._LABEL_W)
+            plan_card.row("Plans available", str(power.get("planCount") or 0),
+                          label_width=self._LABEL_W)
+        else:
+            plan_card.note("Windows did not return the power plan list on "
+                           "this machine.")
+        hibernate = report.get("hibernateEnabled")
+        if hibernate is not None:
+            plan_card.row("Hibernation", "Enabled" if hibernate else "Disabled",
+                          label_width=self._LABEL_W)
+
+
+class RestorePointDialog(InspectorDialog):
+    """F3 — every System Restore checkpoint on this PC.
+
+    Pulse creates restore points and describes them as the safety net its
+    destructive actions lean on. It had no way to show that any exist. A
+    guarantee with no receipt is not a guarantee; this is the receipt.
+
+    READ-ONLY, and the rollback is deliberately NOT implemented here. A
+    System Restore is a reboot-time operation with its own Microsoft-signed
+    wizard; reimplementing that inside a third-party utility would be both
+    worse and less trustworthy than launching it. Pulse lists what exists
+    and opens rstrui.exe.
+    """
+
+    TASK = "RestorePoints"
+    TITLE = "🛡️  Restore Point Browser"
+    LOADING = "Reading System Restore checkpoints…"
+    ACCENT_KEY = "maintenance"
+
+    #: Cap on rendered rows. A machine with automatic checkpoints on can
+    #: hold dozens; past the newest handful they stop informing the
+    #: question this dialog answers ("do I have a recent safety net?").
+    MAX_ROWS = 25
+
+    def action_buttons(self, t: dict, accent: str) -> list[QPushButton]:
+        return [
+            self._button("Close", TH.dialog_cancel_qss(t), self.reject, 88),
+            self._button("Re-check", TH.dialog_secondary_go_qss(t, accent),
+                         self._start, 110),
+            self._button("Open System Restore", TH.dialog_go_qss(t, accent),
+                         self._open_restore, 190),
+        ]
+
+    def _open_restore(self):
+        """Hand off to Windows' own System Restore wizard — anchored, never
+        a PATH search (see _system32)."""
+        target = _system32("rstrui.exe")
+        if not os.path.isfile(target):
+            self._status.setText(
+                "System Restore (rstrui.exe) was not found on this machine.")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(target)):
+            self._status.setText(
+                "Could not launch System Restore. Open it from Control Panel › "
+                "Recovery › Open System Restore.")
+
+    def _render(self, report: dict):
+        enabled = report.get("enabled")
+        points = report.get("points") or []
+        count = int(report.get("count") or 0)
+
+        if not report.get("available") or count == 0:
+            # The important case, and the one worth being loud about: the
+            # user has been told restore points are their safety net.
+            self._status.setText(
+                "No restore points were found on this PC.")
+            card = self._card("System Restore", ("NO CHECKPOINTS", "warn"))
+            if enabled is False:
+                card.note("System Restore protection appears to be turned OFF "
+                          "for this drive, which is why there are no "
+                          "checkpoints. Turn it on in Control Panel › System › "
+                          "System Protection.")
+            elif enabled is None:
+                card.note("Pulse could not read whether System Restore "
+                          "protection is enabled — that setting is not "
+                          "readable on this machine.")
+            else:
+                card.note("Protection is enabled but no checkpoint has been "
+                          "created yet. Maintenance › Create Restore Point "
+                          "makes one now.")
+            return
+
+        newest = points[0]
+        age = newest.get("ageDays")
+        # Stale is worse than absent-looking: a 400-day-old checkpoint that
+        # a user believes is current is the failure mode worth flagging.
+        tone = "ok" if (age is not None and age <= 30) else "warn"
+        self._status.setText(
+            f"{count} restore point(s) available. The newest is "
+            f"{age} day(s) old." if age is not None
+            else f"{count} restore point(s) available.")
+
+        summary = self._card("Summary", (f"{count} CHECKPOINTS", tone))
+        summary.row("Newest checkpoint", str(newest.get("description") or "Unknown"),
+                    label_width=self._LABEL_W)
+        summary.row("Created", str(newest.get("created") or "Unknown"),
+                    label_width=self._LABEL_W)
+        summary.row("Protection",
+                    {True: "Enabled", False: "Disabled"}.get(enabled, "Unknown"),
+                    label_width=self._LABEL_W)
+
+        listing = self._card("All checkpoints")
+        for point in points[: self.MAX_ROWS]:
+            created = str(point.get("created") or "date unknown")
+            label = f"{created}  ·  {point.get('typeLabel') or 'Checkpoint'}"
+            listing.row(label, str(point.get("description") or ""),
+                        label_width=210)
+        if count > self.MAX_ROWS:
+            listing.note(f"Showing the {self.MAX_ROWS} newest of {count} "
+                         "checkpoints.")
+
+
+class StorageAnalyzerDialog(InspectorDialog):
+    """F2 — what is actually filling a drive.
+
+    STRICTLY READ-ONLY, and that is a product decision, not a limitation.
+    This finds the space; it does not delete. A bulk file remover driven
+    by a size-sorted list is how an irreplaceable folder gets destroyed by
+    one mis-click, and Windows already ships a file manager with undo, a
+    Recycle Bin and a confirmation step. Every row hands its path to
+    Explorer instead. Finding the 40GB nobody could account for is the
+    entire value here; the deletion is the easy part and the dangerous one.
+    """
+
+    TASK = "StorageScan"
+    TITLE = "🔭  Storage Analyzer"
+    LOADING = "Scanning… this can take a minute on a large drive."
+    ACCENT_KEY = "maintenance"
+    #: Generous: the backend's own time budget stops the scan long before
+    #: this, so a timeout here would mean something genuinely wedged.
+    TIMEOUT = 900
+
+    def __init__(self, parent: QWidget, ps1_path: str, t: dict):
+        self._scan_path = os.environ.get("SystemDrive", "C:") + "\\"
+        self._roots: list[dict] = []
+        super().__init__(parent, ps1_path, t)
+
+    def action_buttons(self, t: dict, accent: str) -> list[QPushButton]:
+        return [
+            self._button("Close", TH.dialog_cancel_qss(t), self.reject, 88),
+            self._button("Scan a Folder…", TH.dialog_secondary_go_qss(t, accent),
+                         self._choose_folder, 150),
+            self._button("Re-scan", TH.dialog_go_qss(t, accent), self._start, 120),
+        ]
+
+    def _choose_folder(self):
+        """Scan one folder instead of a whole drive.
+
+        The precision escape hatch for the time budget: a whole-drive walk
+        can truncate, but "why is my Downloads folder 90GB" is answerable
+        exactly and in seconds. Still read-only — picking a folder chooses
+        what to MEASURE, nothing more."""
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Choose a folder to analyse", self._scan_path)
+        if not chosen:
+            return
+        self._scan_path = os.path.normpath(chosen)
+        self._start()
+
+    def build_controls(self, lay: QVBoxLayout, t: dict, accent: str):
+        row = QHBoxLayout()
+        row.setSpacing(TH.SPACE["sm"])
+        label = QLabel("Drive")
+        label.setStyleSheet(TH.label_qss(t, "caption"))
+        row.addWidget(label)
+
+        self._drive = QComboBox()
+        self._drive.setFixedSize(220, 32)
+        self._drive.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._drive.setStyleSheet(TH.filter_combo_qss(t, accent))
+        self._drive.addItem(self._scan_path, self._scan_path)
+        self._drive.currentIndexChanged.connect(self._on_drive_changed)
+        row.addWidget(self._drive)
+        row.addStretch()
+        lay.addLayout(row)
+
+    def task_arguments(self) -> dict:
+        return {"scan_path": self._scan_path}
+
+    def _on_drive_changed(self, _index: int):
+        target = self._drive.currentData()
+        if not target or target == self._scan_path:
+            return
+        self._scan_path = target
+        # A drive change is a new question, so it re-scans rather than
+        # re-filtering a stale result set for a drive the user left.
+        self._start()
+
+    @staticmethod
+    def _human(size: float) -> str:
+        value = float(size or 0)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if value < 1024 or unit == "TB":
+                return f"{value:,.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+        return f"{value:,.1f} TB"
+
+    def _reveal(self, path: str):
+        """Show a path in Explorer. `/select,` highlights the item inside
+        its parent folder rather than opening it, which is what makes this
+        safe for a FILE: the user lands on it, sees its neighbours, and
+        decides — Pulse never opens or runs anything."""
+        target = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows",
+                              "explorer.exe")
+        try:
+            QProcess.startDetached(target, ["/select,", os.path.normpath(path)])
+        except Exception:
+            self._status.setText(f"Could not open Explorer for {path}")
+
+    def _row_with_reveal(self, card: ReportSubCard, label: str, value: str,
+                         path: str):
+        line = QWidget()
+        line.setStyleSheet("background: transparent;")
+        row = QHBoxLayout(line)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(TH.SPACE["sm"])
+
+        name = ElidedCaption()
+        name.setFullText(label)
+        name.setStyleSheet(TH.label_qss(self._t, "body"))
+        row.addWidget(name, 1)
+
+        size = QLabel(value)
+        size.setStyleSheet(TH.label_qss(self._t, "caption"))
+        size.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        size.setFixedWidth(96)
+        row.addWidget(size)
+
+        reveal = QPushButton("Reveal")
+        reveal.setFixedSize(74, 26)
+        reveal.setCursor(Qt.CursorShape.PointingHandCursor)
+        reveal.setStyleSheet(TH.link_button_qss(self._t, self._accent))
+        reveal.setToolTip(f"Show {path} in File Explorer")
+        reveal.clicked.connect(lambda _c=False, p=path: self._reveal(p))
+        row.addWidget(reveal)
+
+        card.add(line)
+
+    def _sync_drives(self, roots: list[dict]):
+        """Populate the picker from the drives the scan actually found —
+        once. Rebuilding it on every scan would fire currentIndexChanged
+        mid-render and start a second scan."""
+        if self._roots or not roots:
+            return
+        self._roots = roots
+        self._drive.blockSignals(True)
+        self._drive.clear()
+        for root in roots:
+            path = str(root.get("path") or "")
+            free = self._human(root.get("freeBytes") or 0)
+            total = self._human(root.get("totalBytes") or 0)
+            label = str(root.get("label") or "").strip()
+            text = f"{path}  {label}" if label else path
+            self._drive.addItem(f"{text}   ({free} free of {total})", path)
+        index = self._drive.findData(self._scan_path)
+        self._drive.setCurrentIndex(max(0, index))
+        self._drive.blockSignals(False)
+
+    def _render(self, report: dict):
+        self._sync_drives(report.get("roots") or [])
+
+        if not report.get("available"):
+            self._status.setText(
+                f"Could not read {report.get('scanPath')} — it does not exist "
+                "or is not readable by this account.")
+            return
+
+        total = self._human(report.get("totalBytes") or 0)
+        truncated = bool(report.get("truncated"))
+        self._status.setText(
+            f"{report.get('scanPath')} — {total} accounted for."
+            + (" The scan hit its time budget, so this is a partial view of "
+               "the largest items found so far." if truncated else ""))
+
+        folders = report.get("folders") or []
+        files = report.get("files") or []
+
+        if truncated:
+            partial = self._card("Partial scan", ("TIME BUDGET REACHED", "warn"))
+            partial.note(
+                "Large drives can take longer than the scan's budget allows. "
+                "The figures below are real, but smaller items may be "
+                "missing — scan a specific folder for an exact picture.")
+
+        folder_card = self._card("Largest folders")
+        if folders:
+            for entry in folders:
+                self._row_with_reveal(
+                    folder_card, str(entry.get("name") or entry.get("path")),
+                    self._human(entry.get("bytes")), str(entry.get("path") or ""))
+        else:
+            folder_card.note("No readable subfolders were found here.")
+
+        file_card = self._card("Largest files")
+        if files:
+            for entry in files:
+                modified = entry.get("modified")
+                label = str(entry.get("name") or "")
+                if modified:
+                    label = f"{label}   ·   {modified}"
+                self._row_with_reveal(
+                    file_card, label, self._human(entry.get("bytes")),
+                    str(entry.get("path") or ""))
+        else:
+            file_card.note("No readable files were found here.")
+
+        note = self._card("About this report")
+        note.note(
+            "Pulse never deletes anything from this screen. Reveal opens the "
+            "item in File Explorer, where Windows' own delete, undo and "
+            "Recycle Bin apply.")
 
 
 class CloseConfirmDialog(PulseDialog):

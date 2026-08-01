@@ -471,56 +471,67 @@ CATEGORIES = [
         "title": "System & Tweaks",
         "tagline": "Performance, interface and privacy tweaks",
         "accent": "optimization",
-        "items": [
-            {"icon": "🌙", "title": "Global Dark Mode",
-             "desc": "Force the dark theme across Windows and all apps.",
-             "glyph": "moon", "task": "DarkMode", "timeout": 120},
-            {"icon": "🖱️", "title": "Disable Mouse Acceleration",
-             "desc": "Raw pointer precision — no speed curves or thresholds.",
-             "glyph": "mouse", "task": "DisableMouseAccel", "timeout": 120},
-            {"icon": "📌", "title": "Minimalist Taskbar",
-             "desc": "Left-aligned, widget-free, chat-free taskbar.",
-             "glyph": "pin", "task": "MinimalistTaskbar", "timeout": 120, "note": "Windows 11 only"},
-            {"icon": "📋", "title": "Classic Context Menu",
-             "desc": "Restore the full Windows 10 right-click menu.",
-             "glyph": "list", "task": "ClassicContextMenu", "timeout": 120, "note": "Windows 11 only"},
-            {"icon": "🕹️", "title": "Game Mode & Game Bar",
-             "desc": "Enable Game Mode, kill background recording.",
-             "glyph": "game", "task": "GameMode", "timeout": 120},
-            {"icon": "📡", "title": "Network & Ping Optimizer",
-             "desc": "Flush DNS and reset Winsock for lower latency.",
-             "glyph": "network", "task": "NetworkOptimization", "timeout": 300, "confirm": True},
-            # DESKTOP ONLY, and the copy says so before the badge does: the
-            # plan parks the CPU at maximum and the task also pins display
-            # and sleep timeouts to Never on AC, which on a battery-powered
-            # machine means a hot laptop that never sleeps in a bag.
-            # `confirm` is set for the same reason — this is no longer a
-            # one-line scheme switch, so the user sees the full description
-            # and agrees to it before anything changes.
-            {"icon": "⚡", "title": "Ultimate Power Plan",
-             "desc": "Unlock the hidden high-performance scheme. Designed "
-                     "strictly for Desktop PCs. Not recommended for "
-                     "laptops/mobile devices — also disables display and "
-                     "sleep timeouts while on AC power.",
-             "glyph": "bolt", "task": "UltimatePowerPlan", "timeout": 300,
-             "note": "Desktop PCs only", "confirm": True},
-
-            # -- privacy half (merged from the old module 4) --------------
-            {"icon": "📦", "title": "Remove Bloatware",
-             "desc": "Uninstall pre-loaded Store apps you never asked for.",
-             "glyph": "delete", "task": "RemoveBloatware", "timeout": 900, "confirm": True},
-            {"icon": "🛡️", "title": "Disable Telemetry",
-             "desc": "Stop diagnostic data collection and scheduled tasks.",
-             "glyph": "shieldplain", "task": "DisableTelemetry", "timeout": 300},
-            {"icon": "🎯", "title": "Disable Advertising ID",
-             "desc": "Remove the per-user identifier that ad networks track.",
-             "glyph": "target", "task": "DisableAdvertisingID", "timeout": 120},
-            {"icon": "🕓", "title": "Disable Activity History",
-             "desc": "Stop Timeline activity sync to Microsoft servers.",
-             "glyph": "history", "task": "DisableActivityHistory", "timeout": 120},
-            {"icon": "🔒", "title": "Apply ALL Privacy Settings",
-             "desc": "Run every privacy hardening action in one pass.",
-             "glyph": "defender", "task": "ApplyAllPrivacy", "timeout": 1800, "confirm": True},
+        # BANDED (v1.0+). Twelve cards in one undifferentiated grid was the
+        # densest page in the app and gave no clue that it answers three
+        # different questions — how fast is it, how does it look, what does
+        # it leak. The bands are the merge comment above, finally made
+        # visible: the module stays one module, and its three halves stop
+        # having to be inferred from card order.
+        "groups": [
+            {"title": "PERFORMANCE", "items": [
+                {"icon": "🕹️", "title": "Game Mode & Game Bar",
+                 "desc": "Enable Game Mode, kill background recording.",
+                 "glyph": "game", "task": "GameMode", "timeout": 120},
+                # DESKTOP ONLY, and the copy says so before the badge does:
+                # the plan parks the CPU at maximum and the task also pins
+                # display and sleep timeouts to Never on AC, which on a
+                # battery-powered machine means a hot laptop that never
+                # sleeps in a bag. `confirm` is set for the same reason —
+                # this is no longer a one-line scheme switch, so the user
+                # sees the full description and agrees before anything
+                # changes.
+                {"icon": "⚡", "title": "Ultimate Power Plan",
+                 "desc": "Unlock the hidden high-performance scheme. Designed "
+                         "strictly for Desktop PCs. Not recommended for "
+                         "laptops/mobile devices — also disables display and "
+                         "sleep timeouts while on AC power.",
+                 "glyph": "bolt", "task": "UltimatePowerPlan", "timeout": 300,
+                 "note": "Desktop PCs only", "confirm": True},
+                {"icon": "📡", "title": "Network & Ping Optimizer",
+                 "desc": "Flush DNS and reset Winsock for lower latency.",
+                 "glyph": "network", "task": "NetworkOptimization", "timeout": 300, "confirm": True},
+                {"icon": "🖱️", "title": "Disable Mouse Acceleration",
+                 "desc": "Raw pointer precision — no speed curves or thresholds.",
+                 "glyph": "mouse", "task": "DisableMouseAccel", "timeout": 120},
+            ]},
+            {"title": "INTERFACE", "items": [
+                {"icon": "🌙", "title": "Global Dark Mode",
+                 "desc": "Force the dark theme across Windows and all apps.",
+                 "glyph": "moon", "task": "DarkMode", "timeout": 120},
+                {"icon": "📌", "title": "Minimalist Taskbar",
+                 "desc": "Left-aligned, widget-free, chat-free taskbar.",
+                 "glyph": "pin", "task": "MinimalistTaskbar", "timeout": 120, "note": "Windows 11 only"},
+                {"icon": "📋", "title": "Classic Context Menu",
+                 "desc": "Restore the full Windows 10 right-click menu.",
+                 "glyph": "list", "task": "ClassicContextMenu", "timeout": 120, "note": "Windows 11 only"},
+            ]},
+            {"title": "PRIVACY & CLEANUP", "items": [
+                {"icon": "📦", "title": "Remove Bloatware",
+                 "desc": "Uninstall pre-loaded Store apps you never asked for.",
+                 "glyph": "delete", "task": "RemoveBloatware", "timeout": 900, "confirm": True},
+                {"icon": "🛡️", "title": "Disable Telemetry",
+                 "desc": "Stop diagnostic data collection and scheduled tasks.",
+                 "glyph": "shieldplain", "task": "DisableTelemetry", "timeout": 300},
+                {"icon": "🎯", "title": "Disable Advertising ID",
+                 "desc": "Remove the per-user identifier that ad networks track.",
+                 "glyph": "target", "task": "DisableAdvertisingID", "timeout": 120},
+                {"icon": "🕓", "title": "Disable Activity History",
+                 "desc": "Stop Timeline activity sync to Microsoft servers.",
+                 "glyph": "history", "task": "DisableActivityHistory", "timeout": 120},
+                {"icon": "🔒", "title": "Apply ALL Privacy Settings",
+                 "desc": "Run every privacy hardening action in one pass.",
+                 "glyph": "defender", "task": "ApplyAllPrivacy", "timeout": 1800, "confirm": True},
+            ]},
         ],
     },
     # --------------------------------------------------------
@@ -541,44 +552,66 @@ CATEGORIES = [
         "title": "Maintenance & Security",
         "tagline": "Repair, clean-up, restore points and rollback",
         "accent": "maintenance",
-        "items": [
-            {"icon": "🛠️", "title": "System Repair (SFC + DISM)",
-             "desc": "Repair protected system files and the component store.",
-             "glyph": "repair", "task": "RunSFC", "timeout": 3600, "recurring": 90},
-            {"icon": "🧹", "title": "Aggressive Cache Clean",
-             "desc": "Wipe temp, Windows Update and system caches.",
-             "glyph": "broom", "task": "CleanCache", "timeout": 900, "confirm": True,
-             "recurring": 30},
-            {"icon": "💾", "title": "Optimize All Drives",
-             "desc": "TRIM SSDs and defragment HDDs — drive by drive.",
-             "glyph": "disk", "task": "OptimizeDrives", "timeout": 1800, "recurring": 30},
-            {"icon": "🛟", "title": "Create Restore Point",
-             "desc": "Manual System Restore checkpoint — your safety net before big changes.",
-             "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600,
-             "recurring": 30},
-            {"icon": "📈", "title": "Drive Space Report",
-             "desc": "Free / used space snapshot for every fixed drive.",
-             "glyph": "chart", "task": "DriveSpaceReport", "timeout": 120},
-            {"icon": "🗑️", "title": "Remove Windows.old",
-             "desc": "Reclaim gigabytes from a previous Windows install.",
-             "glyph": "delete", "task": "RemoveWindowsOld", "timeout": 1800, "confirm": True, "danger": True},
-            {"icon": "😴", "title": "Disable Hibernation",
-             "desc": "Delete hiberfil.sys and free disk space.",
-             "glyph": "sleep", "task": "DisableHibernation", "timeout": 120},
-            {"icon": "🔋", "title": "Enable Hibernation",
-             "desc": "Bring hibernation (and hiberfil.sys) back.",
-             "glyph": "battery", "task": "EnableHibernation", "timeout": 120},
-
-            # -- recovery half (merged from the old Safety module) --------
-            {"icon": "↩️", "title": "Reset All Tweaks",
-             "desc": "Revert every registry tweak to your backed-up values.",
-             "glyph": "restore", "task": "ResetTweaks", "timeout": 300, "confirm": True},
-            {"icon": "🔧", "title": "Restore Services",
-             "desc": "Re-enable Windows services disabled by the optimizer.",
-             "glyph": "repair", "task": "RestoreServices", "timeout": 300},
-            {"icon": "☁️", "title": "OneDrive Backup Folder",
-             "desc": "Open files rescued before OneDrive removal.",
-             "glyph": "folder", "task": "@open_onedrive_backup"},
+        # BANDED (v1.0+). The ROUTINE UPKEEP band is the load-bearing one:
+        # it collects exactly the four `recurring` tasks, so "what is due?"
+        # — the question this module exists to answer — is a glance at one
+        # band instead of a scan for ACTION DUE badges scattered through
+        # eleven cards.
+        "groups": [
+            {"title": "ROUTINE UPKEEP", "items": [
+                {"icon": "🛠️", "title": "System Repair (SFC + DISM)",
+                 "desc": "Repair protected system files and the component store.",
+                 "glyph": "repair", "task": "RunSFC", "timeout": 3600, "recurring": 90},
+                {"icon": "🧹", "title": "Aggressive Cache Clean",
+                 "desc": "Wipe temp, Windows Update and system caches.",
+                 "glyph": "broom", "task": "CleanCache", "timeout": 900, "confirm": True,
+                 "recurring": 30},
+                {"icon": "💾", "title": "Optimize All Drives",
+                 "desc": "TRIM SSDs and defragment HDDs — drive by drive.",
+                 "glyph": "disk", "task": "OptimizeDrives", "timeout": 1800, "recurring": 30},
+                {"icon": "🛟", "title": "Create Restore Point",
+                 "desc": "Manual System Restore checkpoint — your safety net before big changes.",
+                 "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600,
+                 "recurring": 30},
+            ]},
+            {"title": "DISK & SPACE", "items": [
+                {"icon": "📈", "title": "Drive Space Report",
+                 "desc": "Free / used space snapshot for every fixed drive.",
+                 "glyph": "chart", "task": "DriveSpaceReport", "timeout": 120},
+                {"icon": "🔭", "title": "Storage Analyzer",
+                 "desc": "Find what is actually filling a drive — largest folders and files, read-only.",
+                 "glyph": "search", "task": "StorageScan", "timeout": 1800,
+                 "storage_analyzer": True},
+                {"icon": "🗑️", "title": "Remove Windows.old",
+                 "desc": "Reclaim gigabytes from a previous Windows install.",
+                 "glyph": "delete", "task": "RemoveWindowsOld", "timeout": 1800, "confirm": True, "danger": True},
+                {"icon": "😴", "title": "Disable Hibernation",
+                 "desc": "Delete hiberfil.sys and free disk space.",
+                 "glyph": "sleep", "task": "DisableHibernation", "timeout": 120},
+                {"icon": "🔋", "title": "Enable Hibernation",
+                 "desc": "Bring hibernation (and hiberfil.sys) back.",
+                 "glyph": "battery", "task": "EnableHibernation", "timeout": 120},
+            ]},
+            {"title": "RECOVERY", "items": [
+                # Pulse creates restore points and calls them the safety net
+                # every rollback depends on, but until now offered no way to
+                # see whether any exist. A guarantee with no receipt is not a
+                # guarantee — this is the receipt. Read-only: it lists what
+                # Windows already has and hands off to rstrui.exe, because
+                # performing a rollback is Microsoft's own surface's job.
+                {"icon": "🛡️", "title": "Restore Point Browser",
+                 "desc": "Every System Restore checkpoint on this PC — verify your safety net, read-only.",
+                 "glyph": "restorepoint", "task": "@restore_points"},
+                {"icon": "↩️", "title": "Reset All Tweaks",
+                 "desc": "Revert every registry tweak to your backed-up values.",
+                 "glyph": "restore", "task": "ResetTweaks", "timeout": 300, "confirm": True},
+                {"icon": "🔧", "title": "Restore Services",
+                 "desc": "Re-enable Windows services disabled by the optimizer.",
+                 "glyph": "repair", "task": "RestoreServices", "timeout": 300},
+                {"icon": "☁️", "title": "OneDrive Backup Folder",
+                 "desc": "Open files rescued before OneDrive removal.",
+                 "glyph": "folder", "task": "@open_onedrive_backup"},
+            ]},
         ],
     },
     # --------------------------------------------------------
@@ -597,35 +630,88 @@ CATEGORIES = [
         "title": "Utilities & Tools",
         "tagline": "Reports, licence status, driver tools and playbooks",
         "accent": "information",
-        "items": [
-            {"icon": "📊", "title": "System Info Snapshot",
-             "desc": "Hardware, uptime and drive space — written to the log.",
-             "glyph": "chartline", "task": "SystemInfo", "timeout": 300},
-            {"icon": "🩺", "title": "Health & Drift Report",
-             "desc": "Snapshot applied tweaks, drives and startup load; export HTML or JSON.",
-             "glyph": "chart", "task": "@health_report"},
-            {"icon": "📘", "title": "Playbooks",
-             "desc": "Run a saved sequence of tasks — preview it first with a dry run.",
-             "glyph": "boot", "task": "@playbooks"},
-            {"icon": "💿", "title": "Driver Backup",
-             "desc": "Export every current hardware driver to your Desktop.",
-             "glyph": "save", "task": "DriverBackup", "timeout": 1800, "recurring": 180},
-            {"icon": "🔍", "title": "Missing Driver Scan",
-             "desc": "Check Windows Update for drivers you're missing.",
-             "glyph": "search", "task": "DriverScan", "timeout": 900, "recurring": 90},
-            # Read-only, and deliberately so: it reports what Windows'
-            # licensing service already knows and hands off to Microsoft's
-            # own surfaces for anything that needs changing. Nothing in
-            # Pulse activates, keys, or alters a licence.
-            {"icon": "🔑", "title": "Activation Status",
-             "desc": "Windows and Office licence state, channel and expiry — read-only.",
-             "glyph": "key", "task": "@activation"},
-            {"icon": "📜", "title": "View Operation Log",
-             "desc": "Open the full Pulse operation log.",
-             "glyph": "log", "task": "@open_log"},
+        # BANDED (v1.0+). The split is what each card DOES to the machine:
+        # the inspection band only ever reads, the automation band replays
+        # and records. Worth stating visually in the one module whose whole
+        # promise is "nothing here changes a setting on its own".
+        "groups": [
+            {"title": "REPORTS & INSPECTION", "items": [
+                {"icon": "📊", "title": "System Info Snapshot",
+                 "desc": "Hardware, uptime and drive space — written to the log.",
+                 "glyph": "chartline", "task": "SystemInfo", "timeout": 300},
+                {"icon": "🩺", "title": "Health & Drift Report",
+                 "desc": "Snapshot applied tweaks, drives and startup load; export HTML or JSON.",
+                 "glyph": "chart", "task": "@health_report"},
+                # Read-only, and deliberately so: it reports what Windows'
+                # licensing service already knows and hands off to
+                # Microsoft's own surfaces for anything that needs changing.
+                # Nothing in Pulse activates, keys, or alters a licence.
+                {"icon": "🔑", "title": "Activation Status",
+                 "desc": "Windows and Office licence state, channel and expiry — read-only.",
+                 "glyph": "key", "task": "@activation"},
+                # Same read-only contract. powercfg already computes battery
+                # wear and cycle count; it just buries them in an HTML file
+                # nobody generates, so a user finds out their battery is at
+                # 62% of design capacity when it dies rather than before.
+                {"icon": "🔋", "title": "Battery & Power Health",
+                 "desc": "Battery wear, cycle count and the active power plan — read-only.",
+                 "glyph": "battery", "task": "@power_health"},
+            ]},
+            {"title": "AUTOMATION & LOGS", "items": [
+                {"icon": "📘", "title": "Playbooks",
+                 "desc": "Run a saved sequence of tasks — preview it first with a dry run.",
+                 "glyph": "boot", "task": "@playbooks"},
+                {"icon": "💿", "title": "Driver Backup",
+                 "desc": "Export every current hardware driver to your Desktop.",
+                 "glyph": "save", "task": "DriverBackup", "timeout": 1800, "recurring": 180},
+                {"icon": "🔍", "title": "Missing Driver Scan",
+                 "desc": "Check Windows Update for drivers you're missing.",
+                 "glyph": "search", "task": "DriverScan", "timeout": 900, "recurring": 90},
+                {"icon": "📜", "title": "View Operation Log",
+                 "desc": "Open the full Pulse operation log.",
+                 "glyph": "log", "task": "@open_log"},
+            ]},
         ],
     },
 ]
+
+def category_items(category: dict) -> list[dict]:
+    """Flat top-level card list for a category, whether it declares them
+    directly under `items` or split across titled `groups`.
+
+    SECTION BANDS (v1.0+). A category may now carry
+    `groups: [{"title": str, "items": [...]}]` instead of a flat `items`
+    list; CategoryPage renders each title as a band header spanning the
+    grid, with that band's cards beneath it. This is the SAME shape a
+    grouped hub already uses (see hub_items) — deliberately, so there is
+    one grouping idea in the app rather than two that look alike.
+
+    Bands add NO navigation depth: they are rhythm inside a page the user
+    is already on, not another click. That is the whole point. System &
+    Tweaks and Maintenance & Security had twelve and eleven undifferen-
+    tiated cards; the fix for a wall is structure, and the fix is
+    emphatically not another hub, which would trade a wall for a maze.
+
+    Every consumer that needs the cards — the operation counter, the
+    command palette, task lookup, accent resolution — goes through here,
+    so a banded and an unbanded category behave identically everywhere
+    except in how they are drawn.
+    """
+    if category.get("groups"):
+        return [item for group in category["groups"]
+                for item in group.get("items", [])]
+    return category.get("items", [])
+
+
+def category_bands(category: dict) -> list[tuple[str, list[dict]]]:
+    """(band_title, items) pairs in render order. An unbanded category
+    yields a single untitled band, so CategoryPage has exactly one code
+    path to draw instead of a branch per shape."""
+    if category.get("groups"):
+        return [(g.get("title", ""), g.get("items", []))
+                for g in category["groups"]]
+    return [("", category.get("items", []))]
+
 
 def hub_items(hub: dict) -> list[dict]:
     """Flat list of a hub's runnable sub-actions, regardless of whether the
@@ -660,7 +746,7 @@ def find_action(cat_index: int, task: str) -> tuple[dict | None, str]:
                 return it
         return None
 
-    return walk(cat["items"]), cat["accent"]
+    return walk(category_items(cat)), cat["accent"]
 
 
 def find_action_anywhere(task: str) -> tuple[dict | None, str]:
@@ -736,9 +822,9 @@ def _count_leaves(items: list[dict]) -> int:
 def category_operations(category: dict) -> int:
     """Runnable operations inside one category, counting THROUGH hub
     containers — a hub card is a container, not an operation, so a naive
-    len(category["items"]) under-reports Software Management by a factor
+    len(category_items(category)) under-reports a hub-bearing module by
     of three. Powers the category header's count chip."""
-    return _count_leaves(category["items"])
+    return _count_leaves(category_items(category))
 
 
 def search_haystack(item: dict) -> str:
@@ -807,7 +893,7 @@ def accent_for_task(task: str | None) -> str:
                     return True
             return False
 
-        if walk(cat["items"]):
+        if walk(category_items(cat)):
             return cat["accent"]
     return ""
 
@@ -819,7 +905,7 @@ def iter_leaf_items():
     hub) stay searchable even though the category page now shows only the
     hub card itself."""
     for cat in CATEGORIES:
-        for item in cat["items"]:
+        for item in category_items(cat):
             if item.get("hub"):
                 for sub in hub_items(item):
                     yield sub, f"{cat['title']} › {item['title']}"

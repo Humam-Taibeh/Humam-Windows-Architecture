@@ -732,6 +732,41 @@ function Invoke-GuiTask {
                 break
             }
 
+            # ============ READ-ONLY INSPECTORS (14-Inspectors.ps1) ========
+            # All three follow ActivationStatus exactly: emit one DATA
+            # document plus one SUCCESS verdict, mutate nothing, log the
+            # visit, and stay UNELEVATED. None has a dry-run branch, for
+            # the same reason GetTweakState and HealthReport have none —
+            # there is nothing to simulate when nothing is written, and a
+            # "[DRY-RUN]" prefix on a report would imply the numbers were
+            # simulated too.
+            "PowerHealth" {
+                Write-Log "GUI-TASK: reading battery and power health."
+                $Report = Get-PulsePowerHealth
+                Write-GuiData -Data $Report
+                Write-Output "##PULSE##SUCCESS|$(Get-PowerHealthSummaryLine -Report $Report)"
+                break
+            }
+            "RestorePoints" {
+                Write-Log "GUI-TASK: listing System Restore checkpoints."
+                $Report = Get-PulseRestorePoints
+                Write-GuiData -Data $Report
+                Write-Output "##PULSE##SUCCESS|$(Get-RestorePointSummaryLine -Report $Report)"
+                break
+            }
+            "StorageScan" {
+                # -ScanPath selects the root; empty means the system drive.
+                # The scan is time-budgeted inside Get-PulseStorageScan and
+                # reports `truncated` rather than running past it, so this
+                # case cannot become the task that never returns.
+                $Target = if ([string]::IsNullOrWhiteSpace($ScanPath)) { "$env:SystemDrive\" } else { $ScanPath }
+                Write-Log "GUI-TASK: storage scan of '$Target' (read-only)."
+                $Report = Get-PulseStorageScan -ScanPath $Target
+                Write-GuiData -Data $Report
+                Write-Output "##PULSE##SUCCESS|$(Get-StorageScanSummaryLine -Report $Report)"
+                break
+            }
+
             default {
                 Write-Log "GUI-TASK UNKNOWN: no dispatcher case for '$TaskName'."
                 Write-Output "##PULSE##ERROR|Unknown task: $TaskName"
