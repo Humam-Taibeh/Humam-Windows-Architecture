@@ -199,6 +199,45 @@ Describe 'Toggle guards' {
         (Get-BlockedNow) | Should -HaveCount 0
     }
 
+    It 'accepts a handler that qualifies on its KEY NAME alone' {
+        # THE REGRESSION. Get-PulseContextMenuItems marks an entry
+        # manageable when the allowlist matches its key name OR its
+        # friendly name; the toggle guard used to check the friendly name
+        # TWICE and never the key name, so every handler that qualified
+        # on its key name alone was rendered as a working switch and then
+        # refused. On a stock Windows 11 box that was four of the seven
+        # manageable entries — "Scan with Defender" (key EPP, no friendly
+        # name at all), ModernSharing, Library Location and
+        # PintoStartScreen.
+        #
+        # Every other toggle test here mocks a friendly name that ALREADY
+        # contains its allowlist term ('7-Zip Shell Extension'), which is
+        # exactly why the bug survived: the key-name path was never
+        # exercised. This is the case that was missing.
+        Mock Get-ShellExtensionName {
+            [PSCustomObject]@{ name = ''; module = 'C:\windows\system32\shell32.dll' }
+        }
+        Mock Get-ContextMenuKeyNames { @('EPP') }
+
+        Set-PulseContextMenuState -Clsid $Script:ClsidA -Enabled $false | Should -BeTrue
+        (Get-BlockedNow) | Should -Contain $Script:ClsidA
+    }
+
+    It 'still refuses when NEITHER the key name nor the friendly name matches' {
+        # The security half of the same guard: resolving the key name must
+        # widen what the toggle recognises, never turn it into a pass-through
+        # that would block an arbitrary shell extension on request.
+        Mock Get-ShellExtensionName {
+            [PSCustomObject]@{ name = 'Acme Scanner'; module = 'C:\acme.dll' }
+        }
+        Mock Get-ContextMenuKeyNames { @('AcmeAntivirusHook') }
+
+        $before = $Script:SessionFailCount
+        Set-PulseContextMenuState -Clsid $Script:ClsidA -Enabled $false | Should -BeFalse
+        $Script:SessionFailCount | Should -BeGreaterThan $before
+        (Get-BlockedNow) | Should -HaveCount 0
+    }
+
     It 'snapshots before the FIRST change and not again' {
         Mock Get-ShellExtensionName {
             [PSCustomObject]@{ name = '7-Zip Shell Extension'; module = 'C:\7z.dll' }

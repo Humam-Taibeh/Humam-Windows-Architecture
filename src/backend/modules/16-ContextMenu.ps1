@@ -121,6 +121,46 @@ function Get-ShellExtensionName {
     return [PSCustomObject]@{ name = $name; module = $module }
 }
 
+function Get-ContextMenuKeyNames {
+    <# The registry KEY NAME(S) under which $Clsid is registered as a
+       context-menu handler, across the six roots.
+
+       WHY THE TOGGLE NEEDS THIS. Get-PulseContextMenuItems decides an
+       entry is manageable by matching the allowlist against the handler's
+       KEY NAME *or* its resolved friendly name (either is enough). The
+       toggle's own guard has to ask the SAME question, and it only has a
+       CLSID to ask it with - so the key name has to be resolved back from
+       the CLSID or the guard is answering a narrower question than the
+       scan did, and refuses entries the GUI already offered.
+
+       Cheap by construction: six Get-ChildItem calls over small, known
+       containers. This is NOT the HKCR-wide walk the -LiteralPath note in
+       Get-PulseContextMenuItems warns about - the roots are addressed
+       literally here too, so the '*' key is a key, not a wildcard. #>
+    param([Parameter(Mandatory)][string]$Clsid)
+
+    $names = @()
+    foreach ($root in $Script:ContextMenuRoots) {
+        $children = @()
+        try {
+            $children = @(Get-ChildItem -LiteralPath $root.Path -ErrorAction Stop)
+        } catch {
+            continue
+        }
+        foreach ($child in $children) {
+            try {
+                $value = Get-ItemProperty -LiteralPath $child.PSPath -Name '(default)' -ErrorAction Stop
+                # -eq on strings is case-insensitive, which is what we want:
+                # the registry stores CLSIDs in both cases.
+                if (([string]$value.'(default)').Trim() -eq $Clsid) {
+                    $names += $child.PSChildName
+                }
+            } catch { }
+        }
+    }
+    return @($names | Select-Object -Unique)
+}
+
 function Get-BlockedShellExtensions {
     <# CLSIDs currently in Windows' block list. Unelevated-readable. #>
     $blocked = @{}
@@ -259,12 +299,33 @@ function Set-PulseContextMenuState {
     # for that would be one malformed argument away from blocking an
     # arbitrary shell extension.
     #
-    # Resolved DIRECTLY rather than by scanning every handler and filtering
-    # - the guard needs to answer "is THIS clsid allowlisted", and running
-    # a full enumeration to answer it made each toggle pay for a whole
-    # scan.
+    # THE GUARD MUST ASK THE SAME QUESTION THE SCAN ASKED. Until v1.1 it
+    # passed the resolved friendly name as BOTH -KeyName and -FriendlyName,
+    # so the handler's registry KEY NAME - the other half of the match
+    # Get-PulseContextMenuItems makes when it sets `managed` - was never
+    # consulted. Any handler that qualified on its key name alone was
+    # offered as a working toggle by the GUI and then refused here: on a
+    # stock Windows 11 box that was FOUR of the seven manageable entries
+    # (EPP/"Scan with Defender" has no friendly name at all; ModernSharing,
+    # Library Location and PintoStartScreen have ones that do not contain
+    # their allowlist term). The button existed, was enabled, and could
+    # not succeed.
+    #
+    # Still resolved directly rather than by running Get-PulseContextMenuItems:
+    # that walks the roots AND does two registry reads per handler for the
+    # friendly name, so a toggle would pay for a whole scan. This reads the
+    # six root containers only.
     $detail = Get-ShellExtensionName -Clsid $Clsid
-    $allow = Resolve-ContextMenuAllowEntry -KeyName $detail.name -FriendlyName $detail.name
+    $keyNames = @(Get-ContextMenuKeyNames -Clsid $Clsid)
+    # No registering key found still gets the friendly-name check, so a
+    # handler registered somewhere unusual degrades to the old behaviour
+    # rather than becoming untogglable.
+    if ($keyNames.Count -eq 0) { $keyNames = @("") }
+    $allow = $null
+    foreach ($keyName in $keyNames) {
+        $allow = Resolve-ContextMenuAllowEntry -KeyName $keyName -FriendlyName $detail.name
+        if ($allow) { break }
+    }
     if (-not $allow) {
         Write-ErrorX "$Clsid is not a context-menu handler Pulse manages."
         return $false

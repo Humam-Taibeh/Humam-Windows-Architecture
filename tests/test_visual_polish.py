@@ -456,6 +456,50 @@ class TestFrostedBackdrop:
             dialog.deleteLater()
             qapp.processEvents()
 
+    def test_the_frost_matches_the_geometry_it_is_painted_into(self, window, qapp):
+        """THE BACKDROP ARTIFACT REGRESSION.
+
+        Note what this does NOT do: pre-`resize()` the dialog to the host
+        before showing it. Every other test in this class does, and that is
+        exactly why none of them caught this — pre-sizing makes the
+        construction-time geometry equal to the post-refit geometry, so the
+        capture happens to be taken for the right rectangle and the race
+        disappears. Opened the way the app actually opens one, a PulseDialog
+        is still its construction size in showEvent, and refit_dialog
+        expands it to the host's whole body only afterwards.
+
+        Capturing before that ran produced a frost sized and offset for the
+        wrong rectangle, which paintEvent then stretched across the full
+        backdrop — a flat hard-edged block with the real content smeared and
+        misregistered around it. It corrected itself when the 120ms refrost
+        timer fired, so it was invisible to a late screenshot and glaring
+        during the entrance, especially on a slow machine where the broken
+        frame simply stays up longer.
+
+        Asserting the frost is registered to the FINAL geometry is what
+        pins it: a stale-geometry capture cannot satisfy this.
+        """
+        dialog = self._catalog(window)
+        dialog.show()                      # no pre-resize — the real path
+        qapp.processEvents()
+        try:
+            frost = dialog._frost
+            assert frost is not None, "no frost captured at all"
+            expected_w = max(1, dialog.width() // dialog._BLUR_DOWNSCALE)
+            expected_h = max(1, dialog.height() // dialog._BLUR_DOWNSCALE)
+            # +-1 for the integer division at each end, nothing more.
+            assert abs(frost.width() - expected_w) <= 1, (
+                f"frost is {frost.width()}x{frost.height()} but the dialog it "
+                f"paints into is {dialog.width()}x{dialog.height()} "
+                f"(expects ~{expected_w}x{expected_h}) — the capture was taken "
+                "before refit_dialog set the final geometry, so the backdrop "
+                "is a stretched, misregistered rectangle")
+            assert abs(frost.height() - expected_h) <= 1
+        finally:
+            dialog.reject()
+            dialog.deleteLater()
+            qapp.processEvents()
+
     def test_the_frost_is_retained_at_blur_resolution(self, window, qapp):
         """Kept small on purpose: the downscale IS the blur, and holding a
         full-size copy would cost a second smooth scale of ~1.8M pixels

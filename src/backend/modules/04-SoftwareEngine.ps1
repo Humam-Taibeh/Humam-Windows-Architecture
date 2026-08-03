@@ -300,11 +300,30 @@ function Invoke-Winget {
 }
 
 function Invoke-Chocolatey {
+    <# Install one package through Chocolatey, returning its EXIT CODE.
+
+       THE EXIT CODE IS THE POINT. This used to `return 0` on any run that
+       did not throw - but a native executable exiting non-zero does not
+       throw in PowerShell, so every Chocolatey failure that wrote no
+       terminating error was reported as a success: the caller logged
+       "installed via Chocolatey", returned Status='Success', and the app
+       counted toward the GUI's "N installed" summary without ever having
+       been installed. The catch only ever caught "choco is not a command".
+
+       Chocolatey documents 1641 and 3010 as success-with-reboot, so both
+       are folded into 0 rather than being reported as failures. #>
     param([string]$AppId)
+    if (-not $global:ChocolateyPath) { return 1 }
     try {
-        choco install $AppId -y --limit-output | Out-Null
-        return 0
+        & $global:ChocolateyPath install $AppId -y --limit-output | Out-Null
+        $Code = $LASTEXITCODE
+        if ($Code -eq 1641 -or $Code -eq 3010) {
+            $Script:PendingRestart = $true
+            return 0
+        }
+        return $Code
     } catch {
+        Write-Log "Chocolatey install of '$AppId' threw: $($_.Exception.Message)"
         return 1
     }
 }

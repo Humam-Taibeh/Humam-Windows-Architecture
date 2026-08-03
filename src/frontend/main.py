@@ -72,10 +72,12 @@ from frontend.widgets import (  # noqa: E402
     ContextMenuDialog, DnsSwitcherDialog, ElidedCaption,
     ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog,
     NavButton,
-    NavPill, OfficeWizardDialog, PlaybookDialog, PowerHealthDialog,
+    NavPill, NoticeDialog, OfficeWizardDialog, PlaybookDialog,
+    PowerHealthDialog,
     PulseDialog, RestorePointDialog, RevertChoiceDialog,
     ResponsiveGridHost, ShortcutSheetDialog, SoftwareCatalogDialog,
-    StartupManagerDialog, StorageAnalyzerDialog, TitleBar, UpdateCenterDialog,
+    StartupManagerDialog, StorageAnalyzerDialog, TitleBar,
+    ToolInstallWizardDialog, UpdateCenterDialog,
     refit_dialog,
 )
 from frontend.playbooks import PlaybookRunner, load_playbooks  # noqa: E402
@@ -127,6 +129,25 @@ _REVERT_TASKS: dict[str, str] = {
     "DisableTelemetry": "RevertDisableTelemetry",
     "DisableAdvertisingID": "RevertDisableAdvertisingID",
     "DisableActivityHistory": "RevertDisableActivityHistory",
+}
+
+#: The bundled-Microsoft-app restores that check the machine BEFORE offering
+#: to install (v1.1). Maps the restore task to
+#: (state-probe key, winget id, display name, official download page).
+#:
+#: The probe key is the REMOVAL task, and its verdict is inverted relative
+#: to what this asks: 11-StateProbe.ps1 answers "has the removal been
+#: applied?", so "applied" means the app is absent and "default" means it is
+#: still installed. Reusing that probe rather than adding a new backend task
+#: is what keeps this in step with the hub's own APPLIED badges — a separate
+#: presence check would be a second opinion that could disagree on screen.
+_RESTORE_TARGETS: dict[str, tuple[str, str, str, str]] = {
+    "RestoreEdge": (
+        "RemoveEdge", "Microsoft.Edge", "Microsoft Edge",
+        "https://www.microsoft.com/en-us/edge/download"),
+    "RestoreOneDrive": (
+        "RemoveOneDrive", "Microsoft.OneDrive", "Microsoft OneDrive",
+        "https://www.microsoft.com/en-us/microsoft-365/onedrive/download"),
 }
 
 
@@ -2125,6 +2146,42 @@ class PulseApp(QMainWindow):
         app_ids: list[str] | None = None
         office_paths: tuple[str, str] | None = None
         local_installer: tuple[str, str] | None = None
+
+        # -- v1.1 smart install check for the bundled-app restores ---------
+        # "Install / Restore" used to run winget unconditionally, so on a
+        # machine that still HAS the app it did a lot of visible work to
+        # report "already up to date" — an answer the app already knew
+        # before spawning anything. The state probe reports these two
+        # (11-StateProbe.ps1), and the verdict is inverted because the probe
+        # answers the REMOVAL card's question: "applied" means the app is
+        # GONE, "default" means it is still installed.
+        if task in _RESTORE_TARGETS:
+            probe_key, app_id, app_name, url = _RESTORE_TARGETS[task]
+            verdict = self._tweak_state.get(probe_key)
+            if verdict in ("default", False):
+                self._exec_dialog(NoticeDialog(
+                    self, f"{app_name} is already installed",
+                    f"{app_name} is already on this PC, so there is nothing "
+                    "to restore. Use the removal action in this hub first if "
+                    "you meant to take it off, or close this and carry on.",
+                    self.theme.t))
+                return
+            # Absent — or UNKNOWN, which takes the same branch on purpose:
+            # the wizard asks the user rather than guessing, and its winget
+            # path is a harmless no-op if the probe was simply unreadable.
+            wizard = ToolInstallWizardDialog(
+                self, app_id, app_name,
+                f"{app_name} is not currently installed. Choose how to put "
+                "it back.", url, self.theme.t)
+            if self._exec_dialog(wizard) != QDialog.DialogCode.Accepted:
+                return          # cancelled, or Path B opened the browser
+            if wizard.mode == "local" and wizard.local_path:
+                local_installer = (app_id, wizard.local_path)
+                item = {**item, "task": "InstallLocalFile"}
+            # mode == "winget" falls through to the normal Restore* task,
+            # which already handles the backup-restore half that a bare
+            # winget install would skip.
+
         if item.get("startup_manager"):
             # Fully self-contained: scans, groups by recommendation and
             # flips items live via its own workers. Nothing to hand back —

@@ -17,7 +17,7 @@ function Get-SystemInfoSnapshot {
     $CS   = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
     $GPUs = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
     $Uptime = if ($OS) { (Get-Date) - $OS.LastBootUpTime } else { $null }
-    $ActivePlan = try { (powercfg /getactivescheme) -replace '.*\(([^)]+)\).*', '$1' } catch { "Unknown" }
+    $ActivePlan = try { (& (Get-SystemBinary 'powercfg') /getactivescheme) -replace '.*\(([^)]+)\).*', '$1' } catch { "Unknown" }
     $TotalRAMGB = if ($CS) { [math]::Round($CS.TotalPhysicalMemory / 1GB, 1) } else { 0 }
     $FreeRAMGB  = if ($OS) { [math]::Round($OS.FreePhysicalMemory * 1KB / 1GB, 1) } else { 0 }
 

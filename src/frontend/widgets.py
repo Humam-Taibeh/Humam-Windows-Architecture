@@ -181,9 +181,25 @@ class PulseDialog(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        # After the base class has placed and sized us, so the captured
-        # region matches the geometry we will actually paint into.
-        self._capture_backdrop()
+        # DELIBERATELY NO CAPTURE HERE — see _present_dialog, which takes it
+        # immediately after refit_dialog has set our final geometry.
+        #
+        # This used to capture synchronously, and it was the modal backdrop
+        # artifact: at showEvent time a PulseDialog is still whatever size
+        # Qt gave it at construction, and refit_dialog — which expands it to
+        # cover the host's whole body — runs AFTERWARDS, from the subclass's
+        # own showEvent. So every frost was rendered for the wrong rectangle
+        # at the wrong offset and then stretched across the full body by
+        # paintEvent, which is what produced the flat hard-edged grey block
+        # with smeared content misregistered around it.
+        #
+        # It self-corrected once the 120ms _refrost timer fired, so it was
+        # invisible in a still screenshot taken late and obvious in the
+        # entrance itself — and worse the slower the machine, because the
+        # broken frame simply stays up longer (it was reported from a VM).
+        # Leaving _frost as None here means the pre-capture frame falls back
+        # to the flat scrim, which is honest and has no artifact.
+        self._frost = None
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -494,6 +510,12 @@ def _present_dialog(dialog: PulseDialog, duration_ms: int = 130):
     a quick compositor-side windowOpacity fade — no QGraphicsEffect
     involved in the animation."""
     refit_dialog(dialog)
+    # AFTER refit, never before. refit_dialog is what gives the dialog its
+    # real geometry (the host's full body), and the frost is registered to
+    # the pixels behind that exact rectangle — so capturing any earlier
+    # renders the wrong region at the wrong offset and paintEvent stretches
+    # the mistake over the whole backdrop. See PulseDialog.showEvent.
+    dialog._capture_backdrop()
     dialog.setWindowOpacity(0.0)
     anim = QPropertyAnimation(dialog, b"windowOpacity", dialog)
     anim.setDuration(duration_ms)
@@ -2663,6 +2685,51 @@ class ConfirmDialog(PulseDialog):
         go.setStyleSheet(TH.dialog_go_qss(t, accent))
         go.clicked.connect(self.accept)
         row.addWidget(go)
+        lay.addLayout(row)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        _present_dialog(self)
+
+
+class NoticeDialog(PulseDialog):
+    """A one-button "here is a fact" sheet.
+
+    Distinct from ConfirmDialog, which asks a QUESTION and therefore offers
+    Cancel/Proceed. Presenting a statement through a confirm dialog invites
+    the reader to look for the decision they are being asked to make, and
+    there isn't one — so this has a single Close and no accept path at all.
+
+    Used by the Edge/OneDrive install check: when the app is already on the
+    machine, the honest response to "Install / Restore" is to say so rather
+    than to open an installer wizard that would deploy nothing.
+    """
+
+    def __init__(self, parent: QWidget, title: str, body: str, t: dict,
+                 icon: str = "ℹ️"):
+        super().__init__(parent)
+        panel = _dialog_chrome(self, t, t["accent"], width=440)
+        lay = dialog_body(panel, "sm")
+
+        head = QLabel(f"{icon}  {title}")
+        head.setStyleSheet(TH.label_qss(t, "dialog"))
+        head.setWordWrap(True)      # see ConfirmDialog — same 440px panel
+        lay.addWidget(head)
+
+        text = QLabel(body)
+        text.setWordWrap(True)
+        text.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(text)
+
+        lay.addSpacing(TH.SPACE["sm"])
+        row = QHBoxLayout()
+        row.addStretch()
+        close = QPushButton("Close")
+        close.setFixedSize(96, 36)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(TH.dialog_go_qss(t, t["accent"]))
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
         lay.addLayout(row)
 
     def showEvent(self, e):
@@ -5334,6 +5401,15 @@ class ActivityDrawer(QWidget):
         self._pinned = pinned
         self._active = False   # a task is currently running
 
+        # Auto-collapse countdown. A restartable QTimer rather than a chain
+        # of QTimer.singleShot calls: the hold now has to be CANCELLABLE
+        # (hover) and RE-ARMABLE (leave), and a fired singleShot cannot be
+        # taken back — several of them racing each other is how a drawer
+        # ends up closing during the grace period it was just granted.
+        self._collapse_timer = QTimer(self)
+        self._collapse_timer.setSingleShot(True)
+        self._collapse_timer.timeout.connect(self._collapse_if_idle)
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(TH.SPACE["sm"])
@@ -5536,22 +5612,64 @@ class ActivityDrawer(QWidget):
             self._close()
 
     # -- public API (called by main.py's task pipeline) --------
-    HOLD_MS = 1500   # keep the final verdict visible before auto-collapsing
+    #: Hold after a run that printed essentially nothing — just long enough
+    #: to read the one-line verdict before the canvas comes back.
+    HOLD_MS = 1500
+    #: Hold after a run whose OUTPUT IS THE DELIVERABLE. PATH Doctor is the
+    #: clearest case: its whole value is the list of environment entries it
+    #: repaired, and at 1.5s the drawer shut before any of it could be read,
+    #: so the task appeared to do nothing. SFC/DISM, the driver scan and the
+    #: catalog deploys are the same shape. Not "never collapse" — the drawer
+    #: handing ~140px back to the grid is the point of it existing.
+    HOLD_READABLE_MS = 15000
+    #: Above this many console lines a run counts as worth reading.
+    READABLE_LINES = 3
 
     def set_running(self, running: bool):
         """A task started (True) → expand immediately; finished (False) →
-        collapse after a brief hold so the final verdict/output stays
-        readable, unless the user has pinned the drawer open."""
+        collapse after a hold scaled to how much there is to read, unless
+        the user has pinned the drawer open.
+
+        The hold is also CANCELLED WHILE THE POINTER IS OVER THE DRAWER (see
+        enterEvent), the same courtesy Toast extends to a notification being
+        read — a panel that closes itself out from under the eyes reading it
+        is the complaint this whole pairing answers.
+        """
         self._active = running
         if running:
             self._open()
-        else:
-            QTimer.singleShot(self.HOLD_MS, self._collapse_if_idle)
+            return
+        try:
+            readable = self.console.line_count() > self.READABLE_LINES
+        except (RuntimeError, AttributeError):
+            readable = False
+        self._schedule_collapse(
+            self.HOLD_READABLE_MS if readable else self.HOLD_MS)
+
+    def _schedule_collapse(self, delay_ms: int):
+        self._collapse_timer.start(delay_ms)
 
     def _collapse_if_idle(self):
         # a new task may have started (or the user pinned it) during the hold
-        if not self._active and not self._pinned:
-            self._close()
+        if self._active or self._pinned:
+            return
+        # …and the pointer may be resting on the drawer, which means someone
+        # is reading it. Re-arm rather than close; leaveEvent restarts the
+        # countdown from a short grace period once they move away.
+        if self.underMouse():
+            self._collapse_timer.start(self.HOLD_MS)
+            return
+        self._close()
+
+    def enterEvent(self, e):
+        # Reading. Stop the clock outright — leaveEvent restarts it.
+        self._collapse_timer.stop()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        if not self._active and not self._pinned and self._body.isVisible():
+            self._collapse_timer.start(self.HOLD_MS)
+        super().leaveEvent(e)
 
     def is_pinned(self) -> bool:
         """Persisted across sessions — see utils.prefs.drawer_pinned."""

@@ -171,8 +171,21 @@ function Ensure-Winget {
     return $global:WingetAvailable
 }
 
+# Chocolatey is a third-party tool, so it gets the same treatment winget
+# does (Get-WingetPath) rather than a System32 anchor: RESOLVE IT ONCE to
+# an absolute path here, and invoke that path afterwards. Pulse runs
+# elevated and a bare `choco` is a $env:PATH search - PATH is assembled
+# from HKCU, which the unelevated user can write, so the bare form hands
+# an attacker-placed choco.exe an administrator token. Resolving through
+# Get-Command still consults PATH, but it does so ONCE, here, at load -
+# not at each call site - and records what it found so the deploy path
+# cannot be redirected between the check and the use.
 $global:ChocolateyAvailable = $false
-if (Get-Command choco -ErrorAction SilentlyContinue) {
+$global:ChocolateyPath = $null
+$ChocoCommand = Get-Command choco -CommandType Application -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+if ($ChocoCommand -and $ChocoCommand.Source) {
+    $global:ChocolateyPath = $ChocoCommand.Source
     $global:ChocolateyAvailable = $true
 }
 

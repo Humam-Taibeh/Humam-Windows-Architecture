@@ -403,13 +403,34 @@ function Backup-EdgeState {
             Get-ChildItem -Path $UserDataDir -Directory -Filter "Default*" -ErrorAction SilentlyContinue | ForEach-Object {
                 $Dest = Join-Path $SettingsBackup $_.Name
                 New-Item -Path $Dest -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
-                foreach ($FileName in @("Preferences", "Bookmarks", "Favicons")) {
+                # THE WHOLE PROFILE, not three files. This used to copy only
+                # Preferences/Bookmarks/Favicons, which is enough to say a
+                # backup was taken and NOT enough to put the user's browser
+                # back: history, saved logins, autofill, cookies, extension
+                # state and the session were all discarded by a step whose
+                # entire promise is "the removal is reversible". Every name
+                # below is a Chromium profile artefact another Chromium
+                # browser can import.
+                foreach ($FileName in @(
+                        "Preferences", "Secure Preferences", "Bookmarks",
+                        "Bookmarks.bak", "Favicons", "History", "Top Sites",
+                        "Shortcuts", "Web Data", "Login Data", "Cookies",
+                        "Network Action Predictor", "Visited Links")) {
                     $Src = Join-Path $_.FullName $FileName
                     if (Test-Path $Src) { Copy-Item -Path $Src -Destination $Dest -Force -ErrorAction SilentlyContinue }
                 }
+                # Extension payloads and their settings are directories, not
+                # files, so they need the recursive copy.
+                foreach ($DirName in @("Extensions", "Local Extension Settings",
+                                       "Local Storage", "Sync Data")) {
+                    $Src = Join-Path $_.FullName $DirName
+                    if (Test-Path $Src) {
+                        Copy-Item -Path $Src -Destination $Dest -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                }
             }
         }
-        Write-Success "Edge version ($Version) and settings backed up to Desktop\Pulse_EdgeBackup."
+        Write-Success "Edge version ($Version) and profile data backed up to Desktop\Pulse_EdgeBackup."
     } catch {
         Write-Warn "Edge backup encountered an issue (continuing with removal anyway): $($_.Exception.Message)"
     }
@@ -480,7 +501,7 @@ function Backup-OneDriveFiles {
     try {
         New-Item -Path $Script:OneDriveBackupFolder -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
         Write-Info "Copying files - this may take a while depending on folder size..."
-        robocopy $OneDrivePath $Script:OneDriveBackupFolder /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+        & (Get-SystemBinary 'robocopy') $OneDrivePath $Script:OneDriveBackupFolder /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
         # Robocopy's exit code is a bitmask, not a boolean - 0-7 all mean
         # "completed, no failed copies" (bits just flag "files copied" /
         # "extra files" etc.); 8+ means at least one file failed to copy.

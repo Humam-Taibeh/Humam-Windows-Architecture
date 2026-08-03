@@ -919,8 +919,16 @@ def recurring_days(item: dict) -> int | None:
 # but the GUI mirrors the list so it can PRE-CHECK before spawning PowerShell:
 # a non-elevated admin action shows an inline "relaunch elevated" prompt
 # instead of a spawn-then-fail round trip, and admin-gated Quick Action cards
-# can show a lock affordance up front. An automated equality check
-# (tests/scratchpad) guards the two lists against drift.
+# can show a lock affordance up front.
+#
+# tests/test_contract.py::test_admin_gate_mirrors_are_identical asserts the
+# two lists are EQUAL. That check is new in v1.1, and it found the drift it
+# was written for: the two HKLM-policy reverts below were gated in the
+# backend and missing here, so reverting telemetry or activity history on an
+# unelevated Pulse spawned PowerShell and came back with a failure instead of
+# offering the one-click elevate. The comment that used to sit here claimed
+# an equality check already existed. It did not — which is exactly how the
+# lists drifted while both files said they could not.
 #
 # Software install/update tasks are deliberately absent for the same reason
 # the backend omits them: winget + each installer handle their own elevation,
@@ -933,6 +941,11 @@ ADMIN_REQUIRED_TASKS = frozenset({
     "CreateRestorePoint", "DriverBackup", "RestoreServices", "RestoreEdge", "RestoreOneDrive",
     "ApplyAllPrivacy", "ResetTweaks", "InstallOfficeODT", "InstallOfficeODTAuto",
     "StartupDisableItem", "StartupEnableItem",
+    # v1.0 two-way toggles: ONLY the two that write HKLM policy keys, which
+    # is exactly the pairing 01-Catalogs.ps1 makes. The other six reverts
+    # restore HKCU values an unelevated session already owns, and listing
+    # them would raise a UAC prompt to undo a per-user setting.
+    "RevertDisableTelemetry", "RevertDisableActivityHistory",
     # v1.0+ Phase 2 DNS switcher — mirrors 01-Catalogs.ps1.
     "SetDnsProfile", "RestoreDns",
     "ContextMenuToggle", "ContextMenuRestore",

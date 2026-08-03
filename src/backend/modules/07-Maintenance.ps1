@@ -31,7 +31,7 @@ function Invoke-SystemRepair {
         # sfc produces it, so "Verification x% complete." rewrites reach
         # the GUI live instead of arriving in one block after the scan.
         $OutputLines = New-Object System.Collections.Generic.List[string]
-        & sfc /scannow 2>&1 | ForEach-Object {
+        & (Get-SystemBinary 'sfc') /scannow 2>&1 | ForEach-Object {
             $Clean = ([string]$_ -replace "`0", "")
             [void]$OutputLines.Add($Clean)
             if ($Clean.Trim()) { Write-Host $Clean }
@@ -61,7 +61,7 @@ function Invoke-SystemRepair {
         # Pipe through Write-Host so the progress streams to the caller
         # instead of being captured into Invoke-WithRetry's return value
         # (which silently hid all DISM output and polluted $DismOk).
-        & DISM /Online /Cleanup-Image /RestoreHealth | ForEach-Object { Write-Host $_ }
+        & (Get-SystemBinary 'dism') /Online /Cleanup-Image /RestoreHealth | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { throw "DISM exited with code $LASTEXITCODE." }
     }
 
@@ -186,10 +186,10 @@ function Set-HibernationState {
     if (Test-DryRun "Run 'powercfg /hibernate $TargetWord'") { return }
     try {
         if ($Enable) {
-            powercfg /hibernate on | Out-Null
+            & (Get-SystemBinary 'powercfg') /hibernate on | Out-Null
             Write-Success "Hibernation enabled."
         } else {
-            powercfg /hibernate off | Out-Null
+            & (Get-SystemBinary 'powercfg') /hibernate off | Out-Null
             Write-Success "Hibernation disabled (hiberfil.sys removed, frees disk space equal to a portion of installed RAM)."
         }
     } catch {
@@ -224,7 +224,7 @@ function Invoke-DiskCleanupUtility {
     if (Test-DryRun "Launch the native Disk Cleanup utility (cleanmgr.exe)") { return }
     Write-Info "Launching the native Disk Cleanup utility (cleanmgr.exe)..."
     try {
-        Start-Process "cleanmgr.exe" -ErrorAction Stop
+        Start-Process (Get-SystemBinary 'cleanmgr') -ErrorAction Stop
         Write-Success "Disk Cleanup launched. Follow its on-screen prompts."
     } catch {
         Write-ErrorX "Could not launch Disk Cleanup: $($_.Exception.Message)"

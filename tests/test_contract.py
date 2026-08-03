@@ -392,11 +392,66 @@ _CATALOGS = os.path.join(_ROOT, "src/backend/modules/01-Catalogs.ps1")
 
 
 def _backend_admin_tasks() -> set[str]:
-    """$Script:AdminRequiredTasks, the backend's own elevation gate."""
-    src = open(_CATALOGS, encoding="utf-8-sig").read()
+    """$Script:AdminRequiredTasks, the backend's own elevation gate.
+
+    COMMENTS ARE STRIPPED FIRST, and that is not cosmetic. Cutting the
+    array body at the first ')' after the declaration — which is what this
+    did until v1.1 — ends it at the ')' inside the comment
+    "# (ContextMenuScan) is deliberately absent", four lines before the
+    array actually closes. The parse silently returned 28 of the 30 real
+    entries, so ContextMenuToggle and ContextMenuRestore were invisible to
+    every assertion built on this, and anything declared after that comment
+    would have been too. A truncating parser does not fail; it just quietly
+    stops guarding, which is the worst way for a guard to break.
+    """
+    raw = open(_CATALOGS, encoding="utf-8-sig").read()
+    src = "\n".join(re.sub(r"#.*$", "", line) for line in raw.splitlines())
     start = src.index("$Script:AdminRequiredTasks")
     body = src[start:src.index(")", start)]
     return set(re.findall(r'"([A-Za-z0-9_]+)"', body))
+
+
+def test_the_backend_admin_list_was_fully_parsed():
+    """Guard the parser itself — see _backend_admin_tasks. A truncated set
+    makes every check below pass for the wrong reason."""
+    tasks = _backend_admin_tasks()
+    assert len(tasks) >= 30, f"only {len(tasks)} admin tasks parsed: {sorted(tasks)}"
+    # the two that the old truncating parse could not see
+    assert {"ContextMenuToggle", "ContextMenuRestore"} <= tasks
+
+
+def test_admin_gate_mirrors_are_identical():
+    """menu_structure.ADMIN_REQUIRED_TASKS == $Script:AdminRequiredTasks.
+
+    THE CHECK BOTH FILES SAID EXISTED AND DIDN'T. menu_structure.py's
+    comment promised "an automated equality check (tests/scratchpad) guards
+    the two lists against drift"; nothing did, and they had drifted —
+    RevertDisableTelemetry and RevertDisableActivityHistory were admin-gated
+    in the backend and absent from the GUI mirror.
+
+    The backend is the authority and still refuses cleanly, so a drift is
+    not a security hole. It is a UX one, and it is invisible in review: the
+    GUI's pre-check is what turns "needs Administrator" into an inline
+    one-click elevate prompt, so a task missing from this list spawns
+    PowerShell, fails, and reports as an amber failure instead of offering
+    the fix — for reasons no one reading either list would notice.
+    """
+    from frontend.menu_structure import ADMIN_REQUIRED_TASKS
+
+    backend = _backend_admin_tasks()
+    gui = set(ADMIN_REQUIRED_TASKS)
+    assert gui == backend, (
+        "the two elevation gates disagree.\n"
+        f"  only in the GUI mirror (menu_structure.py): {sorted(gui - backend)}\n"
+        f"  only in the backend (01-Catalogs.ps1):      {sorted(backend - gui)}")
+
+
+def test_every_admin_gated_task_has_a_dispatcher_case():
+    """An admin-gated name that no case implements gates nothing — the
+    dispatcher would reject it for elevation and then fall through to
+    'Unknown task' once elevated."""
+    missing = sorted(_backend_admin_tasks() - _dispatcher_cases())
+    assert not missing, f"admin-gated tasks with no dispatcher case: {missing}"
 
 
 class TestRevertToggles:
@@ -704,6 +759,16 @@ _BACKEND_DIR = os.path.join(_ROOT, "src/backend")
 _ANCHORED_TOOLS = (
     "powershell", "pwsh", "explorer", "taskmgr", "cmd", "winget",
     "msiexec", "ie4uinit", "rundll32", "regsvr32", "sc", "reg", "schtasks",
+    # v1.1: the WORKER tools. Every one of these shipped as a bare-name
+    # invocation in an elevated process — powercfg (eight call sites,
+    # including the state probe that runs on launch and after every task),
+    # sfc, DISM, ipconfig, netsh, cleanmgr, robocopy and choco. They were
+    # missed because the list above named only the tools someone had
+    # thought to add, while the patterns below matched only the
+    # `Start-Process x` / `& x` shapes — and these are mostly DIRECT calls
+    # (`powercfg /list`), which is why _BARE_CALL exists now.
+    "powercfg", "sfc", "dism", "ipconfig", "netsh", "cleanmgr", "robocopy",
+    "choco", "chocolatey",
 )
 
 
@@ -751,15 +816,49 @@ def test_no_bare_executable_invocations():
             re.I),
         # & winget ... / & "explorer" ...
         re.compile(r'&\s+["\']?(?:%s)(?:\.exe)?["\']?\s' % names, re.I),
+        # BARE DIRECT CALL: `powercfg /list`, `ipconfig /flushdns`,
+        # `robocopy $src $dst /E`. PowerShell needs no & to launch an
+        # executable, so this is the MOST natural way to write the hole and
+        # the one the two patterns above could not see — seven tools' worth
+        # of call sites hid behind exactly this gap. Anchored to the start
+        # of a statement (line start, or after ( { | ; = ) so prose and
+        # parameter values do not match, and the anchored form
+        # `& (Get-SystemBinary 'powercfg')` is excluded because the name
+        # there is inside quotes rather than in command position.
     )
+
+    # The BARE DIRECT CALL pattern, run separately because it needs the
+    # line with STRING LITERALS BLANKED first. PowerShell needs no & to
+    # launch an executable, so `powercfg /list` and `netsh winsock reset`
+    # are the most natural way to write the hole — and the two patterns
+    # above, which look for `Start-Process x` / `& x`, cannot see it. Seven
+    # tools' worth of call sites hid in exactly that gap.
+    #
+    # Literals are blanked because the tool NAMES appear constantly inside
+    # user-facing messages ("winget is unavailable…", "SFC and DISM repair
+    # completed", "(robocopy exit code $LASTEXITCODE)"), and the '(' in
+    # such a sentence would otherwise read as the start of a statement.
+    # The two patterns above deliberately still see quotes — they have to,
+    # to catch Start-Process "taskmgr.exe".
+    #
+    # Argument class is WIDE (a bare word counts): `netsh winsock reset`
+    # and `choco install $AppId` take a verb, not a switch. \b stops `dism`
+    # matching `dismount`.
+    bare_call = re.compile(
+        r'(?:^|[({|;=])\s*(?:%s)(?:\.exe)?\b\s+[-/$@\w]' % names, re.I)
+
+    def _blank_literals(text: str) -> str:
+        return re.sub(r"'[^']*'", "''", re.sub(r'"[^"]*"', '""', text))
 
     offenders = []
     for path in _backend_files():
         relative = os.path.relpath(path, _ROOT).replace(os.sep, "/")
         for number, line in _code_lines(path):
-            for pattern in patterns:
-                if pattern.search(line):
-                    offenders.append(f"{relative}:{number}: {line.strip()}")
+            flagged = any(pattern.search(line) for pattern in patterns)
+            if not flagged and bare_call.search(_blank_literals(line)):
+                flagged = True
+            if flagged:
+                offenders.append(f"{relative}:{number}: {line.strip()}")
 
     assert not offenders, (
         "bare executable invocation(s) found — these resolve through "

@@ -197,6 +197,78 @@ function Test-OneDriveInstalled {
     return $false
 }
 
+function Get-OneDriveSetupPath {
+    <# OneDriveSetup.exe, wherever this machine keeps it.
+
+       BOTH locations, in order. The 32-bit stub lives in SysWOW64 on a
+       64-bit Windows, but a 64-bit OneDrive install (now the default on
+       current builds) and every 32-bit Windows put it in System32 instead
+       - and this used to look ONLY in SysWOW64, so on those machines the
+       purge fell straight through to "OneDrive standalone installer
+       payload not found" and reported Failed without ever attempting the
+       uninstall. #>
+    $Candidates = @(
+        (Join-Path $env:SystemRoot 'SysWOW64\OneDriveSetup.exe'),
+        (Join-Path $env:SystemRoot 'System32\OneDriveSetup.exe')
+    )
+    foreach ($Path in $Candidates) {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) { return $Path }
+    }
+    return $null
+}
+
+function Stop-OneDriveProcesses {
+    <# OneDrive.exe is not the only thing holding the install open.
+       FileCoAuth.exe (the Office co-authoring broker) and FileSyncHelper
+       load out of the same per-user folder, and either one still running
+       makes the uninstaller leave the directory behind. #>
+    foreach ($Name in @("OneDrive", "OneDriveSetup", "FileCoAuth", "FileSyncHelper")) {
+        Invoke-Mutation -Description "Terminate $Name.exe" -Action {
+            Get-Process -Name $Name -ErrorAction SilentlyContinue |
+                Stop-Process -Force -ErrorAction SilentlyContinue
+        } | Out-Null
+    }
+    if (-not $Script:DryRun) { Start-Sleep -Milliseconds 800 }
+}
+
+function Stop-OneDriveServices {
+    <# OneDrive's own updater service only.
+
+       DELIBERATELY NOT OneSyncSvc: despite the name that is Windows' Sync
+       Host, which also carries Mail, Calendar, People and contacts sync.
+       Disabling it to remove OneDrive would break unrelated first-party
+       apps for a user who asked about a file-sync client - a side effect
+       they would never connect back to this action. #>
+    foreach ($Svc in @("OneDrive Updater Service")) {
+        $Service = Get-Service -Name $Svc -ErrorAction SilentlyContinue
+        if (-not $Service) { continue }
+        Invoke-Mutation -Description "Stop and disable the '$Svc' service" -Action {
+            Stop-Service -Name $Svc -Force -ErrorAction SilentlyContinue
+            Set-Service -Name $Svc -StartupType Disabled -ErrorAction SilentlyContinue
+        } | Out-Null
+    }
+}
+
+function Clear-OneDriveStartupEntries {
+    <# The Run keys that relaunch OneDrive (or re-run its setup stub) at the
+       next sign-in. Left behind, the uninstall looks like it worked until
+       the user reboots and OneDrive is back. #>
+    $Targets = @(
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"; Name = "OneDrive" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"; Name = "OneDriveSetup" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; Name = "OneDrive" }
+    )
+    foreach ($Target in $Targets) {
+        if ($null -eq (Get-RegValue -Path $Target.Path -Name $Target.Name)) { continue }
+        try {
+            Remove-RegValue -Path $Target.Path -Name $Target.Name
+            Write-Info "Cleared startup entry '$($Target.Name)'."
+        } catch {
+            Write-Warn "Could not clear startup entry '$($Target.Name)': $($_.Exception.Message)"
+        }
+    }
+}
+
 function Remove-OneDrivePackage {
     <#
     .SYNOPSIS
@@ -214,17 +286,16 @@ function Remove-OneDrivePackage {
     }
 
     New-SystemRestorePoint
-    $ODSetup = "$env:SystemRoot\SysWOW64\OneDriveSetup.exe"
+    $ODSetup = Get-OneDriveSetupPath
 
     if (-not (Backup-OneDriveFiles)) {
         Write-ErrorX "Aborting OneDrive removal: the backup did not complete successfully. Resolve the issue above and try again."
         return @{ Status = 'Failed'; Message = 'OneDrive removal was aborted because the pre-removal backup did not complete successfully.' }
     }
     try {
-        Invoke-Mutation -Description "Terminate OneDrive.exe" -Action {
-            Stop-Process -Name "OneDrive" -Force -ErrorAction SilentlyContinue
-        } | Out-Null
-        if (Test-Path $ODSetup) {
+        Stop-OneDriveProcesses
+        Stop-OneDriveServices
+        if ($ODSetup) {
             if (Test-DryRun "Run OneDriveSetup.exe /uninstall") {
                 return @{ Status = 'DryRun'; Message = '[DRY-RUN] OneDrive removal simulated (backup + uninstall were reported, not executed).' }
             }
@@ -233,6 +304,11 @@ function Remove-OneDrivePackage {
             # succeeded (Start-Process doesn't throw on a non-zero exit code).
             $Proc = Start-Process $ODSetup -ArgumentList "/uninstall" -Wait -NoNewWindow -PassThru
             if ($Proc.ExitCode -eq 0) {
+                # AFTER the uninstaller, not before: it rewrites its own Run
+                # entry as part of shutting down, so clearing these first
+                # just means clearing them twice and missing the one that
+                # matters.
+                Clear-OneDriveStartupEntries
                 Write-Success "OneDrive uninstall sequence executed."
                 return @{ Status = 'Success'; Message = 'OneDrive removed. Local files were backed up to Desktop\Pulse_OneDriveBackup first.' }
             } else {
@@ -240,8 +316,8 @@ function Remove-OneDrivePackage {
                 return @{ Status = 'Failed'; Message = "OneDrive's uninstaller exited with code $($Proc.ExitCode)." }
             }
         } else {
-            Write-Warn "Skipped: OneDrive standalone installer payload not found."
-            return @{ Status = 'Failed'; Message = 'OneDrive standalone installer payload not found - it may already be partially removed.' }
+            Write-Warn "Skipped: OneDriveSetup.exe was not found in System32 or SysWOW64."
+            return @{ Status = 'Failed'; Message = 'OneDriveSetup.exe was not found in System32 or SysWOW64 - OneDrive may already be partially removed.' }
         }
     } catch {
         Write-ErrorX "OneDrive removal failed: $($_.Exception.Message)"
@@ -321,6 +397,37 @@ function Clear-EdgeNoRemoveFlags {
     }
 }
 
+function Disable-EdgeDefaultBrowserPrompt {
+    <# Stop Edge nagging to be the default browser.
+
+       HKLM\SOFTWARE\Policies\Microsoft\Edge!DefaultBrowserSettingEnabled=0
+       is Edge's own documented policy for this. It is set as part of the
+       purge because a removal that Windows later reverses (Edge is an
+       inbox component on many builds and comes back with a feature update)
+       otherwise returns WITH the prompt, which is the thing users actually
+       notice. Machine-scope HKLM, so it needs the elevation RemoveEdge
+       already requires.
+
+       Best-effort: a managed device can have this key locked by real Group
+       Policy, and failing the whole purge over a nag-screen preference
+       would be the wrong trade. #>
+    $PolicyKey = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+    try {
+        Set-RegValue -Path $PolicyKey -Name "DefaultBrowserSettingEnabled" -Value 0 -Type DWord
+        # Set-RegValue returns cleanly in dry-run WITHOUT writing (it logs its
+        # own [WHATIF] line), so an unconditional Write-Success here would
+        # claim a change that did not happen AND bump the session success
+        # counter that Complete-GuiTask reads. Announce only a real write.
+        if (-not $Script:DryRun) {
+            Write-Success "Edge's 'make me the default browser' prompt disabled by policy."
+        }
+        return $true
+    } catch {
+        Write-Warn "Could not set the Edge default-browser policy: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Remove-EdgeScheduledTasks {
     <# Last-mile cleanup: the Edge/EdgeUpdate scheduled tasks keep
        reinstalling or re-registering Edge components in the background
@@ -373,11 +480,15 @@ function Remove-MicrosoftEdge {
 
     # msedge.exe/msedgewebview2.exe/identity_helper.exe hold their own
     # binaries open - every removal path below fails or silently no-ops if
-    # any of them is still running.
-    Get-Process -Name "msedge", "msedgewebview2", "identity_helper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    # any of them is still running. MicrosoftEdgeUpdate is in the list for a
+    # different reason: it is the updater, and left alive it can reinstall
+    # what the purge below removes, so a "successful" removal reverses
+    # itself minutes later.
+    Get-Process -Name "msedge", "msedgewebview2", "identity_helper", "MicrosoftEdgeUpdate" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 800
 
     Clear-EdgeNoRemoveFlags
+    Disable-EdgeDefaultBrowserPrompt | Out-Null
 
     $Removed = $false
 
@@ -443,14 +554,37 @@ function Remove-MicrosoftEdge {
     # ARE removable and turning a real success into a false failure - so we
     # filter it out up front rather than fighting a block Windows will never
     # lift.
-    if (-not $Removed) {
-        $Removed = Invoke-WithRetry -OperationName "Remove Microsoft Edge (Appx cleanup)" -Action {
-            $Packages = Get-AppxPackage -AllUsers -Name "*MicrosoftEdge*" -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -notlike "*MicrosoftEdgeDevToolsClient*" }
-            if (-not $Packages) { throw "No removable Edge Appx package registration found (DevToolsClient is OS-protected and skipped)." }
-            $Packages | Remove-AppxPackage -AllUsers -ErrorAction Stop
+    # ALWAYS, not only when the tiers above failed. These stubs are what
+    # makes Windows keep reporting Edge as installed after the Win32 payload
+    # is gone, so leaving them behind on the SUCCESS path was how a purge
+    # that "worked" still showed Edge present. Finding none is the ordinary
+    # outcome on a clean machine and is NOT a failure - it must not touch
+    # $Removed downward, and it must not log an error, or every successful
+    # setup.exe removal would report one.
+    $AppxCleared = $false
+    try {
+        $Packages = @(Get-AppxPackage -AllUsers -Name "*MicrosoftEdge*" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notlike "*MicrosoftEdgeDevToolsClient*" })
+        if ($Packages.Count -gt 0) {
+            foreach ($Package in $Packages) {
+                # Per-package, so one OS-protected stub cannot abort the
+                # removal of the others (the reason DevToolsClient is
+                # filtered out above - it always fails with 0x80070032).
+                try {
+                    Remove-AppxPackage -Package $Package.PackageFullName -AllUsers -ErrorAction Stop
+                    Write-Info "Unregistered Edge Appx package '$($Package.Name)'."
+                    $AppxCleared = $true
+                } catch {
+                    Write-Warn "Could not unregister '$($Package.Name)': $($_.Exception.Message)"
+                }
+            }
+        } else {
+            Write-Info "No removable Edge Appx registration present (DevToolsClient is OS-protected and skipped)."
         }
+    } catch {
+        Write-Warn "Edge Appx cleanup could not run: $($_.Exception.Message)"
     }
+    if (-not $Removed) { $Removed = $AppxCleared }
 
     Remove-EdgeScheduledTasks
 
@@ -507,11 +641,13 @@ function Invoke-NetworkOptimization {
     # mid-task can leave the machine offline if the renew fails (VPNs,
     # static configs, flaky Wi-Fi drivers), and the Winsock/IP-stack reset
     # below requires a reboot to apply anyway.
-    ipconfig /flushdns
+    $IpconfigExe = Get-SystemBinary 'ipconfig'
+    $NetshExe    = Get-SystemBinary 'netsh'
+    & $IpconfigExe /flushdns
     $DnsOk = ($LASTEXITCODE -eq 0)
-    netsh winsock reset
+    & $NetshExe winsock reset
     $WinsockOk = ($LASTEXITCODE -eq 0)
-    netsh int ip reset
+    & $NetshExe int ip reset
     $IpOk = ($LASTEXITCODE -eq 0)
     if ($DnsOk -and $WinsockOk -and $IpOk) {
         Write-Success "Network stack reset and DNS flushed. Ping latency should improve."
@@ -550,9 +686,10 @@ function Set-PulsePowerPlanTimeouts {
         @{ Label = "Display timeout (AC)"; Arg = "monitor-timeout-ac" },
         @{ Label = "Sleep timeout (AC)";   Arg = "standby-timeout-ac" }
     )
+    $PowercfgExe = Get-SystemBinary 'powercfg'
     foreach ($Setting in $Settings) {
         try {
-            powercfg /change $Setting.Arg 0 | Out-Null
+            & $PowercfgExe /change $Setting.Arg 0 | Out-Null
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "$($Setting.Label) set to Never."
             } else {
@@ -570,7 +707,8 @@ function Enable-UltimatePerformancePowerPlan {
     $PlanName   = "Pulse Power Plan"
     $LegacyName = "Humam Ultimate Power Plan"   # pre-rebrand (v5.x) scheme name
     $GuidRegex  = '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'
-    $Existing = powercfg /list | Out-String
+    $PowercfgExe = Get-SystemBinary 'powercfg'
+    $Existing = & $PowercfgExe /list | Out-String
     if ($Existing -match [regex]::Escape($PlanName) -and $Existing -match '\*') {
         $ActiveLine = ($Existing -split "`n") | Where-Object { $_ -match [regex]::Escape($PlanName) -and $_ -match '\*' }
         if ($ActiveLine) {
@@ -594,12 +732,12 @@ function Enable-UltimatePerformancePowerPlan {
             $pattern = $GuidRegex + '.*' + [regex]::Escape($Name)
             if ($Existing -match $pattern) {
                 $guid = $matches[1]
-                if ($Name -ne $PlanName) { powercfg /changename $guid $PlanName > $null }
-                powercfg /setactive $guid > $null
+                if ($Name -ne $PlanName) { & $PowercfgExe /changename $guid $PlanName > $null }
+                & $PowercfgExe /setactive $guid > $null
                 # powercfg /setactive can exit 0 without actually switching
                 # (e.g. a policy-restricted machine) - verify against the
                 # ACTUAL active scheme instead of trusting the exit code.
-                if ((powercfg /getactivescheme | Out-String) -match [regex]::Escape($guid)) {
+                if ((& $PowercfgExe /getactivescheme | Out-String) -match [regex]::Escape($guid)) {
                     Write-Success "$PlanName activated (existing profile)."
                     Set-PulsePowerPlanTimeouts
                 } else {
@@ -612,16 +750,16 @@ function Enable-UltimatePerformancePowerPlan {
         $sourceGuid = "e9a42b02-d5df-448d-aa00-03f14749eb61"
         # Out-String flattens the line array: -match on an array filters
         # elements WITHOUT populating $matches, which broke GUID extraction.
-        $dupOutput = powercfg /duplicatescheme $sourceGuid 2>&1 | Out-String
+        $dupOutput = & $PowercfgExe /duplicatescheme $sourceGuid 2>&1 | Out-String
         $newGuid = $null
         if ($dupOutput -match $GuidRegex) {
             $newGuid = $matches[1]
         }
 
         if ($newGuid) {
-            powercfg /changename $newGuid $PlanName > $null
-            powercfg /setactive $newGuid > $null
-            if ((powercfg /getactivescheme | Out-String) -match [regex]::Escape($newGuid)) {
+            & $PowercfgExe /changename $newGuid $PlanName > $null
+            & $PowercfgExe /setactive $newGuid > $null
+            if ((& $PowercfgExe /getactivescheme | Out-String) -match [regex]::Escape($newGuid)) {
                 Write-Success "$PlanName activated successfully."
                 Set-PulsePowerPlanTimeouts
             } else {

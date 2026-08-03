@@ -175,7 +175,11 @@ function Get-PulseTweakState {
 
     # -- Ultimate power plan: active scheme carries the Pulse name -------
     try {
-        $active = (powercfg /getactivescheme 2>$null | Out-String)
+        # Anchored, not a bare name: this probe runs on launch AND after
+        # every task in an elevated process, so it was the single most
+        # frequent PATH lookup in the app - and $env:PATH is assembled from
+        # HKCU, which the unelevated user owns. See Get-SystemBinary.
+        $active = (& (Get-SystemBinary 'powercfg') /getactivescheme 2>$null | Out-String)
         if ([string]::IsNullOrWhiteSpace($active)) {
             $state["UltimatePowerPlan"] = $null
         } else {

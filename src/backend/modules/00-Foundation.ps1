@@ -84,6 +84,23 @@ $Script:SystemBinaries = @{
     'cmd'        = Join-Path $Script:System32Dir 'cmd.exe'
     'sc'         = Join-Path $Script:System32Dir 'sc.exe'
     'reg'        = Join-Path $Script:System32Dir 'reg.exe'
+    # v1.1: the WORKER tools. Every one of these was being invoked by bare
+    # name from an elevated process - the exact hole the block above exists
+    # to close, missed because the guard test only looked for the
+    # `Start-Process x` / `& x` shapes and these are mostly direct calls
+    # (`powercfg /list`, `ipconfig /flushdns`). powercfg is the worst of
+    # them: the state probe reads the active scheme with it on launch AND
+    # after every task, making it the most frequently executed shell-out
+    # in the app.
+    'powercfg'   = Join-Path $Script:System32Dir 'powercfg.exe'
+    'sfc'        = Join-Path $Script:System32Dir 'sfc.exe'
+    # Dism.exe, not DISM - the file really is mixed-case on disk. The name
+    # is irrelevant to Windows but not to a future reader diffing this.
+    'dism'       = Join-Path $Script:System32Dir 'Dism.exe'
+    'ipconfig'   = Join-Path $Script:System32Dir 'ipconfig.exe'
+    'netsh'      = Join-Path $Script:System32Dir 'netsh.exe'
+    'cleanmgr'   = Join-Path $Script:System32Dir 'cleanmgr.exe'
+    'robocopy'   = Join-Path $Script:System32Dir 'Robocopy.exe'
 }
 
 function Get-SystemBinary {
