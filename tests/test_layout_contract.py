@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 
 import pytest
 from PySide6.QtWidgets import QFrame, QLabel
@@ -82,6 +83,56 @@ def test_every_layout_measurement_comes_off_the_scale(module):
     assert not off_scale, (
         f"{len(off_scale)} layout call(s) off TH.SPACE "
         f"{sorted(TH.SPACE.values())}:\n{listing}")
+
+
+# ============================================================
+#  THE TYPE SCALE
+# ============================================================
+#: `font-size: 13px` written straight into a QSS string.
+_FONT_SIZE_LITERAL = re.compile(r"font-size:\s*(\d+)px")
+
+#: Qt modules only. health_report.py writes CSS for a standalone exported
+#: HTML document — a different medium, its own typography, no access to
+#: these tokens when a browser renders it. See the note on TH.TYPE.
+_TYPED_MODULES = ["theme.py", "main.py", "widgets.py",
+                  "animations.py", "playbooks.py"]
+
+
+@pytest.mark.parametrize("module", _TYPED_MODULES)
+def test_every_font_size_comes_off_the_type_scale(module):
+    """No hand-picked type sizes. Anywhere.
+
+    The exact defect SPACE was introduced to kill, one axis over: ten
+    distinct font-size literals were hand-written into about sixty QSS
+    strings with no rule about which to reach for. The clearest symptom was
+    a pair — the breadcrumb separator chevron at 17px and the card's
+    drill-in chevron at 18px, the same element doing the same job one
+    screen apart, different for no reason anyone could state.
+
+    A size written here is a size nobody chose. Pick a role from TH.TYPE,
+    or add a step with its reason, exactly as the spacing scale requires.
+    """
+    source = open(os.path.join(_FRONTEND, module), encoding="utf-8").read()
+    lines = source.splitlines()
+    off_scale = [(i + 1, lines[i].strip())
+                 for i, line in enumerate(lines)
+                 for _ in _FONT_SIZE_LITERAL.finditer(line)]
+    listing = "\n".join(f"  {module}:{ln}  {text}" for ln, text in off_scale)
+    assert not off_scale, (
+        f"{len(off_scale)} font-size literal(s) not off TH.TYPE "
+        f"{sorted(TH.TYPE.values())}:\n{listing}")
+
+
+def test_the_type_scale_has_no_redundant_steps():
+    """Two roles resolving to the same pixel size are one role with two
+    names — the scale describing itself as finer than it is. (It is fine
+    for a size to be UNUSED for a while; it is not fine for two steps to
+    be indistinguishable.)"""
+    by_size = {}
+    for role, px in TH.TYPE.items():
+        by_size.setdefault(px, []).append(role)
+    clashes = {px: roles for px, roles in by_size.items() if len(roles) > 1}
+    assert not clashes, f"TH.TYPE steps sharing a size: {clashes}"
 
 
 # ============================================================
@@ -170,6 +221,66 @@ def test_band_headers_die_with_their_cards(qapp, index):
     assert all(shown(h) for h in headers), (
         "clearing the filter did not bring every band header back")
     assert not shown(page._empty), "the empty state outlived the filter"
+
+
+@pytest.mark.parametrize("index", range(len(CATEGORIES)))
+def test_every_card_renders_on_a_ladder_step(qapp, index):
+    """Card heights are three deliberate sizes, not a continuum.
+
+    Both halves of this shipped broken and both were invisible without
+    measuring the running app. The floor (GlassCard.CARD_MIN_H) was
+    documented from v10 and enforced nowhere the layout looks: a wrapping
+    card reports hasHeightForWidth(), so QGridLayout sizes its row from
+    QWidgetItem::heightForWidth, which consults neither sizeHint() nor
+    minimumSizeHint() — 26 of 41 cards rendered under the floor and three
+    at 101px against a documented 128. And with the floor honoured the
+    heights still spanned seven distinct values across four modules, so
+    cards matched inside a band and disagreed across bands: the same
+    "almost aligned" quality TH.SPACE exists to remove, one axis over.
+
+    Asserted against the rendered geometry rather than the hints, because
+    the hints were the thing that was lying.
+    """
+    from frontend.widgets import GlassCard
+
+    page = CategoryPage(CATEGORIES[index], TH.ThemeManager().t)
+    page.resize(1360, 900)
+    qapp.processEvents()
+
+    cards = page.findChildren(GlassCard)
+    assert cards, f"{CATEGORIES[index]['title']}: no cards to measure"
+    off_ladder = [(c.item["title"], c.height()) for c in cards
+                  if c.height() not in GlassCard.CARD_STEPS]
+    assert not off_ladder, (
+        f"{CATEGORIES[index]['title']}: card(s) off the ladder "
+        f"{GlassCard.CARD_STEPS}: {off_ladder}")
+
+
+@pytest.mark.parametrize("index", range(len(CATEGORIES)))
+def test_snapping_a_card_never_clips_its_content(qapp, index):
+    """The ladder may only ever ADD air, never remove it.
+
+    _snap_height rounds upward for exactly this reason, and the property
+    is worth pinning separately from the ladder itself: a future step
+    inserted in the middle of CARD_STEPS, or a padding change that pushes
+    the anatomy past the top step, would start silently cropping card
+    descriptions — the failure mode the pre-v10 146px cap had, which
+    nobody noticed because clipped text simply is not drawn.
+    """
+    from frontend.widgets import GlassCard
+
+    page = CategoryPage(CATEGORIES[index], TH.ThemeManager().t)
+    page.resize(1360, 900)
+    qapp.processEvents()
+
+    squeezed = []
+    for card in page.findChildren(GlassCard):
+        natural = card.layout().totalMinimumSize().height()
+        if card.height() < natural:
+            squeezed.append((card.item["title"], card.height(), natural))
+    assert not squeezed, (
+        f"{CATEGORIES[index]['title']}: card(s) shorter than their own "
+        f"content needs (title, rendered, required): {squeezed}")
 
 
 def test_band_headers_are_themed_in_both_modes(qapp):

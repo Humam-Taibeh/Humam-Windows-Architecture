@@ -97,10 +97,24 @@ def test_dashboard_render_stays_within_the_frame_budget(window, qapp):
 
 
 def test_category_page_render_stays_within_the_frame_budget(window, qapp):
-    """A populated card grid. Cheaper than the dashboard (measured
-    ~5.3ms), so it gets the same ceiling with more headroom — a
-    regression that hits the card paint path trips this one first."""
-    window.open_category(1)             # System Optimization — 7 cards
+    """A populated card grid — the page a regression in the card paint
+    path trips first.
+
+    Measured ~10.0ms against the 12.0ms ceiling (v12). The two earlier
+    figures quoted here were both stale in a way that made this test look
+    like it was failing when read: "~5.3ms" and "7 cards" described System
+    Optimization BEFORE the v1.1 reorganization grew this page to 13
+    cards, and this page is not in fact cheaper than the dashboard
+    (~7.2ms) — it has been the more expensive of the two for some time.
+
+    Of the current figure, ~0.5ms arrived with the v12 card height ladder
+    (GlassCard.CARD_STEPS): snapping every card up to a step means more of
+    the window is card — bevel, cast shadow and glass gradient — and less
+    of it is the cheap canvas gradient underneath. That is the cost of the
+    rhythm, it was measured rather than assumed, and it leaves ~1.9ms of
+    headroom.
+    """
+    window.open_category(1)             # System & Tweaks — 13 cards
     qapp.processEvents()
     try:
         median, p95 = _render_median_ms(window, qapp)

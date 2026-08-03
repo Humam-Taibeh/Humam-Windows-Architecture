@@ -1073,8 +1073,33 @@ class GlassCard(QFrame):
     #
     # Both numbers move with the padding: the whole point of deriving them
     # is that a padding change can't silently start clipping content.
-    CARD_MIN_H = 128
-    CARD_MAX_H = 156
+    #
+    # v12 TURNS THE ENVELOPE INTO A LADDER, for two reasons found by
+    # measuring the running app rather than by reading this comment.
+    #
+    # First, the floor was not being applied at all. minimumSizeHint()
+    # below has clamped to CARD_MIN_H since v10, but a card's rendered
+    # height does not come from its minimum: CategoryPage._relayout gives
+    # content rows ZERO stretch (so a short page anchors to the top instead
+    # of floating in the middle), and an unstretched QGridLayout row takes
+    # its height from sizeHint(), which GlassCard did not override. Measured
+    # across all 41 cards, 26 rendered BELOW the documented 128px floor and
+    # three at 101px. The floor was real in the source and fictional on
+    # screen.
+    #
+    # Second, even honoured, a free-floating height produced seven distinct
+    # card heights across four modules — cards that match inside a band and
+    # visibly disagree across bands, which is precisely the "almost
+    # aligned" quality the SPACE scale was introduced to remove. Heights
+    # now snap UP to one of three steps, so a page reads as two or three
+    # deliberate sizes instead of a continuum of near-misses.
+    #
+    # The steps are the anatomy's own breakpoints, not arbitrary thirds:
+    # 128 is the floor above, 156 the derived ceiling, and 142 the height
+    # of a card carrying a full description without the meta footer.
+    CARD_STEPS = (128, 142, 156)
+    CARD_MIN_H = CARD_STEPS[0]
+    CARD_MAX_H = CARD_STEPS[-1]
 
     def __init__(self, item: dict, accent: str, t: dict,
                  featured: bool = False, locked: bool = False):
@@ -1273,6 +1298,15 @@ class GlassCard(QFrame):
         lay.addLayout(foot)
 
         self.apply_theme(t)
+        # Seed the ladder step before the card is ever laid out. Without
+        # this the minimum is always one layout pass behind: the grid
+        # measures the card, THEN resizeEvent sets the minimum, and nothing
+        # re-measures unless something else happens to invalidate the
+        # layout. The app hid that (its deferred _remeasure_rows pass
+        # supplies the second measurement) but it left the card's height
+        # dependent on the order of passes around it, which is not a
+        # property worth relying on.
+        self._sync_height_step()
 
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
@@ -1374,12 +1408,83 @@ class GlassCard(QFrame):
         self._history_pill.setToolTip(tooltip)
         self._history_pill.setVisible(bool(text))
 
+    @classmethod
+    def _snap_height(cls, natural: int) -> int:
+        """Round a natural content height UP to the next ladder step.
+
+        Upward only, and that direction is the whole safety argument: a
+        step can add air to a short card but can never take a pixel away
+        from one whose content needs it. A card taller than the last step
+        stays at the last step, which is safe because ClampedLabel caps
+        every block at an exact line count — see the anatomy note above,
+        where 155 is the most the content can add up to."""
+        for step in cls.CARD_STEPS:
+            if natural <= step:
+                return step
+        return cls.CARD_STEPS[-1]
+
+    def _sync_height_step(self):
+        """Pin this card's minimum height to its ladder step.
+
+        Finding the right lever here took measuring, because the two
+        obvious ones do nothing. A card's description wraps, so the card
+        reports hasHeightForWidth() == True, and for such an item
+        QGridLayout takes the row height from QWidgetItem::heightForWidth
+        rather than from sizeHint() or minimumSizeHint() — which is why
+        CARD_MIN_H sat in minimumSizeHint() for two versions while 26 of
+        41 cards rendered under it, three at 101px. Overriding the card's
+        OWN heightForWidth does not help either: QWidgetItem asks the
+        widget's LAYOUT (`if (wid->layout()) hfw = wid->layout()->
+        totalHeightForWidth(w)`) and never calls the widget's method at
+        all when a layout is present, as this one always is.
+
+        What QWidgetItem::heightForWidth does honour is the widget's
+        explicit minimumHeight, which it clamps its answer up to. So that
+        is the lever, and it is set here from the card's OWN natural
+        content height at its CURRENT width — never from a constant. That
+        distinction is the whole safety argument, and it is why the
+        warning in minimumSizeHint() about setMinimumHeight does not apply:
+        the defect that warning describes was a FIXED 120px floor sitting
+        below what some cards' content needed, so the layout squeezed and
+        clipped them. A value derived per card, per width, and rounded
+        only UPWARD cannot be below its own content.
+        """
+        natural = QFrame.heightForWidth(self, self.width())
+        if natural < 0:
+            return
+        step = self._snap_height(natural)
+        if self.minimumHeight() != step:
+            self.setMinimumHeight(step)
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt casing
+        # Re-derive on every width change: a narrower column wraps the
+        # description onto more lines, which can legitimately move a card
+        # up a step. Guarded by the equality check in _sync_height_step, so
+        # the setMinimumHeight -> relayout -> resizeEvent path settles
+        # after one pass instead of oscillating.
+        super().resizeEvent(event)
+        self._sync_height_step()
+
+    def sizeHint(self):            # noqa: N802 - Qt casing
+        """Snapped for consistency with the step above, so a caller that
+        asks for the hint directly (a dialog embedding a card outside a
+        grid, say) gets the same ladder the grid renders."""
+        hint = super().sizeHint()
+        hint.setHeight(self._snap_height(hint.height()))
+        return hint
+
     def minimumSizeHint(self):     # noqa: N802 - Qt casing
         """The card's real floor: whatever its content needs, but never
         squatter than CARD_MIN_H. Combining here (rather than via
         setMinimumHeight) means the aesthetic floor can never win over a
         content requirement — it can only raise a short card, never crush
-        a tall one."""
+        a tall one.
+
+        Deliberately NOT snapped to the ladder. The minimum is what the
+        layout may squeeze a card to when the window is genuinely too
+        short; pinning it to the rendered step would turn a rhythm
+        preference into a hard constraint and force a scrollbar on a
+        window that could otherwise have fitted."""
         hint = super().minimumSizeHint()
         hint.setHeight(max(hint.height(), self.CARD_MIN_H))
         return hint
@@ -2216,7 +2321,7 @@ class ConfirmDialog(PulseDialog):
             warn = QLabel("⚠️  This action changes your system and may be hard to undo.")
             warn.setWordWrap(True)
             warn.setStyleSheet(
-                f"color: {t['err']}; font-size: 11px; font-weight: 500;"
+                f"color: {t['err']}; font-size: {TH.TYPE['caption']}px; font-weight: 500;"
                 "background: transparent; border: none;")
             lay.addWidget(warn)
 
@@ -2381,7 +2486,7 @@ class PlaybookStepRow(QFrame):
         glyph, token = self.LAMPS.get(state, self.LAMPS["pending"])
         self._lamp.setText(glyph)
         self._lamp.setStyleSheet(
-            f"color: {self._t[token]}; font-size: 13px; font-weight: 700;"
+            f"color: {self._t[token]}; font-size: {TH.TYPE['label']}px; font-weight: 700;"
             "background: transparent; border: none;")
         if detail is not None:
             self._detail.setText(detail)
@@ -2445,7 +2550,7 @@ class PlaybookDialog(PulseDialog):
             warn = QLabel("⚠️  " + "  ·  ".join(errors[:3]))
             warn.setWordWrap(True)
             warn.setStyleSheet(
-                f"color: {t['warn']}; font-size: 11px; background: transparent;"
+                f"color: {t['warn']}; font-size: {TH.TYPE['caption']}px; background: transparent;"
                 "border: none;")
             lay.addWidget(warn)
 
@@ -2596,7 +2701,7 @@ class PlaybookDialog(PulseDialog):
                   "warn": self._t["warn"]}.get(kind, self._t["text_muted"])
         self._status.setText(text)
         self._status.setStyleSheet(
-            f"color: {colour}; font-size: 11px; font-weight: 600;"
+            f"color: {colour}; font-size: {TH.TYPE['caption']}px; font-weight: 600;"
             "background: transparent; border: none;")
         # Hidden while empty: the dialog's panel QSS gives a bare QLabel a
         # frame, so an empty status line painted as a stray input box
@@ -2690,14 +2795,14 @@ def report_row(t: dict, label: str, value: str, tone: str = "",
     # content (it names the value beside it), not decoration, so it takes
     # the step above rather than the floor.
     left.setStyleSheet(
-        f"color: {t['text_muted']}; font-size: 10px; font-weight: 500;"
+        f"color: {t['text_muted']}; font-size: {TH.TYPE['meta']}px; font-weight: 500;"
         "letter-spacing: 1px; background: transparent; border: none;")
     left.setMinimumWidth(label_width)
     line.addWidget(left, 0)
     right = QLabel(value)
     right.setWordWrap(True)
     right.setStyleSheet(
-        f"color: {report_tone_color(t, tone)}; font-size: 12px; font-weight: 600;"
+        f"color: {report_tone_color(t, tone)}; font-size: {TH.TYPE['body']}px; font-weight: 600;"
         "background: transparent; border: none;")
     line.addWidget(right, 1)
     return holder
@@ -2710,7 +2815,7 @@ def report_note(t: dict, text: str, tone: str = "") -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
     label.setStyleSheet(
-        f"color: {report_tone_color(t, tone)}; font-size: 12px; font-weight: 600;"
+        f"color: {report_tone_color(t, tone)}; font-size: {TH.TYPE['body']}px; font-weight: 600;"
         "background: transparent; border: none;")
     return label
 
@@ -6059,7 +6164,7 @@ class OfficeWizardDialog(PulseDialog):
             badge.setStyleSheet(
                 f"color: {t['accent']}; background: {TH.alpha(t['accent'], 0.14)};"
                 f"border: 1px solid {TH.alpha(t['accent'], 0.40)}; border-radius: 11px;"
-                "font-size: 11px; font-weight: 700;")
+                f"font-size: {TH.TYPE['caption']}px; font-weight: {TH.WEIGHT['bold']};")
             row.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
             label = QLabel(text)
             label.setTextFormat(Qt.TextFormat.RichText)
@@ -6199,7 +6304,7 @@ class OfficeWizardDialog(PulseDialog):
         msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setWordWrap(True)
         msg.setStyleSheet(
-            f"color: {t['err']}; font-size: 12px; font-weight: 500;"
+            f"color: {t['err']}; font-size: {TH.TYPE['body']}px; font-weight: 500;"
             "background: transparent; border: none;")
         lay.addWidget(msg)
 
@@ -6720,7 +6825,7 @@ class UpdateCenterDialog(PulseDialog):
         lay.addStretch()
         icon = QLabel("✅")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size: 40px; background: transparent; border: none;")
+        icon.setStyleSheet(f"font-size: {TH.TYPE['hero']}px; background: transparent; border: none;")
         lay.addWidget(icon)
         msg = QLabel("You're all caught up — every installed app is at its latest version.")
         msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -6754,7 +6859,7 @@ class UpdateCenterDialog(PulseDialog):
         lay.addStretch()
         icon = QLabel("⚠️")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size: 40px; background: transparent; border: none;")
+        icon.setStyleSheet(f"font-size: {TH.TYPE['hero']}px; background: transparent; border: none;")
         lay.addWidget(icon)
         self._error_label = QLabel("")
         self._error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -7159,7 +7264,7 @@ class StartupManagerDialog(PulseDialog):
         lay.addStretch()
         icon = QLabel("⚠️")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size: 40px; background: transparent; border: none;")
+        icon.setStyleSheet(f"font-size: {TH.TYPE['hero']}px; background: transparent; border: none;")
         lay.addWidget(icon)
         self._error_label = QLabel("")
         self._error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)

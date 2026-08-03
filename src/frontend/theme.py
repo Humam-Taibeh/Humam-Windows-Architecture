@@ -193,6 +193,51 @@ RADIUS = {
 }
 
 
+# Type scale — named by the ROLE the text plays, exactly like RADIUS is
+# named by the surface it belongs to, so two labels doing the same job
+# cannot drift a pixel apart.
+#
+# v12 adds this last of the three scales, and the audit that prompted it is
+# the same one that produced SPACE and RADIUS: the Qt UI carried ten
+# distinct font-size literals hand-written into ~60 QSS strings, with no
+# rule about which to reach for. The clearest symptom was a pair — the
+# breadcrumb's separator chevron at 17px and the card's drill-in chevron at
+# 18px. Those are the same element doing the same job one screen apart, and
+# nothing but the absence of a scale made them different.
+#
+# Only 9 steps for 10 previous values: 17 and 18 collapse into `glyph`.
+# Every other value was already carrying a distinct role and stays.
+#
+# NOT APPLIED TO health_report.py. That module writes CSS for a standalone
+# HTML file the user exports and opens in a browser — a different medium
+# with its own typography, its own default font stack and no access to
+# these tokens at render time. Sharing a scale across the two would be a
+# false economy, and the enforcement test skips it for that reason.
+TYPE = {
+    "micro":    9,   # letterspaced ALL-CAPS chips (APPLIED / MODIFIED)
+    "meta":    10,   # meta pills, run-history captions, count chips
+    "caption": 11,   # section band headers, secondary labels
+    "body":    12,   # default UI text, card descriptions, buttons
+    "label":   13,   # card titles, nav entries, list rows
+    "lead":    15,   # sub-headings, dialog section leads
+    "glyph":   18,   # chevrons and inline directional marks
+    "display": 34,   # the dashboard's hero heading
+    "hero":    40,   # the empty-state glyph inside a dialog
+}
+
+# Font weights, named. Five were in use (400-800) with no rule; these are
+# the four that carry meaning, and `heavy` exists only for the dashboard
+# hero. A new label picks the weight for what the text IS, not for how
+# loud it should look on the author's monitor.
+WEIGHT = {
+    "normal":  400,  # glyphs and marks, where weight would distort the shape
+    "medium":  500,  # body copy and descriptions
+    "semi":    600,  # labels, titles, most chrome
+    "bold":    700,  # chips, badges, emphasis
+    "heavy":   800,  # the dashboard hero heading, and nothing else
+}
+
+
 #: Alpha of the tint a card's running / flash state blends onto the card
 #: tier (see card_qss). Named rather than inlined three times because the
 #: text ramp is SOLVED AGAINST IT: text_faint is pinned to clear AA on the
@@ -333,65 +378,100 @@ def has_icon_font() -> bool:
 # Codepoints are drawn from the long-stable Segoe MDL2 Assets set (all also
 # present in Segoe Fluent Icons) — the same well-known PUA glyphs Microsoft
 # documents for custom app chrome.
+#
+# WRITTEN AS \uXXXX ESCAPES, NOT AS LITERAL CHARACTERS. Until v12 every
+# codepoint here was a raw PUA character, which renders as an empty box in a
+# diff, a code review, a terminal and a GitHub blame — so the table could not
+# be audited by reading it. That is not a cosmetic problem: it is precisely
+# how 'shield' came to be a byte-identical copy of 'lock', and 'export' of
+# 'save'. Two entries that LOOK different and ARE the same glyph are
+# invisible in literal form and obvious in escaped form.
+#
+# ADDING ONE: verify the codepoint against the installed font before
+# trusting it — QFontMetrics.inFont() returns True for unassigned PUA
+# codepoints and cannot be used. The reliable check is the advance width: a
+# real glyph in this family measures the full em (28px at a 28px font size),
+# a missing one falls back to .notdef and measures ~18px. U+E9D4, which
+# looks like a plausible "task list", is one of those phantoms.
 GLYPHS: dict[str, tuple[str, str]] = {
     # --- nav / chrome ---
     # ('home' and 'back' lived here until v1.0 with no call site anywhere in
     # the app — the breadcrumb draws its own separators and nothing ever
     # asked for either. A glyph catalogue carrying entries nothing renders
-    # is a list of promises, not a resource.)
-    'chevron':       ("", "›"),                    # ChevronRight
-    'lock':          ("", "🔒"),             # Lock — admin-gated affordance
+    # is a list of promises, not a resource. v12 retired four more on the
+    # same rule: 'code', 'puzzle', 'shield' and 'tools' had no call site,
+    # and 'shield' was in any case the same U+E72E as 'lock'.)
+    'chevron':       ("\uE76C", "\u203a"),        # ChevronRight
+    'lock':          ("\uE72E", "\U0001f512"),    # Lock — admin-gated affordance
     # --- modules (sidebar) ---
-    'package':       ("", "📦"),                    # Software Management
-    'bolt':          ("", "⚡"),                    # System Optimization / power
-    'repair':        ("", "🔧"),                    # Maintenance / repair / services
-    'shield':        ("", "🛡️"),                   # Privacy & Security (padlock)
-    'info':          ("", "📊"),                    # Information & Utilities
-    'restore':       ("", "🛟"),                    # Safety & Recovery / undo / reset
+    'package':       ("\uE7B8", "\U0001f4e6"),    # Software Management
+    'bolt':          ("\uE945", "\u26a1"),        # System Optimization / power
+    'repair':        ("\uE90F", "\U0001f527"),    # Maintenance / repair (wrench)
+    'info':          ("\uE946", "\U0001f4ca"),    # Information & Utilities
+    'restore':       ("\uE7A7", "\U0001f6df"),    # Safety & Recovery / undo / reset
     # --- software hub cards ---
-    'globe':         ("", "🧰"),                    # Browsers & daily apps
-    'code':          ("", "🎓"),                    # Developer & University Hub
-    'game':          ("", "🎮"),                    # Gaming / Game Mode
-    'tools':         ("", "🛠️"),                   # System Repair (SFC + DISM)
+    'globe':         ("\uE774", "\U0001f9f0"),    # Browsers & daily apps
+    'game':          ("\uE7FC", "\U0001f3ae"),    # Gaming / Game Mode
     # --- optimization ---
-    'moon':          ("", "🌙"),                    # Global Dark Mode
-    'mouse':         ("", "🖱️"),                   # Mouse acceleration
-    'pin':           ("", "📌"),                    # Minimalist Taskbar
-    'list':          ("", "📋"),                    # Classic Context Menu
-    'network':       ("", "📡"),                    # Network & Ping Optimizer
+    'moon':          ("\uE708", "\U0001f319"),    # Global Dark Mode
+    'mouse':         ("\uE962", "\U0001f5b1\ufe0f"),  # Mouse acceleration
+    'pin':           ("\uE718", "\U0001f4cc"),    # Minimalist Taskbar
+    'list':          ("\uE8FD", "\U0001f4cb"),    # Classic Context Menu
+    'overflow':      ("\uE712", "\u22ef"),        # Right-Click Menu Entries — the
+                                                  # '...' overflow affordance, which
+                                                  # is what that panel actually edits
+    'network':       ("\uE839", "\U0001f4e1"),    # Network & Ping Optimizer
+    'dns':           ("\uE968", "\U0001f310"),    # DNS & Network Profiles (a server)
     # --- maintenance ---
-    'broom':         ("", "🧹"),                    # Aggressive Cache Clean
-    'disk':          ("", "💾"),                    # Optimize All Drives
-    'sleep':         ("", "😴"),                    # Disable Hibernation
-    'battery':       ("", "🔋"),                    # Enable Hibernation
-    'chart':         ("", "📈"),                    # Drive Space Report (pie)
+    'broom':         ("\uEA99", "\U0001f9f9"),    # Aggressive Cache Clean
+    'disk':          ("\uEDA2", "\U0001f4be"),    # Optimize All Drives
+    'sleep':         ("\uEC46", "\U0001f634"),    # Disable Hibernation
+    'battery':       ("\uE83F", "\U0001f50b"),    # Enable Hibernation
+    'charging':      ("\uE83E", "\U0001f50c"),    # Battery & Power Health — a battery
+                                                  # ON CHARGE, so the read-only health
+                                                  # inspector cannot be mistaken for
+                                                  # the hibernation toggle beside it
+    'chart':         ("\uEB05", "\U0001f4c8"),    # Drive Space Report (pie)
+    'analyze':       ("\uE9F9", "\U0001f4c9"),    # Storage Analyzer (bar breakdown)
+    'services':      ("\uE713", "\U0001f6e0\ufe0f"),  # Restore Services (gears)
+    'layers':        ("\uE81E", "\U0001f5c2\ufe0f"),  # Remove Windows.old — the previous
+                                                  # install stacked under this one
     # --- privacy / info / safety ---
-    'delete':        ("", "🗑️"),                   # Remove Edge / bloatware / Windows.old
-    'shieldplain':   ("", "🛡️"),                   # Disable Telemetry (shield)
-    'target':        ("", "🎯"),                    # Disable Advertising ID
-    'history':       ("", "🕓"),                    # Disable Activity History
-    'defender':      ("", "🔒"),                    # Apply ALL Privacy (full shield)
-    'chartline':     ("", "📊"),                    # System Info Snapshot
-    'save':          ("", "💿"),                    # Driver Backup
-    'search':        ("", "🔍"),                    # Missing Driver Scan
-    'restorepoint':  ("", "🛟"),                    # Create Restore Point
-    'key':           ("", "🔑"),                    # Activation Status (licence)
-    'log':           ("", "📜"),                    # View Operation Log
-    'folder':        ("", "📁"),                    # OneDrive Backup Folder
+    'delete':        ("\uE74D", "\U0001f5d1\ufe0f"),  # Remove Edge / bloatware
+    'shieldplain':   ("\uEA18", "\U0001f6e1\ufe0f"),  # Disable Telemetry (shield)
+    'target':        ("\uF272", "\U0001f3af"),    # Disable Advertising ID
+    'history':       ("\uE81C", "\U0001f553"),    # Disable Activity History
+    'defender':      ("\uE83D", "\U0001f512"),    # Apply ALL Privacy (full shield)
+    'chartline':     ("\uE9D2", "\U0001f4ca"),    # System Info Snapshot
+    'pulse':         ("\uE9D9", "\U0001f493"),    # Health & Drift Report — a heartbeat
+                                                  # trace, the one mark in the family
+                                                  # that reads as "health"
+    'save':          ("\uE74E", "\U0001f4bf"),    # Driver Backup
+    'search':        ("\uE721", "\U0001f50d"),    # Missing Driver Scan
+    'restorepoint':  ("\uE777", "\U0001f6df"),    # Create Restore Point
+    'library':       ("\uE8F1", "\U0001f4da"),    # Restore Point Browser — a shelf of
+                                                  # existing checkpoints, vs the single
+                                                  # checkpoint 'restorepoint' creates
+    'key':           ("\uE192", "\U0001f511"),    # Activation Status (licence)
+    'log':           ("\uE7C3", "\U0001f4dc"),    # View Operation Log
+    'folder':        ("\uE8B7", "\U0001f4c1"),    # OneDrive Backup Folder
     # --- system tools subs ---
-    'document':      ("", "📄"),                    # Microsoft Office Suite
-    'puzzle':        ("", "🧩"),                    # Core API Runtimes
-    'diagnostics':   ("", "🔬"),                    # Hardware Diagnostics
-    'terminal':      ("", "🧭"),                    # PATH Doctor
-    'boot':          ("", "🚀"),                    # Startup Manager
-    'refresh':       ("", "🔄"),                    # Check for Updates
-    'sync':          ("", "🔁"),                    # Install / Restore pairs
-    'cloud':         ("", "☁️"),                   # OneDrive purge
+    'document':      ("\uE8A5", "\U0001f4c4"),    # Microsoft Office Suite
+    'terminal':      ("\uE756", "\U0001f9ed"),    # PATH Doctor
+    'boot':          ("\uE7E8", "\U0001f680"),    # Startup Manager (power)
+    'checklist':     ("\uE9D5", "\u2714\ufe0f"),  # Playbooks — a saved SEQUENCE of
+                                                  # tasks, which is a checklist, not
+                                                  # the boot affordance it used to share
+    'refresh':       ("\uE72C", "\U0001f504"),    # Check for Updates
+    'sync':          ("\uE895", "\U0001f501"),    # Install / Restore pairs
+    'cloud':         ("\uE753", "\u2601\ufe0f"),  # OneDrive purge
     # --- console toolbar (v10) ---
-    'copy':          ("", "⎘"),   # Copy output to the clipboard
-    'clear':         ("", "⌫"),   # Clear the console
-    'export':        ("", "⤓"),   # Save output to a file
-    'clock':         ("", "◴"),   # Timestamp toggle
+    'copy':          ("\uE8C8", "\u2398"),        # Copy output to the clipboard
+    'clear':         ("\uE894", "\u232b"),        # Clear the console
+    'export':        ("\uE8E5", "\u2913"),        # Save output to a file (v12: was
+                                                  # U+E74E, the same Save glyph as
+                                                  # 'save')
+    'clock':         ("\uE823", "\u25f4"),        # Timestamp toggle
 }
 
 
@@ -502,27 +582,49 @@ _DARK = {
     "text_faint":  "#858d9d",   #  5.32:1 on card, 4.58:1 worst-case <- floor
 
     # ---- MODULE ACCENTS ----------------------------------------------
-    # The six sidebar/category colours as real tokens (see resolve_accent).
-    # Solved to clear 4.5:1 as text on the card and 3:1 as a glyph in their
-    # own plaque well, with saturation held as high as those floors allow so
-    # the set still reads as a spectrum.
+    # The seven sidebar/category colours as real tokens (see resolve_accent).
     #
-    # v11 keeps every value: the obsidian card only ever RAISES them (they
-    # now measure 6.16-10.00:1 as text and 4.64-6.80:1 in-plaque, against
-    # floors of 4.5 and 3). Re-saturating to spend that headroom would have
-    # meant re-solving the whole set to chase contrast it already has.
+    # v12 RE-SOLVES THE WHOLE SET FOR PEER PARITY, which is a different
+    # criterion from the one v10/v11 used. Those versions solved each colour
+    # independently against a FLOOR (4.5:1 as text on the card, 3:1 as a
+    # glyph in its own plaque well) and kept whatever it landed on. Every
+    # value passed, and the set still did not read as a family: measured
+    # in-plaque, the seven spanned 4.64:1 to 6.80:1 — a 1.46x spread — so
+    # teal and amber carried visibly more weight than blue and pink, and the
+    # "Spectrum" identity read as a few loud modules next to a few quiet
+    # ones rather than as one system. (Light mode had already been solved
+    # this way; see the peer-ratio note on _LIGHT's automation entry. Dark
+    # never was.)
+    #
+    # Each colour is now solved along its OWN hue and saturation — nothing
+    # here is re-hued for contrast — until it measures 5.50:1 against its
+    # own plaque well. The result is a 5.48-5.51 band in-plaque and a
+    # 7.55-7.76 band as text on the card, replacing spreads of 1.46x and
+    # 1.62x with 1.006x and 1.03x.
     "module": {
-        "software":     "#5e96ff",
-        "optimization": "#fba913",
-        "maintenance":  "#18dbb3",
-        "privacy":      "#ec6f96",
-        "information":  "#6598ff",
-        "safety":       "#42cd82",
+        "software":     "#7dabff",
+        "optimization": "#ea9804",
+        "maintenance":  "#15bf9c",
+        "privacy":      "#f08bab",
+        # v12 RE-HUES THIS ONE, the single exception to "own hue preserved".
+        # 'information' was #6598ff against 'software' #5e96ff: CIE76 dE 1.6
+        # apart, BELOW the ~2.3 just-noticeable-difference threshold, when
+        # the next-closest pair in the set sat at 20.0. Two top-level modules
+        # were therefore not merely similar but perceptually the SAME colour,
+        # sitting adjacent in the sidebar — and equalising lightness alone
+        # would have preserved that exactly (dE 1.5). A palette cannot claim
+        # seven identities while rendering six.
+        #
+        # 190deg is the real gap in the wheel the other six leave: teal stops
+        # at 168 and blue starts at 220. At this hue the closest peer is
+        # 37.9 away and the brand accent 49.2, so every module is now
+        # unambiguously itself.
+        "information":  "#02b9dd",
+        "safety":       "#33c074",
         # v10.3 — Automation (playbooks, health report). Violet is the one
         # hue the original six left unclaimed, so the module reads as new
-        # rather than as a relative of an existing one. 6.15:1 here, inside
-        # the 5.55-9.02 band the other dark accents occupy.
-        "automation":   "#b18cff",
+        # rather than as a relative of an existing one.
+        "automation":   "#bb9aff",
     },
 
     # status — GitHub-dark grade: unmistakable but never neon
@@ -637,7 +739,13 @@ _LIGHT = {
         "optimization": "#9a6b17",
         "maintenance":  "#1f826f",
         "privacy":      "#e11c59",
-        "information":  "#2069ff",
+        # v12 — the light twin of dark's re-hued 'information' (see the note
+        # there). A module must be the SAME colour in both themes or it has
+        # no identity at all, so this moves to the same 190deg. Cyan is a
+        # light hue, so on paper it lands as a deep teal-cyan for the same
+        # reason amber lands as a deep gold two lines up — 4.68:1, dead
+        # centre of the peer band.
+        "information":  "#027f98",
         "safety":       "#328357",
         # v10.3 — Automation. Solved to 4.27:1, deliberately matching the
         # 4.25-4.29 band the other light accents share: on paper these read
@@ -769,7 +877,7 @@ def nav_button_qss(t: dict) -> str:
             border: 1px solid transparent;
             border-radius: {RADIUS['plaque']}px;
             color: {t['text_muted']};
-            font-size: 13px; font-weight: 500;
+            font-size: {TYPE['label']}px; font-weight: 500;
             /* padding clears the painted icon plaque (12px inset + 30px
                plaque + gap) — see widgets.NavButton.paintEvent */
             text-align: left; padding-left: 54px;
@@ -798,7 +906,17 @@ def card_qss(t: dict, accent: str, danger: bool = False,
     # painter reproduces them at this same STATE_TINT weight, which it has to
     # since the v1.0 RC hero (Software Catalog) runs a real task.
     if featured:
-        return "GlassCard { background: transparent; border: none; }"
+        # `border: 1px solid transparent`, NOT `border: none` — the border
+        # is invisible either way, but it is part of the widget's contents
+        # rect, so dropping it moves the card's entire content block 1px up
+        # and 1px left relative to every standard card beside it. Measured
+        # against its row-mates the hero sat at title.y=26 / plaque
+        # centre=37 where they sat at 27 / 38: one pixel, on the single
+        # card the eye is most drawn to, in a row that is otherwise
+        # identical. A transparent border restores the inset while still
+        # letting the painter own every visible pixel.
+        return ("GlassCard { background: transparent; "
+                "border: 1px solid transparent; }")
     line = t["danger_line"] if danger else t["card_line"]
     hover_line = alpha(t["err"], 0.55) if danger else alpha(accent, 0.55)
     # v11: every state fill is BLENDED onto the card tier rather than
@@ -859,9 +977,26 @@ def icon_plaque_qss(t: dict, accent: str, featured: bool = False) -> str:
     module's color the instant the page loads, not only on hover, which is
     what turns the old flat-gray grid into a vibrant, legible spectrum. The
     tint stays low enough (≤0.24α) that the glyph, not the well, is the
-    focus, so the effect is jewel-like, never neon."""
+    focus, so the effect is jewel-like, never neon.
+
+    v12 SPLITS THE TINT PER MODE, because the two canvases work in opposite
+    directions and one pair of alphas cannot serve both. On obsidian the
+    tint DARKENS the well, pushing it away from the glyph and adding
+    contrast; on paper the very same tint LIGHTENS nothing — it drops a
+    colour wash between a white card and a dark ink glyph, and every point
+    of alpha subtracts from the thing the plaque exists to make legible.
+    Measured, light mode ran 3.46-3.70:1 in-plaque against dark's
+    4.64-6.80:1 — the whole mode about a third weaker, which is exactly the
+    washed-out quality the light renders showed.
+
+    Dark keeps 0.24/0.13, the alphas its accents were solved against.
+    Light drops to 0.15/0.08, which lifts it to 3.89-4.05:1 while keeping
+    the well plainly tinted; below about 0.11 the gain flattens out and the
+    plaque stops reading as coloured at all, which would trade one mode's
+    weakness for another's."""
+    a_top, a_bot = (0.15, 0.08) if t["name"] == "light" else (0.24, 0.13)
     fill = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-            f"stop:0 {alpha(accent, 0.24)}, stop:1 {alpha(accent, 0.13)})")
+            f"stop:0 {alpha(accent, a_top)}, stop:1 {alpha(accent, a_bot)})")
     line = alpha(accent, 0.42)
     glyph_color = accent
     return f"""
@@ -880,12 +1015,12 @@ def card_meta_pill_qss(t: dict, accent: str = "") -> str:
     tint it (used for the featured card's lead pill)."""
     if accent:
         return f"""
-            color: {accent}; font-size: 10px; font-weight: 700;
+            color: {accent}; font-size: {TYPE['meta']}px; font-weight: 700;
             background: {alpha(accent, 0.12)}; border: 1px solid {alpha(accent, 0.32)};
             border-radius: {RADIUS['chip']}px; padding: 2px 9px; letter-spacing: 0.5px;
         """
     return f"""
-        color: {t['text_muted']}; font-size: 10px; font-weight: 600;
+        color: {t['text_muted']}; font-size: {TYPE['meta']}px; font-weight: 600;
         background: {t['panel']}; border: 1px solid {t['panel_line']};
         border-radius: {RADIUS['chip']}px; padding: 2px 9px; letter-spacing: 0.5px;
     """
@@ -919,13 +1054,13 @@ def state_chip_qss(t: dict, verdict: str) -> str:
         color = t["warn"]
     else:
         return f"""
-            color: {t['text_faint']}; font-size: 9px; font-weight: 700;
+            color: {t['text_faint']}; font-size: {TYPE['micro']}px; font-weight: 700;
             background: transparent;
             border: 1px solid {t['panel_line']};
             border-radius: {RADIUS['chip']}px; padding: 2px 8px; letter-spacing: 1px;
         """
     return f"""
-        color: {color}; font-size: 9px; font-weight: 700;
+        color: {color}; font-size: {TYPE['micro']}px; font-weight: 700;
         background: {alpha(color, 0.12)};
         border: 1px solid {alpha(color, 0.38)};
         border-radius: {RADIUS['chip']}px; padding: 2px 8px; letter-spacing: 1px;
@@ -939,7 +1074,7 @@ def card_history_pill_qss(t: dict) -> str:
     signal sitting beside it. Borderless and untinted for that reason:
     weight comes from text colour alone."""
     return f"""
-        color: {t['text_faint']}; font-size: 10px; font-weight: 600;
+        color: {t['text_faint']}; font-size: {TYPE['meta']}px; font-weight: 600;
         background: transparent; border: none;
         padding: 2px 2px; letter-spacing: 0.2px;
     """
@@ -949,7 +1084,7 @@ def card_chevron_qss(t: dict, accent: str) -> str:
     """The trailing '›' drill-in affordance on a hub/action card. Muted at
     rest; the card's own hover glow does the lighting, so this stays a quiet
     directional cue rather than a second competing accent."""
-    return (f"color: {t['text_faint']}; font-size: 18px; font-weight: 400;"
+    return (f"color: {t['text_faint']}; font-size: {TYPE['glyph']}px; font-weight: 400;"
             "background: transparent; border: none;")
 
 
@@ -961,7 +1096,7 @@ def nav_pill_qss(t: dict) -> str:
             border: 1px solid {t['card_line']};
             border-radius: {RADIUS['control']}px;
             color: {t['text_muted']};
-            font-size: 12px; font-weight: 500;
+            font-size: {TYPE['body']}px; font-weight: 500;
         }}
         QPushButton:hover {{
             background: {t['card_hover']};
@@ -989,7 +1124,7 @@ def sidebar_search_qss(t: dict) -> str:
             border: 1px solid {t['panel_line']};
             border-radius: {RADIUS['control']}px;
             padding: 0 12px;
-            font-size: 12px;
+            font-size: {TYPE['body']}px;
             text-align: left;
         }}
         QPushButton:hover {{
@@ -1016,7 +1151,7 @@ def filter_combo_qss(t: dict, accent: str) -> str:
             border: 1px solid {t['panel_line']};
             border-radius: {RADIUS['control']}px;
             color: {t['text']};
-            font-size: 12px;
+            font-size: {TYPE['body']}px;
             padding: 0 10px;
         }}
         QComboBox:hover {{ border: 1px solid {alpha(accent, 0.45)}; }}
@@ -1048,14 +1183,14 @@ def count_chip_qss(t: dict, accent: str, filtered: bool = False) -> str:
     the indicator that a filter is active."""
     if filtered:
         return f"""
-            color: {accent}; font-size: 10px; font-weight: 700;
+            color: {accent}; font-size: {TYPE['meta']}px; font-weight: 700;
             background: {alpha(accent, 0.12)};
             border: 1px solid {alpha(accent, 0.38)};
             border-radius: {RADIUS['chip']}px; padding: 3px 10px;
             letter-spacing: 0.5px;
         """
     return f"""
-        color: {t['text_faint']}; font-size: 10px; font-weight: 700;
+        color: {t['text_faint']}; font-size: {TYPE['meta']}px; font-weight: 700;
         background: {t['panel']}; border: 1px solid {t['panel_line']};
         border-radius: {RADIUS['chip']}px; padding: 3px 10px;
         letter-spacing: 0.5px;
@@ -1067,7 +1202,7 @@ def keycap_qss(t: dict) -> str:
     surface, firm hairline, monospace-ish tracking. Reads as 'press this'
     rather than as quoted text."""
     return f"""
-        color: {t['text']}; font-size: 11px; font-weight: 600;
+        color: {t['text']}; font-size: {TYPE['caption']}px; font-weight: 600;
         background: {t['card']}; border: 1px solid {t['card_line']};
         border-radius: {RADIUS['chip']}px; padding: 5px 8px;
         letter-spacing: 0.5px;
@@ -1077,7 +1212,7 @@ def keycap_qss(t: dict) -> str:
 def empty_state_qss(t: dict) -> str:
     """The 'no operations match' message shown when a filter empties the
     grid — an explicit answer beats a blank page, which reads as a bug."""
-    return (f"color: {t['text_muted']}; font-size: 13px; font-weight: 500;"
+    return (f"color: {t['text_muted']}; font-size: {TYPE['label']}px; font-weight: 500;"
             "background: transparent; border: none;")
 
 
@@ -1093,7 +1228,7 @@ def elevate_button_qss(t: dict) -> str:
             border: 1px solid {alpha(t['warn'], 0.42)};
             border-radius: {RADIUS['plaque']}px;
             color: {t['warn']};
-            font-size: 12px; font-weight: 600;
+            font-size: {TYPE['body']}px; font-weight: 600;
             text-align: left; padding-left: 16px;
         }}
         QPushButton:hover {{
@@ -1116,7 +1251,7 @@ def admin_status_qss(t: dict) -> str:
             border: 1px solid {alpha(t['ok'], 0.32)};
             border-radius: {RADIUS['plaque']}px;
             color: {t['ok']};
-            font-size: 12px; font-weight: 600;
+            font-size: {TYPE['body']}px; font-weight: 600;
             padding: 0 16px;
         }}
     """
@@ -1131,7 +1266,7 @@ def titlebar_button_qss(t: dict, hover: str) -> str:
     return f"""
         QPushButton {{
             background: transparent; border: none; border-radius: {RADIUS['chip']-1}px;
-            color: {t['text_muted']}; font-size: 13px;
+            color: {t['text_muted']}; font-size: {TYPE['label']}px;
         }}
         QPushButton:hover, QPushButton[nchover="true"] {{
             background: {hover}; color: {t['text']};
@@ -1149,7 +1284,7 @@ def titlebar_close_qss(t: dict) -> str:
     return f"""
         QPushButton {{
             background: transparent; border: none; border-radius: {RADIUS['chip']-1}px;
-            color: {t['text_muted']}; font-size: 13px;
+            color: {t['text_muted']}; font-size: {TYPE['label']}px;
         }}
         QPushButton:hover, QPushButton[nchover="true"] {{
             background: {t['close_hover']}; color: #ffffff;
@@ -1162,7 +1297,7 @@ def beta_badge_qss(t: dict) -> str:
     """The release-channel pill in the title bar ('BETA') — violet half of
     the brand pair so it reads as identity, not as a warning."""
     return f"""
-        color: {t['accent2']}; font-size: 9px; font-weight: 700;
+        color: {t['accent2']}; font-size: {TYPE['micro']}px; font-weight: 700;
         background: {alpha(t['accent2'], 0.12)};
         border: 1px solid {alpha(t['accent2'], 0.35)};
         border-radius: {RADIUS['chip']}px; padding: 2px 8px; letter-spacing: 1px;
@@ -1185,14 +1320,14 @@ def toast_qss(t: dict, accent: str) -> str:
 
 
 def toast_text_qss(t: dict) -> str:
-    return (f"color: {t['text']}; font-size: 12px; font-weight: 500;"
+    return (f"color: {t['text']}; font-size: {TYPE['body']}px; font-weight: 500;"
             "background: transparent; border: none;")
 
 
 def toast_icon_qss(t: dict, accent: str) -> str:
     """22px circular status chip inside a toast (✓ / ✕ / i)."""
     return f"""
-        color: {accent}; font-size: 11px; font-weight: 700;
+        color: {accent}; font-size: {TYPE['caption']}px; font-weight: 700;
         background: {alpha(accent, 0.14)};
         border: 1px solid {alpha(accent, 0.40)};
         border-radius: {RADIUS['control']}px;
@@ -1269,7 +1404,7 @@ def chip_strip_qss(t: dict) -> str:
 
 def badge_qss(t: dict) -> str:
     return f"""
-        color: {t['warn']}; font-size: 9px; font-weight: 600;
+        color: {t['warn']}; font-size: {TYPE['micro']}px; font-weight: 600;
         background: {alpha(t['warn'], 0.08)};
         border: 1px solid {alpha(t['warn'], 0.28)};
         border-radius: {RADIUS['chip']-1}px; padding: 2px 7px;
@@ -1324,7 +1459,7 @@ def report_badge_qss(t: dict, color: str) -> str:
     the v10 palette already solves for every tone in both modes.
     """
     return f"""
-        color: {color}; font-size: 11px; font-weight: 800;
+        color: {color}; font-size: {TYPE['caption']}px; font-weight: 800;
         background: transparent;
         border: 1px solid {alpha(color, 0.55)};
         border-radius: {RADIUS['chip']}px;
@@ -1343,7 +1478,7 @@ def report_subcard_title_qss(t: dict) -> str:
     Apps for enterprise'). Full text weight — the sub-card's own surface
     supplies the separation that the old all-caps accent heading was
     carrying on its own."""
-    return (f"color: {t['text']}; font-size: 13px; font-weight: 700;"
+    return (f"color: {t['text']}; font-size: {TYPE['label']}px; font-weight: 700;"
             "background: transparent; border: none;")
 
 
@@ -1371,7 +1506,7 @@ def dialog_cancel_qss(t: dict) -> str:
         QPushButton {{
             background: {t['panel']}; border: 1px solid {t['card_line']};
             border-radius: {RADIUS['control']}px; color: {t['text_soft']};
-            font-size: 12px; font-weight: 600;
+            font-size: {TYPE['body']}px; font-weight: 600;
         }}
         QPushButton:hover {{
             background: {t['card_hover']}; color: {t['text']};
@@ -1410,7 +1545,7 @@ def console_qss(t: dict) -> str:
 
 
 def console_header_qss(t: dict) -> str:
-    return (f"color: {t['text_faint']}; font-size: 10px; font-weight: 700;"
+    return (f"color: {t['text_faint']}; font-size: {TYPE['meta']}px; font-weight: 700;"
             "background: transparent; border: none; letter-spacing: 2px;")
 
 
@@ -1434,7 +1569,7 @@ def activity_toggle_qss(t: dict) -> str:
     return f"""
         QPushButton {{
             background: transparent; border: none; border-radius: {RADIUS['chip']}px;
-            color: {t['text_faint']}; font-size: 13px; font-weight: 700;
+            color: {t['text_faint']}; font-size: {TYPE['label']}px; font-weight: 700;
         }}
         QPushButton:hover {{
             background: {t['card_hover']}; color: {t['text']};
@@ -1452,7 +1587,7 @@ def stop_button_qss(t: dict) -> str:
             border: 1px solid {alpha(t['err'], 0.45)};
             border-radius: {RADIUS['chip']}px;
             color: {t['err']};
-            font-size: 11px; font-weight: 600;
+            font-size: {TYPE['caption']}px; font-weight: 600;
         }}
         QPushButton:hover {{ background: {alpha(t['err'], 0.25)}; color: {t['text']}; }}
         QPushButton:pressed {{ background: {alpha(t['err'], 0.38)}; color: {t['text']}; }}
@@ -1467,7 +1602,7 @@ def stop_button_qss(t: dict) -> str:
 def state_pill_qss(t: dict) -> str:
     """Execution-state chip: IDLE / RUNNING / SUCCESS / ERROR / STOPPED.
     One string per theme switch — states are dynamic-property flips."""
-    base = (f"font-size: 9px; font-weight: 700; letter-spacing: 2px;"
+    base = (f"font-size: {TYPE['micro']}px; font-weight: 700; letter-spacing: 2px;"
             f"border-radius: {RADIUS['control']}px; padding: 3px 12px;")
     return f"""
         QLabel#statePill {{ {base}
@@ -1500,7 +1635,7 @@ def checkbox_qss(t: dict, accent: str) -> str:
     ring so an about-to-be-unchecked box visibly acknowledges the cursor."""
     return f"""
         QCheckBox {{
-            color: {t['text_soft']}; font-size: 12px; font-weight: 500;
+            color: {t['text_soft']}; font-size: {TYPE['body']}px; font-weight: 500;
             background: transparent; border: none; spacing: 10px; padding: 4px 2px;
         }}
         QCheckBox::indicator {{
@@ -1529,7 +1664,7 @@ def wizard_link_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
             background: {t['card']}; border: 1px solid {t['card_line']};
-            border-radius: {RADIUS['plaque']}px; color: {t['text']}; font-size: 13px; font-weight: 600;
+            border-radius: {RADIUS['plaque']}px; color: {t['text']}; font-size: {TYPE['label']}px; font-weight: 600;
             text-align: left; padding: 0 16px;
         }}
         QPushButton:hover {{
@@ -1551,7 +1686,7 @@ def warning_banner_qss(t: dict) -> str:
             border: 1px solid {alpha(t['warn'], 0.45)};
             border-radius: {RADIUS['plaque']}px;
             color: {t['warn']};
-            font-size: 12px; font-weight: 600;
+            font-size: {TYPE['body']}px; font-weight: 600;
             padding: 14px 16px;
         }}
     """
@@ -1607,7 +1742,7 @@ def catalog_tab_qss(t: dict, accent: str, active: bool) -> str:
                 border: 1px solid {alpha(accent, 0.55)};
                 border-radius: {RADIUS['chip']}px;
                 color: {t['text']};
-                font-size: 11px; font-weight: 700;
+                font-size: {TYPE['caption']}px; font-weight: 700;
                 padding: 0 12px;
             }}
             QPushButton:hover {{ background: {alpha(accent, 0.22)}; }}
@@ -1618,7 +1753,7 @@ def catalog_tab_qss(t: dict, accent: str, active: bool) -> str:
             border: 1px solid {t['panel_line']};
             border-radius: {RADIUS['chip']}px;
             color: {t['text_muted']};
-            font-size: 11px; font-weight: 600;
+            font-size: {TYPE['caption']}px; font-weight: 600;
             padding: 0 12px;
         }}
         QPushButton:hover {{
@@ -1648,7 +1783,7 @@ def catalog_search_qss(t: dict, accent: str) -> str:
             border: 1px solid {t['panel_line']};
             border-radius: {RADIUS['control']}px;
             color: {t['text']};
-            font-size: 12px;
+            font-size: {TYPE['body']}px;
             padding: 0 10px;
             selection-background-color: {alpha(accent, 0.35)};
         }}
@@ -1667,7 +1802,7 @@ def hub_group_header_qss(t: dict, accent: str) -> str:
     the header row; hub_group_rule_qss is the other. No hub declares
     `groups` today (see HubDialog), so this styles a supported shape
     rather than a live one."""
-    return (f"color: {alpha(accent, 0.90)}; font-size: 10px; font-weight: 700;"
+    return (f"color: {alpha(accent, 0.90)}; font-size: {TYPE['meta']}px; font-weight: 700;"
             f"background: transparent; border: none; letter-spacing: 4px;")
 
 
@@ -1705,7 +1840,7 @@ def icon_ghost_button_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
             background: transparent; border: 1px solid {t['card_line']};
-            border-radius: {RADIUS['chip']-2}px; color: {t['text_muted']}; font-size: 13px; font-weight: 700;
+            border-radius: {RADIUS['chip']-2}px; color: {t['text_muted']}; font-size: {TYPE['label']}px; font-weight: 700;
         }}
         QPushButton:hover {{
             background: {alpha(accent, 0.14)}; border: 1px solid {alpha(accent, 0.45)};
@@ -1724,7 +1859,7 @@ def link_button_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
             background: transparent; border: none;
-            color: {accent}; font-size: 11px; font-weight: 600;
+            color: {accent}; font-size: {TYPE['caption']}px; font-weight: 600;
         }}
         QPushButton:hover {{ color: {t['text']}; }}
         QPushButton:pressed {{ color: {alpha(accent, 0.70)}; }}
@@ -1740,7 +1875,7 @@ def command_input_qss(t: dict) -> str:
             border: 1px solid {t['panel_line']};
             border-radius: {RADIUS['control']}px;
             color: {t['text']};
-            font-size: 15px;
+            font-size: {TYPE['lead']}px;
             padding: 0 14px;
             selection-background-color: {alpha(t['accent'], 0.35)};
         }}
@@ -1762,7 +1897,7 @@ def command_list_qss(t: dict) -> str:
             background: transparent;
             border: none;
             outline: none;
-            font-size: 13px;
+            font-size: {TYPE['label']}px;
             color: {t['text_soft']};
         }}
         QListWidget::item {{
@@ -1788,7 +1923,7 @@ def dialog_secondary_go_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
             background: {alpha(accent, 0.08)}; border: 1px solid {alpha(accent, 0.35)};
-            border-radius: {RADIUS['control']}px; color: {accent}; font-size: 12px; font-weight: 600;
+            border-radius: {RADIUS['control']}px; color: {accent}; font-size: {TYPE['body']}px; font-weight: 600;
         }}
         QPushButton:hover {{ background: {alpha(accent, 0.18)}; color: {t['text']}; }}
         QPushButton:pressed {{ background: {alpha(accent, 0.28)}; color: {t['text']}; }}
@@ -1811,7 +1946,7 @@ def stat_chip_qss(t: dict, tone: str = "neutral") -> str:
     else:
         bg, border = alpha(color, 0.10), alpha(color, 0.35)
     return f"""
-        color: {color}; font-size: 12px; font-weight: 600;
+        color: {color}; font-size: {TYPE['body']}px; font-weight: 600;
         background: {bg}; border: 1px solid {border};
         border-radius: {RADIUS['plaque']}px; padding: 7px 14px;
     """
@@ -1822,12 +1957,12 @@ def version_chip_qss(t: dict, accent: bool = False) -> str:
     with the accent for 'available' so the eye lands on what's new."""
     if accent:
         return f"""
-            color: {t['accent']}; font-size: 11px; font-weight: 700;
+            color: {t['accent']}; font-size: {TYPE['caption']}px; font-weight: 700;
             background: {alpha(t['accent'], 0.14)}; border: 1px solid {alpha(t['accent'], 0.40)};
             border-radius: {RADIUS['chip']-1}px; padding: 3px 9px;
         """
     return f"""
-        color: {t['text_muted']}; font-size: 11px; font-weight: 600;
+        color: {t['text_muted']}; font-size: {TYPE['caption']}px; font-weight: 600;
         background: {t['panel']}; border: 1px solid {t['panel_line']};
         border-radius: {RADIUS['chip']-1}px; padding: 3px 9px;
     """
@@ -1837,7 +1972,7 @@ def impact_badge_qss(t: dict, level: str) -> str:
     """High/Medium/Low boot-impact badge on a startup row."""
     color = {"High": t["err"], "Medium": t["warn"], "Low": t["ok"]}.get(level, t["text_faint"])
     return f"""
-        color: {color}; font-size: 9px; font-weight: 700; letter-spacing: 1px;
+        color: {color}; font-size: {TYPE['micro']}px; font-weight: 700; letter-spacing: 1px;
         background: {alpha(color, 0.12)}; border: 1px solid {alpha(color, 0.40)};
         border-radius: {RADIUS['chip']}px; padding: 2px 8px;
     """
@@ -1848,7 +1983,7 @@ def recommendation_badge_qss(t: dict, recommendation: str) -> str:
     color = {"Disable": t["warn"], "Keep": t["ok"], "Review": t["accent2"]}.get(
         recommendation, t["text_faint"])
     return f"""
-        color: {color}; font-size: 10px; font-weight: 700;
+        color: {color}; font-size: {TYPE['meta']}px; font-weight: 700;
         background: {alpha(color, 0.10)}; border: 1px solid {alpha(color, 0.35)};
         border-radius: {RADIUS['chip']}px; padding: 3px 10px;
     """
@@ -1878,7 +2013,7 @@ def inline_status_qss(t: dict, tone: str = "ok") -> str:
     own top-level window and would never be seen while it's open)."""
     color = {"ok": t["ok"], "err": t["err"], "info": t["accent"]}.get(tone, t["text_soft"])
     return f"""
-        color: {color}; font-size: 12px; font-weight: 600;
+        color: {color}; font-size: {TYPE['body']}px; font-weight: 600;
         background: {alpha(color, 0.10)}; border: 1px solid {alpha(color, 0.32)};
         border-radius: {RADIUS['control']}px; padding: 8px 14px;
     """
@@ -1894,7 +2029,7 @@ def dialog_go_qss(t: dict, accent: str) -> str:
     return f"""
         QPushButton {{
             background: {fill(0.16, 0.11)}; border: 1px solid {alpha(accent, 0.55)};
-            border-radius: {RADIUS['control']}px; color: {accent}; font-size: 12px; font-weight: 600;
+            border-radius: {RADIUS['control']}px; color: {accent}; font-size: {TYPE['body']}px; font-weight: 600;
         }}
         QPushButton:hover {{ background: {fill(0.30, 0.24)}; color: {t['text']}; }}
         QPushButton:pressed {{ background: {fill(0.42, 0.34)}; color: {t['text']}; }}
@@ -1976,7 +2111,7 @@ def strip_status_qss(t: dict, ok: bool) -> str:
     color = t["ok"] if ok else t["warn"]
     return f"""
         QLabel {{
-            color: {color}; font-size: 11px; font-weight: 700;
+            color: {color}; font-size: {TYPE['caption']}px; font-weight: 700;
             background: transparent;
             border: 1px solid {alpha(color, 0.50)};
             border-radius: {RADIUS['chip']}px;

@@ -614,10 +614,11 @@ class WelcomePage(QWidget):
         # authoritative masthead wordmark — larger and tighter than the old
         # spread-out splash "hero" role
         self._name.setStyleSheet(
-            f"color: {t['text']}; font-size: 34px; font-weight: 800;"
+            f"color: {t['text']}; font-size: {TH.TYPE['display']}px; font-weight: 800;"
             "letter-spacing: 2px; background: transparent; border: none;")
         self._tag.setStyleSheet(
-            TH.label_qss(t, "tagline") + "font-size: 12px; letter-spacing: 1px;")
+            TH.label_qss(t, "tagline")
+            + f"font-size: {TH.TYPE['body']}px; letter-spacing: 1px;")
         for pill, ok in self._status_pills:
             pill.setStyleSheet(TH.strip_status_qss(t, ok))
 
@@ -1119,7 +1120,7 @@ class CategoryPage(QWidget):
         self._sync_count_chip()
         self._home.apply_theme(t)
         self._crumb_sep.setStyleSheet(
-            f"color: {t['text_faint']}; font-size: 17px; font-weight: 400;"
+            f"color: {t['text_faint']}; font-size: {TH.TYPE['glyph']}px; font-weight: 400;"
             "background: transparent; border: none;")
         self._accent_rail.setStyleSheet(
             f"background: {TH.resolve_accent(t, self.category['accent'])};"

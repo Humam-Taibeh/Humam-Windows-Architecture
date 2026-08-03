@@ -495,6 +495,55 @@ def test_every_menu_glyph_exists_in_the_icon_map(qapp):
     assert not missing, f"menu glyphs absent from theme.GLYPHS: {missing}"
 
 
+def test_no_two_cards_share_an_icon(qapp):
+    """Every one of the 41 operation cards carries a DISTINCT glyph.
+
+    Until v12 nine glyphs were doubled up across eighteen cards, and six of
+    those pairs sat in the SAME module — Maintenance & Security alone showed
+    the wrench twice, the lifebuoy twice, the magnifier twice and the bin
+    twice on one screen. An icon that appears on two cards of one page has
+    stopped being an identifier: the eye uses it to tell rows apart, and
+    duplicates actively mislead ("Create Restore Point" and "Restore Point
+    Browser" are a destructive action and a read-only viewer wearing the
+    same mark).
+
+    Scoped to the operation cards, not to GLYPHS as a whole — hub sub-items
+    and card chrome legitimately reuse marks, because they are never seen
+    side by side with the grid.
+    """
+    from frontend.menu_structure import CATEGORIES, category_items
+    seen: dict[str, list[str]] = {}
+    for category in CATEGORIES:
+        for item in category_items(category):
+            seen.setdefault(item["glyph"], []).append(
+                f"{category['title']} / {item['title']}")
+    clashes = {g: where for g, where in seen.items() if len(where) > 1}
+    assert not clashes, (
+        "cards sharing one icon: "
+        + "; ".join(f"{g!r} -> {where}" for g, where in sorted(clashes.items())))
+
+
+def test_no_two_glyphs_are_the_same_codepoint(qapp):
+    """Two GLYPHS entries with different names but the SAME codepoint are a
+    catalogue lying about its own size.
+
+    This shipped twice: 'shield' was U+E72E, byte-identical to 'lock', and
+    'export' was U+E74E, byte-identical to 'save' — so the console's "save
+    output to a file" button and the Driver Backup card drew the same mark.
+    Neither was visible in review, because the table stored raw Private Use
+    Area characters that render as empty boxes in every diff tool. The
+    table is written as \\uXXXX escapes since v12 precisely so this is
+    readable, and this test makes it enforced rather than merely legible.
+    """
+    from frontend import theme as TH
+    seen: dict[str, list[str]] = {}
+    for name, (char, _emoji) in TH.GLYPHS.items():
+        seen.setdefault(char, []).append(name)
+    clashes = {f"U+{ord(c):04X}": names
+               for c, names in seen.items() if len(names) > 1}
+    assert not clashes, f"GLYPHS entries sharing a codepoint: {clashes}"
+
+
 _ACTIVATION = os.path.join(_ROOT, "src/backend/modules/13-Activation.ps1")
 
 
@@ -840,6 +889,106 @@ class TestThemes:
                         f"(floor {floor}:1)")
         assert checked == 2 * len(self._CONTRAST_PAIRS), "not every pair ran"
         assert not failures, "contrast floor breached:\n  " + "\n  ".join(failures)
+
+    #: The plaque tint alphas icon_plaque_qss paints per mode. Duplicated
+    #: here deliberately: a test that imported the numbers from the code it
+    #: checks would pass whatever the code did.
+    _PLAQUE_TINT = {"dark": (0.24, 0.13), "light": (0.15, 0.08)}
+
+    #: How far apart the widest and narrowest in-plaque ratios may sit.
+    #: 1.10x is generous against the 1.007x the v12 solve achieves — this
+    #: guards against a colour being dropped in by eye, not against drift
+    #: in the last decimal place.
+    _PEER_SPREAD = 1.10
+
+    def _module_plaque_ratios(self, tokens) -> dict:
+        """{module: contrast of its glyph against its own plaque well}."""
+        from frontend import theme as TH
+        a_top, a_bot = self._PLAQUE_TINT[tokens["name"]]
+        card = TH.blend(tokens["bg_solid"], tokens["card"])
+        out = {}
+        for key, value in tokens["module"].items():
+            well = TH.to_qcolor(
+                TH.blend(card, TH.alpha(value, (a_top + a_bot) / 2)))
+            out[key] = self._contrast(TH.to_qcolor(value), well)
+        return out
+
+    def test_module_accents_carry_equal_weight_in_both_themes(self, qapp):
+        """The module colours must read as ONE SET, not as a few loud
+        modules beside a few quiet ones.
+
+        This is a different guarantee from the floor above, and the reason
+        it needs its own test: through v11 every accent passed its floor
+        and the set still looked uneven, because each had been solved
+        INDEPENDENTLY and landed wherever it landed — 4.64:1 to 6.80:1
+        in-plaque on dark, a 1.46x spread. A floor test cannot see that;
+        it only ever asks whether the weakest member is legible, never
+        whether the members match.
+        """
+        ratios = {name: self._module_plaque_ratios(tokens)
+                  for name, tokens in self._themes(qapp).items()}
+        assert len(ratios) == 2, "both themes must be measured"
+        failures = []
+        for name, per_module in ratios.items():
+            assert len(per_module) >= 7, f"{name}: modules disappeared"
+            lo, hi = min(per_module.values()), max(per_module.values())
+            if lo < 3.0:
+                failures.append(
+                    f"{name}: weakest module glyph {lo:.2f}:1 is under the "
+                    "3:1 floor for a graphic object")
+            if hi / lo > self._PEER_SPREAD:
+                worst = min(per_module, key=per_module.get)
+                best = max(per_module, key=per_module.get)
+                failures.append(
+                    f"{name}: module accents span {lo:.2f}-{hi:.2f}:1 "
+                    f"({hi / lo:.3f}x, max {self._PEER_SPREAD}x) — "
+                    f"{best} outweighs {worst}")
+        assert not failures, "module accent parity:\n  " + "\n  ".join(failures)
+
+    def test_no_two_modules_are_the_same_colour(self, qapp):
+        """Two modules whose accents are within a just-noticeable difference
+        do not have separate identities, whatever the token table claims.
+
+        'software' #5e96ff and 'information' #6598ff shipped through v11 at
+        CIE76 dE 1.6 — under the ~2.3 JND — while the next-closest pair in
+        the set sat at 20.0. Both are TOP-LEVEL modules and their entries
+        are adjacent in the sidebar, so the palette was rendering six
+        colours and calling them seven. A floor test cannot catch this
+        either: both values were individually compliant.
+        """
+        import itertools
+        import math
+        from frontend import theme as TH
+
+        def lab(hex_value):
+            colour = TH.to_qcolor(hex_value)
+            chans = []
+            for raw in (colour.redF(), colour.greenF(), colour.blueF()):
+                chans.append(raw / 12.92 if raw <= 0.04045
+                             else ((raw + 0.055) / 1.055) ** 2.4)
+            r, g, b = chans
+            x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047
+            y = r * 0.2126 + g * 0.7152 + b * 0.0722
+            z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883
+            f = lambda t: t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+            fx, fy, fz = f(x), f(y), f(z)
+            return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+        # Well clear of the ~2.3 JND, well under the 14.6 the closest
+        # surviving pair (maintenance/safety, light) actually measures.
+        floor = 8.0
+        failures = []
+        for name, tokens in self._themes(qapp).items():
+            for a, b in itertools.combinations(tokens["module"], 2):
+                delta = math.dist(lab(tokens["module"][a]),
+                                  lab(tokens["module"][b]))
+                if delta < floor:
+                    failures.append(
+                        f"{name}: {a} ({tokens['module'][a]}) and {b} "
+                        f"({tokens['module'][b]}) are dE {delta:.1f} apart "
+                        f"(floor {floor})")
+        assert not failures, (
+            "modules sharing a colour:\n  " + "\n  ".join(failures))
 
 
 def test_every_bound_shortcut_is_documented(window):

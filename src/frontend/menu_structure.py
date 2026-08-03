@@ -577,7 +577,7 @@ CATEGORIES = [
                 # 15-Network.ps1 for why "all adapters" is not offered.
                 {"icon": "🛰️", "title": "DNS & Network Profiles",
                  "desc": "Switch a connection to Cloudflare, Quad9 or AdGuard — with a one-click way back.",
-                 "glyph": "network", "task": "NetworkProfiles", "timeout": 300,
+                 "glyph": "dns", "task": "NetworkProfiles", "timeout": 300,
                  "dns_switcher": True},
             ]},
             {"title": "INTERFACE", "items": [
@@ -606,7 +606,7 @@ CATEGORIES = [
                 # probeable one-shot stays a top-level card.
                 {"icon": "🧹", "title": "Right-Click Menu Entries",
                  "desc": "See every right-click entry and hide the ones you don't use — fully reversible.",
-                 "glyph": "list", "task": "ContextMenuScan", "timeout": 300,
+                 "glyph": "overflow", "task": "ContextMenuScan", "timeout": 300,
                  "context_menu": True},
             ]},
             # Remove Bloatware left this band in v1.1 — it uninstalls
@@ -701,11 +701,11 @@ CATEGORIES = [
                  "glyph": "chart", "task": "DriveSpaceReport", "timeout": 120},
                 {"icon": "🔭", "title": "Storage Analyzer",
                  "desc": "Find what is actually filling a drive — largest folders and files, read-only.",
-                 "glyph": "search", "task": "StorageScan", "timeout": 1800,
+                 "glyph": "analyze", "task": "StorageScan", "timeout": 1800,
                  "storage_analyzer": True},
                 {"icon": "🗑️", "title": "Remove Windows.old",
                  "desc": "Reclaim gigabytes from a previous Windows install.",
-                 "glyph": "delete", "task": "RemoveWindowsOld", "timeout": 1800, "confirm": True, "danger": True},
+                 "glyph": "layers", "task": "RemoveWindowsOld", "timeout": 1800, "confirm": True, "danger": True},
                 {"icon": "😴", "title": "Disable Hibernation",
                  "desc": "Delete hiberfil.sys and free disk space.",
                  "glyph": "sleep", "task": "DisableHibernation", "timeout": 120},
@@ -728,13 +728,13 @@ CATEGORIES = [
                 # performing a rollback is Microsoft's own surface's job.
                 {"icon": "🛡️", "title": "Restore Point Browser",
                  "desc": "Every System Restore checkpoint on this PC — verify your safety net, read-only.",
-                 "glyph": "restorepoint", "task": "@restore_points"},
+                 "glyph": "library", "task": "@restore_points"},
                 {"icon": "↩️", "title": "Reset All Tweaks",
                  "desc": "Revert every registry tweak to your backed-up values.",
                  "glyph": "restore", "task": "ResetTweaks", "timeout": 300, "confirm": True},
                 {"icon": "🔧", "title": "Restore Services",
                  "desc": "Re-enable Windows services disabled by the optimizer.",
-                 "glyph": "repair", "task": "RestoreServices", "timeout": 300},
+                 "glyph": "services", "task": "RestoreServices", "timeout": 300},
             ]},
         ],
     },
@@ -774,7 +774,7 @@ CATEGORIES = [
                  "glyph": "chartline", "task": "SystemInfo", "timeout": 300},
                 {"icon": "🩺", "title": "Health & Drift Report",
                  "desc": "Snapshot applied tweaks, drives and startup load; export HTML or JSON.",
-                 "glyph": "chart", "task": "@health_report"},
+                 "glyph": "pulse", "task": "@health_report"},
                 # Read-only, and deliberately so: it reports what Windows'
                 # licensing service already knows and hands off to
                 # Microsoft's own surfaces for anything that needs changing.
@@ -788,12 +788,12 @@ CATEGORIES = [
                 # 62% of design capacity when it dies rather than before.
                 {"icon": "🔋", "title": "Battery & Power Health",
                  "desc": "Battery wear, cycle count and the active power plan — read-only.",
-                 "glyph": "battery", "task": "@power_health"},
+                 "glyph": "charging", "task": "@power_health"},
             ]},
             {"title": "AUTOMATION & LOGS", "items": [
                 {"icon": "📘", "title": "Playbooks",
                  "desc": "Run a saved sequence of tasks — preview it first with a dry run.",
-                 "glyph": "boot", "task": "@playbooks"},
+                 "glyph": "checklist", "task": "@playbooks"},
                 {"icon": "📜", "title": "View Operation Log",
                  "desc": "Open the full Pulse operation log.",
                  "glyph": "log", "task": "@open_log"},
