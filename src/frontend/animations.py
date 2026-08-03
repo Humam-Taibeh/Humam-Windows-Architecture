@@ -209,6 +209,38 @@ def paint_glow_frame(painter: QPainter, rect, radius: int,
     painter.restore()
 
 
+def paint_accent_hairline(painter: QPainter, rect, radius: int,
+                          color: QColor, intensity: float,
+                          alpha: float = 0.55, width: float = 1.0):
+    """A uniform 1px accent border that fades in with hover.
+
+    The COMPANION to paint_glow_frame, not a replacement for it, and the
+    pair is deliberate: the glow is a radial sweep centred on the cursor,
+    so it lights the edge nearest the pointer and leaves the far side of a
+    wide card unchanged — beautiful up close, but on its own it never quite
+    says "this whole card is the thing you are pointing at". This draws the
+    full perimeter at an even weight underneath it. Together they read as a
+    lit edge with a bright spot travelling along it.
+
+    A SOLID pen, unlike every other stroke in this module, which is why it
+    needs no pixmap cache: the caching machinery exists because Qt's
+    software rasteriser evaluates a GRADIENT pen per pixel along the stroke
+    (~114 us a card). A flat colour is a fast path — microseconds — and
+    caching it per hover frame would cost more than it saved.
+    """
+    if intensity <= 0.01:
+        return
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    edge = QColor(color)
+    edge.setAlphaF(max(0.0, min(1.0, alpha * intensity)))
+    painter.setPen(QPen(edge, width))
+    inner = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
+    painter.drawRoundedRect(inner, radius, radius)
+    painter.restore()
+
+
 def paint_nav_indicator(painter: QPainter, rect, c1: QColor, c2: QColor,
                         inset: int = 8, bar_width: float = 3.0):
     """Left-edge active-item bar for the selected sidebar entry — the same

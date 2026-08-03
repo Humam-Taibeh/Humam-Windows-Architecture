@@ -39,8 +39,8 @@ from PySide6.QtWidgets import (
 )
 
 from frontend.animations import (
-    GlowController, RippleController, ShimmerBar, paint_aurora_edge,
-    paint_bevel_frame, paint_drop_shadow, paint_glow_frame,
+    GlowController, RippleController, ShimmerBar, paint_accent_hairline,
+    paint_aurora_edge, paint_bevel_frame, paint_drop_shadow, paint_glow_frame,
     paint_nav_indicator, paint_ripple_frame, paint_top_sheen, squircle_path,
 )
 from frontend import theme as TH
@@ -73,6 +73,15 @@ class PulseDialog(QDialog):
     PulseDialog) get this for free — each paints its own full-body scrim
     on top of whatever is behind it, so stacked modals just work."""
 
+    #: Downscale factor used to blur the captured backdrop. A Gaussian over
+    #: a full 1300x800 frame is far too slow to do on a modal's show; a
+    #: bilinear round-trip through a 1/N-scale pixmap is the standard cheap
+    #: approximation and is visually indistinguishable at this radius,
+    #: because what we want IS the low-frequency content. At 10 the source
+    #: frame collapses to ~130x80 before being smooth-scaled back, which
+    #: reads as a ~20px blur.
+    _BLUR_DOWNSCALE = 10
+
     def __init__(self, parent: QWidget | None):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
@@ -85,15 +94,113 @@ class PulseDialog(QDialog):
         # it, but a rounded default would flash two lit wedges of shell at
         # the bottom corners on the frame before that lands.
         self._scrim_radius = 0
+        #: Blurred snapshot of whatever this modal covers, captured once on
+        #: show — see _capture_backdrop. Kept at blur resolution, not the
+        #: dialog's; paintEvent scales it up.
+        self._frost: QPixmap | None = None
+        #: Coalesces backdrop re-captures during a live host resize, so a
+        #: drag pays for one capture at the end rather than one per step.
+        self._refrost = QTimer(self)
+        self._refrost.setSingleShot(True)
+        self._refrost.setInterval(120)
+        self._refrost.timeout.connect(self._capture_backdrop)
 
     def _set_scrim(self, t: dict, radius: int):
         self._scrim_color = QColor(*t["scrim"])
         self._scrim_radius = radius
         self.update()
 
+    def _capture_backdrop(self):
+        """Grab what this modal is about to cover and blur it, so the scrim
+        is frosted glass rather than a flat sheet of tint.
+
+        Qt has no backdrop-filter and the DWM route is closed here — the
+        module note at the foot of theme.py records why blur-behind was
+        removed (it needs the layered/translucent composition path that
+        caused the window rendering glitches). But a modal is not a
+        separate window over the desktop: it covers the APP, and the app is
+        something we can render ourselves. So the blur is computed rather
+        than composited, once, at the moment the dialog opens.
+
+        The capture is of the window DIRECTLY beneath — offset to whatever
+        region of it this dialog occupies, so the frost stays registered to
+        the pixels actually behind it rather than being a stretched
+        approximation. Deliberately not _resolve_host_window(), which
+        climbs past intermediate dialogs to the QMainWindow: a nested wizard
+        sits on top of its parent sheet, so the parent sheet is what it must
+        frost. Grabbing the parent renders that dialog's own paintEvent —
+        its scrim over its own frost — so stacked sheets compose correctly
+        without any special case.
+
+        Failure is silent and total by design: a null grab (no window yet,
+        zero size, a platform that will not render offscreen) leaves
+        `_frost` as None and paintEvent falls back to the flat scrim, which
+        is what shipped for every version before this one.
+        """
+        self._frost = None
+        parent = self.parentWidget()
+        host = parent.window() if parent is not None else None
+        if host is None or self.width() <= 0 or self.height() <= 0:
+            return
+        self._refrost.stop()
+
+        # RENDERED STRAIGHT TO BLUR RESOLUTION, never grabbed at full size
+        # and scaled down. host.grab() rasterises ~1.8M pixels so that we
+        # can average them away to ~18K — measured at 21.8 ms on the exact
+        # frame the user is waiting for a modal to open. Rendering through
+        # a scaled painter rasterises the tiny target directly, and the
+        # downscale IS the blur: a UI drawn at a tenth of its size is a box
+        # filter over 10x10 neighbourhoods, which is the whole effect.
+        #
+        # Retained small, too. Scaling it back up is the painter's job on
+        # each repaint, with SmoothPixmapTransform already set — a full-size
+        # blurred pixmap here would cost a second smooth scale and an
+        # allocation to match, for pixels that carry no extra information.
+        width = max(1, self.width() // self._BLUR_DOWNSCALE)
+        height = max(1, self.height() // self._BLUR_DOWNSCALE)
+        frost = QPixmap(width, height)
+        frost.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(frost)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        scale = 1.0 / float(self._BLUR_DOWNSCALE)
+        painter.scale(scale, scale)
+        # Shift the host so the slice sitting behind US lands at the origin.
+        offset = host.mapFromGlobal(self.mapToGlobal(QPoint(0, 0)))
+        painter.translate(-offset)
+        try:
+            # targetOffset is required on the painter overload; the shift
+            # we actually want is the translate above, which is applied to
+            # the painter's transform rather than to the source.
+            host.render(painter, QPoint())
+        except (RuntimeError, TypeError):
+            painter.end()
+            return
+        painter.end()
+        self._frost = frost
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # After the base class has placed and sized us, so the captured
+        # region matches the geometry we will actually paint into.
+        self._capture_backdrop()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # A live host resize moves the modal over different pixels, so the
+        # frost does eventually need re-taking — but NOT per resize step.
+        # A capture renders the whole host window (~6.6 ms), and a drag
+        # emits these continuously; paying it per step would put the
+        # backdrop refresh directly in the way of the drag. The retained
+        # frost simply stretches in the meantime, which on a 20px blur is
+        # invisible, and one capture lands once the drag stops.
+        if self.isVisible():
+            self._refrost.start()
+
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         rect = QRectF(self.rect())
         color = self._scrim_color
         if self._scrim_radius:
@@ -103,9 +210,17 @@ class PulseDialog(QDialog):
             path.addRoundedRect(rect.adjusted(0, -self._scrim_radius, 0, 0),
                                 self._scrim_radius, self._scrim_radius)
             p.setClipRect(rect)
-            p.fillPath(path, color)
+            p.setClipPath(path, Qt.ClipOperation.IntersectClip)
         else:
-            p.fillRect(rect, color)
+            p.setClipRect(rect)
+        if self._frost is not None:
+            # Frosted glass is the blur PLUS the tint, in that order: the
+            # blur alone is just a smeared screenshot with no sense of a
+            # surface in front of it, and the tint alone is the flat sheet
+            # this replaced. The scrim's own alpha does the darkening, so
+            # the two themes stay exactly as separated as they were.
+            p.drawPixmap(self.rect(), self._frost)
+        p.fillRect(rect, color)
         p.end()
 
     def mousePressEvent(self, e):
@@ -209,7 +324,11 @@ _CHIP_H = 30
 #: strip sized to its pills alone squeezed and clipped them the moment the
 #: row overflowed — and the bar then rendered hard against the pill edges,
 #: reading as an underline drawn across the tab bar.
-_CHIP_LANE = 10
+#:
+#: DERIVED from the scrollbar's own geometry rather than written out, so
+#: the lane and the bar are one number by construction — they used to be
+#: two literals (10 here, 10 in chip_strip_qss) that agreed only by luck.
+_CHIP_LANE = TH.scrollbar_lane()
 
 
 def _chip_strip(t: dict,
@@ -887,25 +1006,55 @@ class ElidedCaption(QLabel):
     The untruncated text always remains in the tooltip.
     """
 
-    #: Never demand more than this, however long the caption gets.
+    #: Default ceiling on the width a caption may ASK for, however long it
+    #: gets. Tuned for the card footer this class was built for, where a
+    #: run-history pill must never widen the responsive grid's unit.
     MAX_WIDTH = 120
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None,
+                 max_width: int | None = None):
+        """`max_width` overrides MAX_WIDTH for one instance.
+
+        The hero masthead's tagline is the reason it exists: that line
+        genuinely wants ~255px on a wide window and only needs to elide
+        when the window is squeezed toward its 980px minimum. Inheriting
+        the card footer's 120px ceiling would have "fixed" the clipping by
+        truncating the tagline permanently, at every window size — trading
+        a bug at one width for a worse one at all of them.
+        """
         super().__init__(parent)
         self._full = ""
+        self._max_width = self.MAX_WIDTH if max_width is None else max_width
         self.setSizePolicy(QSizePolicy.Policy.Preferred,
                            QSizePolicy.Policy.Fixed)
 
     def setFullText(self, text: str):
         self._full = text
         self._apply_elision()
+        self.updateGeometry()
 
     def fullText(self) -> str:
         return self._full
 
     def sizeHint(self):            # noqa: N802 - Qt casing
+        """Measured off the FULL text, never off what is currently painted.
+
+        QLabel.sizeHint() reports the width of its current text, and our
+        current text is the ELIDED string — so asking the base class makes
+        the hint a function of the elision, and the elision a function of
+        the width the hint won. That is a ratchet: the first squeeze elides
+        the caption, the shrunken hint then asks for only the elided width,
+        and the caption can never come back when the room does.
+
+        Invisible on the card footer this class was written for (a run
+        history pill is capped at 120px and sits under constant pressure),
+        but immediately obvious on the masthead tagline, which stayed
+        truncated at 1400px after one pass through 980px.
+        """
         hint = super().sizeHint()
-        hint.setWidth(min(hint.width(), self.MAX_WIDTH))
+        if self._full:
+            hint.setWidth(self.fontMetrics().horizontalAdvance(self._full))
+        hint.setWidth(min(hint.width(), self._max_width))
         return hint
 
     def minimumSizeHint(self):     # noqa: N802 - Qt casing
@@ -1652,14 +1801,29 @@ class GlassCard(QFrame):
         self._sync_icon_scale()
         p = QPainter(self)
         radius = TH.RADIUS["card"]
+        # How far this card has risen toward the pointer, on the quantized
+        # elevation ladder — see TH.hover_lift. Read once per paint so the
+        # shadow, the sheen and the accent hairline below can never
+        # disagree about how lifted the card currently is.
+        lift = TH.hover_lift(self._glow.intensity)
         if self._featured:
             self._paint_featured(p)
         else:
             # Shadow FIRST, under the edge treatments: it is the surface's
             # cast, so a bevel highlight or sheen must sit on top of it.
-            paint_drop_shadow(p, self.rect(), radius, *self._shadow)
+            #
+            # Both deepen with `lift`: a hovered card casts harder and
+            # catches more light along its top edge, which is the same pair
+            # of cues that separates elevation tiers at rest. The card does
+            # not move a pixel — see the note on HOVER_LIFT_STEPS.
+            shadow_alpha, shadow_spread = self._shadow
+            paint_drop_shadow(
+                p, self.rect(), radius,
+                shadow_alpha * (1.0 + (TH.HOVER_LIFT_SHADOW - 1.0) * lift),
+                shadow_spread)
             paint_bevel_frame(p, self.rect(), radius, *self._bevel)
-            paint_top_sheen(p, self.rect(), radius, strength=0.55)
+            paint_top_sheen(p, self.rect(), radius,
+                            strength=0.55 + TH.HOVER_LIFT_SHEEN * lift)
         if self._press_tint > 0.01:
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setPen(Qt.PenStyle.NoPen)
@@ -1668,6 +1832,13 @@ class GlassCard(QFrame):
                               radius - 1, radius - 1)
         paint_ripple_frame(p, self.rect(), radius, self._glow.color,
                            self._ripple.progress, self._ripple.origin)
+        # The even accent perimeter goes UNDER the cursor sweep: the
+        # hairline says "this whole card", the sweep puts the bright spot
+        # where the pointer is. Skipped on the featured card, which already
+        # carries the Aurora lit edge and would end up wearing two borders.
+        if not self._featured:
+            paint_accent_hairline(p, self.rect(), radius, self._glow.color,
+                                  self._glow.intensity)
         paint_glow_frame(p, self.rect(), radius, self._glow.color,
                          self._glow.intensity, self._glow.cursor,
                          halo_alpha=self._glow.halo_alpha,
@@ -5027,48 +5198,93 @@ class StatePill(QLabel):
 #  STATUS DOT — the bottom-bar '●', breathes while busy
 # ============================================================
 class StatusDot(QLabel):
-    """The bottom status-bar glyph. Static color swap for ready/ok/err
-    (cheap — see set_color); a soft breathing pulse ONLY while busy, using
-    BreathingIcon's proven pure-paint technique (no QGraphicsEffect). A
-    literal brand moment: Pulse pulses while it's actually working, and
-    goes still the instant it's done — a custom 'loading state' graphic
-    cue in place of a flat static dot."""
+    """The status-bar glyph, and the app's smallest brand moment: Pulse
+    pulses. Pure-paint (BreathingIcon's technique — no QGraphicsEffect), so
+    the whole thing costs one small repaint per frame.
+
+    TWO cadences, because a status light that is either frantic or dead
+    tells you less than one that idles:
+
+      * BUSY — a 1 s breath down to 0.35. Unmistakably active; this is the
+        app's "loading state" graphic, and it must read as work happening
+        from across a desk.
+      * READY / OK / ERR — a slow 3.4 s breath that only dips to 0.72. A
+        LIVING indicator rather than a printed dot: the difference between
+        "the system is ready" and "this label says ready". It is close
+        enough to steady that it never pulls the eye, which is the whole
+        design constraint on an idle indicator — anything deeper reads as
+        a warning blinking at you.
+
+    Amplitude and rate move together on purpose. A slow breath at the busy
+    depth reads as something wrong; a fast breath at the idle depth reads
+    as a rendering glitch.
+    """
+
+    #: (duration_ms, floor_opacity) per mode. The idle pair is deliberately
+    #: shallow AND slow — see the class note.
+    _BUSY = (1000, 0.35)
+    _IDLE = (3400, 0.72)
 
     def __init__(self, glyph: str = "●", parent: QWidget | None = None):
         super().__init__(glyph, parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._color = QColor("#3fb950")
         self._breath = 1.0
-        self._pulsing = False
+        self._busy = False
         self._font = QFont(self.font())
         self._font.setPixelSize(12)
 
-        # Faster cadence than BreathingIcon's slow 2.6s ambient brand
-        # breath — this one signals active work, not idle presence.
         self._anim = QVariantAnimation(self)
-        self._anim.setDuration(1000)
-        self._anim.setStartValue(1.0)
-        self._anim.setKeyValueAt(0.5, 0.35)
-        self._anim.setEndValue(1.0)
         self._anim.setEasingCurve(QEasingCurve.Type.InOutSine)
         self._anim.setLoopCount(-1)
         self._anim.valueChanged.connect(self._on_frame)
+        self._apply_cadence(*self._IDLE)
+
+    def _apply_cadence(self, duration_ms: int, floor: float):
+        """Restart the breath at a new rate/depth. Stopped and restarted
+        rather than retuned in place: QVariantAnimation keeps its current
+        position when the duration changes, which makes a mid-breath
+        switch jump to a different opacity than the one being displayed."""
+        running = self._anim.state() == QVariantAnimation.State.Running
+        self._anim.stop()
+        self._anim.setDuration(duration_ms)
+        self._anim.setStartValue(1.0)
+        self._anim.setKeyValueAt(0.5, floor)
+        self._anim.setEndValue(1.0)
+        if running:
+            self._anim.start()
 
     def set_color(self, color: str):
         self._color = QColor(color)
         self.update()
 
     def start_pulse(self):
-        if not self._pulsing:
-            self._pulsing = True
+        """Switch to the BUSY cadence — a task is running."""
+        if not self._busy:
+            self._busy = True
+            self._apply_cadence(*self._BUSY)
+        if self._anim.state() != QVariantAnimation.State.Running:
             self._anim.start()
 
     def stop_pulse(self):
-        if self._pulsing:
-            self._pulsing = False
-            self._anim.stop()
-            self._breath = 1.0
-            self.update()
+        """Fall back to the slow idle breath. NOT to a static dot: the
+        indicator stays alive to say the app is, which is the point of
+        having one at all."""
+        if self._busy:
+            self._busy = False
+            self._apply_cadence(*self._IDLE)
+        if self._anim.state() != QVariantAnimation.State.Running:
+            self._anim.start()
+
+    # -- lifecycle: never breathe at an invisible widget ---------
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self._anim.state() != QVariantAnimation.State.Running:
+            self._anim.start()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._anim.stop()
 
     def _on_frame(self, value: float):
         self._breath = float(value)
@@ -5077,7 +5293,7 @@ class StatusDot(QLabel):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setOpacity(self._breath if self._pulsing else 1.0)
+        p.setOpacity(self._breath)
         p.setPen(self._color)
         p.setFont(self._font)
         p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())

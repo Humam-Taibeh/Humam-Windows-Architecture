@@ -238,6 +238,15 @@ WEIGHT = {
 }
 
 
+#: How much of its own tone a status chip blends into its opaque plate.
+#: Enough to read as a tinted material rather than a grey pill; low enough
+#: that the chip's text keeps a comfortable AA margin on the worst surface
+#: it can land on. See state_chip_qss for the measured table — the worst
+#: case at this value is 4.81:1, against 4.02:1 for the translucent
+#: own-hue fill it replaced. Raising it walks back toward that failure.
+CHIP_TONE_WHISPER = 0.08
+
+
 #: Alpha of the tint a card's running / flash state blends onto the card
 #: tier (see card_qss). Named rather than inlined three times because the
 #: text ramp is SOLVED AGAINST IT: text_faint is pinned to clear AA on the
@@ -297,6 +306,44 @@ def shadow_alphas(t: dict) -> tuple[float, int]:
     # Obsidian needs a firmer cast: a black shadow on a near-black canvas
     # has far less room to register than one on porcelain.
     return (0.26, 6)
+
+
+#: Elevation steps a card climbs while the pointer is over it.
+#:
+#: A hovered card should read as having RISEN toward the viewer, and the
+#: honest cue for that is its cast shadow deepening and its lit top edge
+#: brightening — the same two things that separate elevation tiers at rest
+#: (see shadow_alphas / paint_top_sheen). Geometric scaling is deliberately
+#: NOT how this is done: a card is a QGridLayout child, so growing its
+#: geometry either fights the layout that owns it (the defect that makes
+#: CascadeAnimator abandon itself on a resize) or needs dead margin
+#: reserved inside every cell.
+#:
+#: QUANTIZED, and that is load-bearing rather than lazy. paint_drop_shadow
+#: and paint_top_sheen cache their rasterised strokes keyed on alpha, and
+#: the cache is hard-bounded at 96 entries before it clears wholesale. A
+#: continuously-varying alpha would mint a fresh full-size stroke on every
+#: frame of every hover ramp and thrash the cache for the whole app — the
+#: unbounded-pixmap-cache failure animations.py already carries scars from.
+#: Four steps is smooth to the eye at a 130 ms ramp and costs at most four
+#: cache entries per surface size.
+HOVER_LIFT_STEPS = 4
+
+#: Multiplier on the resting shadow alpha at full hover, and the extra
+#: sheen strength at full hover. Both are small on purpose: the card also
+#: gains a cursor-tracking glow and an accent hairline at the same moment,
+#: and four simultaneous loud cues read as a card that flinches.
+HOVER_LIFT_SHADOW = 1.45
+HOVER_LIFT_SHEEN = 0.30
+
+
+def hover_lift(intensity: float) -> float:
+    """Snap a 0..1 hover intensity onto the elevation ladder. See
+    HOVER_LIFT_STEPS for why this cannot be continuous."""
+    if intensity <= 0.0:
+        return 0.0
+    step = round(intensity * HOVER_LIFT_STEPS)
+    return min(HOVER_LIFT_STEPS, max(0, step)) / float(HOVER_LIFT_STEPS)
 
 
 def glow_alphas(t: dict) -> tuple[float, float]:
@@ -1043,8 +1090,31 @@ def state_chip_qss(t: dict, verdict: str) -> str:
                                   resting state must not compete with the
                                   two toned verdicts beside it.
 
-    The toned pair keeps the 0.12 self-tint the v11 status tokens were
-    re-solved for (see the `ok`/`warn`/`err` note in _LIGHT)."""
+    THE FILL IS AN OPAQUE PLATE AT THE CARD TIER, not a translucent wash of
+    the chip's own hue, and that is a contrast fix as much as a finish one.
+
+    A pill tinted in its own tone subtracts contrast from the text it
+    carries — the "badge-tint trap" strip_status_qss documents and avoids.
+    These chips were doing it anyway, at 9px, the smallest type in the app.
+    Measured against the worst surface a chip can land on (a card wearing a
+    STATE_TINT wash while running or flashing):
+
+        light mode, own-hue fill at 0.12 ... 4.02:1   <- under AA
+        light mode, opaque card plate ...... 4.81:1
+        dark mode,  own-hue fill at 0.12 ... 4.93:1
+        dark mode,  opaque card plate ...... 6.23:1
+
+    Blending the whisper of tone into an OPAQUE colour (rather than laying
+    a translucent one over whatever is beneath) buys a second property that
+    matters more than the ratio: the chip now reads identically on a
+    resting card, a running card and a flashing one. Its own state is the
+    only thing it reports, which is the entire job of a status badge.
+
+    All three verdicts share one geometry and one material so they read as
+    one control at three settings — the neutral DEFAULT used to be the odd
+    one out, transparent where the toned pair were filled, which made "at
+    Windows defaults" look like a different kind of object.
+    """
     if verdict == "applied":
         color = t["ok"]
     elif verdict in ("mixed", "due"):
@@ -1053,16 +1123,18 @@ def state_chip_qss(t: dict, verdict: str) -> str:
         # for failure, which is what makes it legible when it appears.
         color = t["warn"]
     else:
+        # Neutral: the same plate, lifted off the card by the panel line
+        # alone. No tone to whisper, so the plate is the card tier flat.
         return f"""
-            color: {t['text_faint']}; font-size: {TYPE['micro']}px; font-weight: 700;
-            background: transparent;
+            color: {t['text_faint']}; font-size: {TYPE['micro']}px; font-weight: {WEIGHT['bold']};
+            background: {t['card']};
             border: 1px solid {t['panel_line']};
             border-radius: {RADIUS['chip']}px; padding: 2px 8px; letter-spacing: 1px;
         """
     return f"""
-        color: {color}; font-size: {TYPE['micro']}px; font-weight: 700;
-        background: {alpha(color, 0.12)};
-        border: 1px solid {alpha(color, 0.38)};
+        color: {color}; font-size: {TYPE['micro']}px; font-weight: {WEIGHT['bold']};
+        background: {blend(t['card'], alpha(color, CHIP_TONE_WHISPER))};
+        border: 1px solid {alpha(color, 0.45)};
         border-radius: {RADIUS['chip']}px; padding: 2px 8px; letter-spacing: 1px;
     """
 
@@ -1128,7 +1200,7 @@ def sidebar_search_qss(t: dict) -> str:
             text-align: left;
         }}
         QPushButton:hover {{
-            border: 1px solid {alpha(t['accent'], 0.45)};
+            border: 1px solid {alpha(t['accent'], FIELD['hover'])};
             color: {t['text_muted']};
             background: {t['card_hover']};
         }}
@@ -1154,8 +1226,8 @@ def filter_combo_qss(t: dict, accent: str) -> str:
             font-size: {TYPE['body']}px;
             padding: 0 10px;
         }}
-        QComboBox:hover {{ border: 1px solid {alpha(accent, 0.45)}; }}
-        QComboBox:focus {{ border: 1px solid {alpha(accent, 0.65)}; }}
+        QComboBox:hover {{ border: 1px solid {alpha(accent, FIELD['hover'])}; }}
+        QComboBox:focus {{ border: 1px solid {alpha(accent, FIELD['focus'])}; }}
         QComboBox::drop-down {{ border: none; width: 22px; }}
         QComboBox::down-arrow {{
             image: none;
@@ -1334,24 +1406,97 @@ def toast_icon_qss(t: dict, accent: str) -> str:
     """
 
 
+#: Accent weight on an input's border, per interaction state. One pair for
+#: every field in the app — the sidebar search doorway, the category
+#: header's status filter, the catalog's in-list filter and the Ctrl+K
+#: palette input.
+#:
+#: These four were built at four different times and had drifted exactly
+#: the way SPACE, RADIUS and TYPE were introduced to stop: hover was 0.45
+#: on the combo, 0.35 on the catalog field, 0.45 on the sidebar button and
+#: ABSENT on the command palette (the app's most-used input was the one
+#: that never acknowledged the pointer); focus was 0.65 on two and 0.55 on
+#: the third. Nothing chose those numbers — they are just when each screen
+#: was written.
+FIELD = {
+    "hover": 0.45,   # pointer is over the field
+    "focus": 0.65,   # field has keyboard focus — firmly the loudest state
+}
+
+
+#: The scrollbar's lane and handle geometry. `_CHIP_LANE` in widgets.py
+#: reserves exactly SCROLLBAR["lane"] for a horizontal bar under a pill
+#: strip, so the two numbers are one number — see the strip's contract test.
+SCROLLBAR = {
+    "thickness": 6,    # the bar's own width/height
+    "margin":    2,    # inset from the viewport edge
+    "min_grip":  30,   # shortest a handle may get on a long list
+}
+
+
+def scrollbar_lane() -> int:
+    """Total vertical space a horizontal scrollbar takes out of a viewport.
+
+    widgets._CHIP_LANE is this number, and the Software Catalog's tab strip
+    reserves exactly it. Derived rather than written twice: when the two
+    disagreed, either the pills floated above their own lane or the handle
+    resolved to zero pixels — a strip that scrolls with no visible
+    scrollbar, which shipped once."""
+    return SCROLLBAR["thickness"] + SCROLLBAR["margin"] * 2
+
+
+def scrollbar_qss(t: dict) -> str:
+    """THE scrollbar, for every scrolling surface in the app.
+
+    Extracted because it was already living in two places: console_qss
+    carried a byte-for-byte copy of scroll_area_qss's fourteen rules
+    (a QPlainTextEdit scrolls ITSELF and so never picked up the shared
+    sheet), and a copy is a thing that drifts. `chip_strip_qss` and
+    `command_list_qss` were already composing the shared rules, which is
+    exactly what made the console's private duplicate easy to miss.
+
+    Minimal by construction: no arrow buttons, no trough, a rounded grip
+    that only tints on hover — and now a `:pressed` step, so dragging the
+    bar acknowledges the drag instead of looking identical to hovering it.
+    The corner square where two bars meet is explicitly cleared; unstyled
+    it renders as a small platform-grey tile in the bottom-right of any
+    surface that can scroll both ways.
+    """
+    thick = SCROLLBAR["thickness"]
+    margin = SCROLLBAR["margin"]
+    grip = SCROLLBAR["min_grip"]
+    radius = thick / 2.0
+    return f"""
+        QScrollBar:vertical {{
+            background: transparent; width: {thick}px; margin: {margin}px;
+        }}
+        QScrollBar::handle:vertical {{
+            background: {t['scroll']}; border-radius: {radius}px;
+            min-height: {grip}px;
+        }}
+        QScrollBar::handle:vertical:hover {{ background: {t['scroll_hov']}; }}
+        QScrollBar::handle:vertical:pressed {{ background: {alpha(t['accent'], 0.55)}; }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+        QScrollBar:horizontal {{
+            background: transparent; height: {thick}px; margin: {margin}px;
+        }}
+        QScrollBar::handle:horizontal {{
+            background: {t['scroll']}; border-radius: {radius}px;
+            min-width: {grip}px;
+        }}
+        QScrollBar::handle:horizontal:hover {{ background: {t['scroll_hov']}; }}
+        QScrollBar::handle:horizontal:pressed {{ background: {alpha(t['accent'], 0.55)}; }}
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
+        QAbstractScrollArea::corner {{ background: transparent; border: none; }}
+    """
+
+
 def scroll_area_qss(t: dict) -> str:
     return f"""
         QScrollArea {{ background: transparent; border: none; }}
-        QScrollBar:vertical {{ background: transparent; width: 6px; margin: 2px; }}
-        QScrollBar::handle:vertical {{
-            background: {t['scroll']}; border-radius: 3px; min-height: 30px;
-        }}
-        QScrollBar::handle:vertical:hover {{ background: {t['scroll_hov']}; }}
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-        QScrollBar:horizontal {{ background: transparent; height: 6px; margin: 2px; }}
-        QScrollBar::handle:horizontal {{
-            background: {t['scroll']}; border-radius: 3px; min-width: 30px;
-        }}
-        QScrollBar::handle:horizontal:hover {{ background: {t['scroll_hov']}; }}
-        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
-        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
-    """
+    """ + scrollbar_qss(t)
 
 
 def stack_qss() -> str:
@@ -1390,7 +1535,9 @@ def chip_strip_qss(t: dict) -> str:
     scrollbar at all, which is how this shipped for one revision).
     """
     return scroll_area_qss(t) + f"""
-        QScrollBar:horizontal {{ height: 10px; margin: 4px 0 2px 0; }}
+        QScrollBar:horizontal {{
+            height: {scrollbar_lane()}px; margin: 4px 0 2px 0;
+        }}
         QScrollBar::handle:horizontal {{
             background: {t['scroll']}; border-radius: 2px; min-width: 48px;
         }}
@@ -1527,21 +1674,7 @@ def console_qss(t: dict) -> str:
             padding: 8px 10px;
             selection-background-color: {alpha(t['accent'], 0.35)};
         }}
-        QScrollBar:vertical {{ background: transparent; width: 6px; margin: 2px; }}
-        QScrollBar::handle:vertical {{
-            background: {t['scroll']}; border-radius: 3px; min-height: 30px;
-        }}
-        QScrollBar::handle:vertical:hover {{ background: {t['scroll_hov']}; }}
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-        QScrollBar:horizontal {{ background: transparent; height: 6px; margin: 2px; }}
-        QScrollBar::handle:horizontal {{
-            background: {t['scroll']}; border-radius: 3px; min-width: 30px;
-        }}
-        QScrollBar::handle:horizontal:hover {{ background: {t['scroll_hov']}; }}
-        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
-        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
-    """
+    """ + scrollbar_qss(t)
 
 
 def console_header_qss(t: dict) -> str:
@@ -1787,9 +1920,9 @@ def catalog_search_qss(t: dict, accent: str) -> str:
             padding: 0 10px;
             selection-background-color: {alpha(accent, 0.35)};
         }}
-        QLineEdit:hover {{ border: 1px solid {alpha(accent, 0.35)}; }}
+        QLineEdit:hover {{ border: 1px solid {alpha(accent, FIELD['hover'])}; }}
         QLineEdit:focus {{
-            border: 1px solid {alpha(accent, 0.65)};
+            border: 1px solid {alpha(accent, FIELD['focus'])};
             background: {t['card']};
         }}
     """
@@ -1879,7 +2012,8 @@ def command_input_qss(t: dict) -> str:
             padding: 0 14px;
             selection-background-color: {alpha(t['accent'], 0.35)};
         }}
-        QLineEdit:focus {{ border: 1px solid {alpha(t['accent'], 0.55)}; }}
+        QLineEdit:hover {{ border: 1px solid {alpha(t['accent'], FIELD['hover'])}; }}
+        QLineEdit:focus {{ border: 1px solid {alpha(t['accent'], FIELD['focus'])}; }}
     """
 
 

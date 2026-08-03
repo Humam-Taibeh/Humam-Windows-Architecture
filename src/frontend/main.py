@@ -69,7 +69,7 @@ from frontend.widgets import (  # noqa: E402
     ActivationStatusDialog, ActivityDrawer, AmbientGlow,
     BreathingIcon,
     CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
-    ContextMenuDialog, DnsSwitcherDialog,
+    ContextMenuDialog, DnsSwitcherDialog, ElidedCaption,
     ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog,
     NavButton,
     NavPill, OfficeWizardDialog, PlaybookDialog, PowerHealthDialog,
@@ -315,6 +315,13 @@ class WelcomePage(QWidget):
     ACTION_MIN_W = 224
     ACTION_MAX_COLS = 3
 
+    #: Width the masthead tagline may ask for before it starts eliding.
+    #: Its natural width at the `tagline` type role, so the line renders in
+    #: full on any window with room for it and degrades to an ellipsis only
+    #: once the masthead is genuinely squeezed — which begins just under
+    #: 1020px and reaches 40px of loss at the app's 980px minimum.
+    _TAGLINE_W = 260
+
     # (category index, task) for each Quick Action — one per module, so the
     # band reads as a full-spectrum control surface. Resolved via
     # menu_structure.find_action (skips any the backend no longer defines).
@@ -384,7 +391,20 @@ class WelcomePage(QWidget):
         id_col.addStretch()
         self._name = QLabel(APP_NAME)
         id_col.addWidget(self._name)
-        self._tag = QLabel("Enterprise-Grade Windows Orchestration")
+        # ElidedCaption, not a plain QLabel. MEASURED at the app's own
+        # minimum window width: the masthead's two status pills and the
+        # wordmark hold their size, so the tagline is what gets squeezed,
+        # and a QLabel squeezed below its text width does not elide — it
+        # CLIPS, mid-glyph, with no ellipsis to say anything was lost.
+        # At 1000px it lost 20px; at the 980px minimum, 40px, rendering
+        # "Enterprise-Grade Windows Orchest" against a hard edge.
+        #
+        # ElidedCaption already solves exactly this (it is the horizontal
+        # twin of ClampedLabel) and brings the right second half of the fix
+        # with it: a minimum width of zero, so the tagline stops being a
+        # floor the masthead has to honour at all.
+        self._tag = ElidedCaption(max_width=self._TAGLINE_W)
+        self._tag.setFullText("Enterprise-Grade Windows Orchestration")
         id_col.addWidget(self._tag)
         id_col.addStretch()
         hb.addLayout(id_col)
