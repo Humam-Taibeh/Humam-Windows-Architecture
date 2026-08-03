@@ -27,19 +27,15 @@ from PySide6.QtCore import QByteArray, QSettings
 _ORG = "HumamTaibeh"
 _APP = "Pulse"
 
-# Recent operations keeps a short, fixed-length trail. Long enough to be
-# useful for "run that again", short enough that the sidebar panel stays a
-# glance rather than a history log.
-RECENT_LIMIT = 3
-
-# Task history is a DIFFERENT thing from the recent trail, and the two are
-# deliberately not merged. The trail answers "what did I just do?" — it is
-# ordered, capped at three, and de-duplicated by task, so re-running one
-# operation refreshes its entry instead of filling the sidebar. History
-# answers "when did I last run THIS card, and how long does it take?" for
-# every task independently, which needs a per-task record the trail cannot
-# carry: it holds no timestamp, no duration, and forgets everything past
-# the third entry.
+# Task history answers "when did I last run THIS card, and how long does
+# it take?" for every task independently — the per-task record behind each
+# card's "Ran 3d ago · ~2m" caption and its ACTION DUE badge.
+#
+# A second store used to sit beside it: an ordered, three-deep "recent
+# operations" trail feeding the sidebar's RECENT panel. The panel was cut
+# in the v1.0 RC layout pass (see main.PulseApp._build_ui) and the trail
+# went with it — nothing read it, and a store nothing reads is a schema
+# the next version still has to migrate.
 #
 # The bound is defensive rather than functional — there are 38 tasks, so
 # the map is tiny. It only matters across versions, where a renamed or
@@ -101,49 +97,13 @@ def set_drawer_pinned(pinned: bool):
 
 
 # ============================================================
-#  RECENT OPERATIONS
-# ============================================================
-def recent_operations() -> list[dict]:
-    """Most-recent-first list of {task, title, glyph, accent, outcome}.
-
-    Stored as a JSON string rather than a QSettings list because QSettings
-    flattens nested containers inconsistently across backends. Any parse
-    failure yields an empty trail — a broken history must never be able to
-    stop the app from starting."""
-    raw = _settings().value("ui/recent", "")
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(str(raw))
-    except (ValueError, TypeError):
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [entry for entry in parsed if isinstance(entry, dict) and entry.get("task")][
-        :RECENT_LIMIT]
-
-
-def push_recent_operation(task: str, title: str, glyph: str,
-                          accent: str, outcome: str):
-    """Record a completed run, newest first, de-duplicated by task so
-    re-running the same thing refreshes its entry instead of filling the
-    whole trail with one repeated card."""
-    if not task or task.startswith("@"):
-        return          # local viewer actions aren't "operations"
-    trail = [e for e in recent_operations() if e.get("task") != task]
-    trail.insert(0, {"task": task, "title": title, "glyph": glyph,
-                     "accent": accent, "outcome": outcome})
-    _settings().setValue("ui/recent", json.dumps(trail[:RECENT_LIMIT]))
-
-
-# ============================================================
 #  PER-TASK HISTORY  (last run + typical duration)
 # ============================================================
 def task_history() -> dict[str, dict]:
     """{task: {"last_ts": float, "runs": int, "avg_ms": float,
                "last_ms": float, "outcome": str}}
 
-    Same defensive posture as recent_operations(): any corruption yields
+    Same defensive posture as every getter above: any corruption yields
     an empty map rather than an exception, because a card's "last run"
     caption is decoration and must never be able to stop the app starting
     or block a task from running.

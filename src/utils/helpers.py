@@ -1093,17 +1093,22 @@ def has_battery() -> bool | None:
 #  SYSTEM PULSE — live utilisation snapshot for the dashboard
 # ============================================================
 class SystemPulseSampler:
-    """CPU / memory / system-drive utilisation for the dashboard's System
-    Pulse card. Raw kernel32 reads — no psutil dependency, no WMI, no
+    """CPU / memory / system-drive utilisation for the dashboard's footer
+    status line. Raw kernel32 reads — no psutil dependency, no WMI, no
     process spawn — so the 2 s dashboard timer costs microseconds a tick,
     the same budget discipline as main._system_insights().
 
     CPU is a DELTA measure over GetSystemTimes (idle vs total FILETIME
     ticks since the previous sample), so the FIRST call cannot produce a
-    figure and honestly returns None for it; the meter renders an em dash
-    until the second tick. Memory and disk are absolute reads and are
+    figure and honestly returns None for it; the caption renders an em
+    dash until the second tick. Memory and disk are absolute reads and are
     available immediately. Every field degrades to None on any failure —
     a dashboard decoration must never be able to break the dashboard.
+
+    The `mem`/`disk` fractions are kept alongside the formatted text even
+    though the status line only prints the text: they are what a meter
+    needs, and this sampler fed three meter bars until the v1.0 RC layout
+    pass collapsed that card into one caption row.
     """
 
     def __init__(self):

@@ -59,7 +59,7 @@ from utils.helpers import (  # noqa: E402
 from frontend import theme as TH  # noqa: E402
 from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
 from frontend.menu_structure import (  # noqa: E402
-    CATEGORIES, SOFTWARE_CATALOG, accent_for_task, category_bands,
+    CATEGORIES, SOFTWARE_CATALOG, category_bands,
     category_operations, find_action_anywhere,
     hub_items, iter_leaf_items, recurring_days, requires_admin,
 )
@@ -68,10 +68,10 @@ from frontend.widgets import (  # noqa: E402
     BreathingIcon,
     CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
     ContextMenuDialog, DnsSwitcherDialog,
-    ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog, MeterBar,
+    ElevatePromptDialog, GlassCard, HealthReportDialog, HubDialog,
     NavButton,
     NavPill, OfficeWizardDialog, PlaybookDialog, PowerHealthDialog,
-    PulseDialog, RecentOperationsPanel, RestorePointDialog, RevertChoiceDialog,
+    PulseDialog, RestorePointDialog, RevertChoiceDialog,
     ResponsiveGridHost, ShortcutSheetDialog, SoftwareCatalogDialog,
     StartupManagerDialog, StorageAnalyzerDialog, TitleBar, UpdateCenterDialog,
     refit_dialog,
@@ -202,12 +202,13 @@ def _system_spec_line() -> str:
     """"Windows 11 Pro · Build 26200 · 16 cores · 32.0 GB" — the machine's
     static identity as one caption.
 
-    v1.0: this is what remains of the removed system status strip. The
-    strip rendered the same three facts as a 66px band of plaques directly
-    above a System Pulse card measuring the same hardware live, which is
-    the duplication the redundancy pass removed. As a subtitle to the
-    live meters the facts still land — a reader sees "16 cores" right
-    above the processor meter — without a second surface claiming them.
+    v1.0 RC: this is what remains of BOTH the removed system status strip
+    and the System Pulse card that replaced it. The strip rendered these
+    three facts as a 66px band of plaques; the card then rendered them as
+    a subtitle over three meter bars. Neither earned its height on a
+    dashboard whose job is to launch operations, so the facts now live in
+    the one place they cost nothing — a single caption on the footer rule
+    (see WelcomePage's status line).
     """
     parts = []
     for _icon, value, caption in _system_insights():
@@ -223,44 +224,6 @@ def _system_spec_line() -> str:
         else:
             parts.append(value)
     return "  ·  ".join(parts) if parts else "System details unavailable"
-
-
-def due_routines(history: dict) -> list[tuple[str, str]]:
-    """[(title, caption)] for every ROUTINE task that is overdue or has
-    never been run, worst-overdue first.
-
-    Powers the dashboard's Maintenance & Attention card and mirrors the
-    per-card ACTION DUE badge exactly — both read `recurring` from
-    menu_structure and the same stored history, so a card badged due and
-    this panel can never disagree.
-    """
-    now = time.time()
-    rows: list[tuple[float, str, str]] = []
-    for item, _breadcrumb in iter_leaf_items():
-        interval = recurring_days(item)
-        if interval is None:
-            continue
-        entry = history.get(item.get("task"))
-        last = float(entry.get("last_ts", 0.0)) if entry else 0.0
-        if not last:
-            rows.append((float("inf"), item.get("title", ""), "never run"))
-            continue
-        days = (now - last) / 86400.0
-        if days >= interval:
-            rows.append((days, item.get("title", ""),
-                         f"last run {_humanize_days(days)}"))
-    rows.sort(key=lambda row: -row[0])
-    return [(title, caption) for _overdue, title, caption in rows]
-
-
-def _humanize_days(days: float) -> str:
-    if days < 1:
-        return "today"
-    if days < 2:
-        return "yesterday"
-    if days < 60:
-        return f"{int(days)} days ago"
-    return f"{int(days // 30)} months ago"
 
 
 def _focus_neighbour(cards: list, cols: int, current, direction: str) -> bool:
@@ -301,29 +264,53 @@ def _focus_neighbour(cards: list, cols: int, current, direction: str) -> bool:
 #  PAGES
 # ============================================================
 class WelcomePage(QWidget):
-    """Landing view — a majestic command-center DASHBOARD, not a splash:
+    """Landing view — a launcher, not a splash and not a status console:
 
         ┌──────────────────────────────────────────────────────────┐
-        │ ✦  PULSE                              Engine Ready         │  hero banner
-        │    Enterprise-Grade Windows Orchestration   Administrator  │
-        ├──────────────────────────────────────────────────────────┤
-        │ 🪟 Windows 11  │  🧠 16 Cores  │  💾 32 GB                  │  telemetry ribbon
-        ├──────────────────────────────────────────────────────────┤
-        │ EXPLORE MODULES ────────────────────────────────────────  │
-        │ ┌────────┐ ┌────────┐ ┌────────┐                          │
-        │ │ module │ │ module │ │ module │   … all 6, clickable      │  module launchpad
-        │ └────────┘ └────────┘ └────────┘                          │
+        │ ✦  PULSE                    Engine Ready · Administrator │  hero banner
+        │    Enterprise-Grade Windows Orchestration                │
+        │                                                          │
+        │ QUICK ACTIONS ─────────────────────────────────────────  │
+        │ ┌────────┐ ┌────────┐ ┌────────┐                         │
+        │ │ action │ │ action │ │ action │   … 6, each RUNS         │  the centerpiece
+        │ └────────┘ └────────┘ └────────┘                         │
+        │ ────────────────────────────────────────────────────────  │
+        │ Windows 11 Pro · 16 cores · 32 GB      CPU 6% · Mem 47%  │  status line
         └──────────────────────────────────────────────────────────┘
 
-    The QUICK ACTIONS band is the centerpiece and — critically — is NOT a
-    repeat of the sidebar. The left rail already navigates the six modules;
-    duplicating them here as a grid was redundant. Instead the dashboard
-    surfaces the highest-value single OPERATIONS (one per module, full
-    accent spectrum) as live cards that RUN on click (action_requested),
-    giving the home screen a distinct control-center purpose the nav can't:
-    do the most common things instantly, without drilling into a module."""
+    THREE elements, and the middle one owns the canvas. The QUICK ACTIONS
+    band is the centerpiece and — critically — is NOT a repeat of the
+    sidebar. The left rail already navigates the modules; duplicating them
+    here as a grid was redundant. Instead the dashboard surfaces the
+    highest-value single OPERATIONS (one per module, full accent spectrum)
+    as live cards that RUN on click (action_requested), giving the home
+    screen a distinct control-center purpose the nav can't: do the most
+    common things instantly, without drilling into a module.
 
-    ACTION_MIN_W = 250   # responsive column threshold for the quick-action grid
+    v1.0 RC: everything that was not that got cut. A telemetry ribbon, a
+    System Pulse meter card and a Maintenance & Attention list had each
+    been added to "fill" the page, and between them they took ~210px to
+    restate facts the Health Report and the cards' own ACTION DUE badges
+    already carry. What survives of all three is the one-line status
+    footer — the page is emptier on purpose, and the actions read louder
+    for it."""
+
+    #: Narrowest a Quick Action card may be laid out at, and therefore what
+    #: decides the column count (see _columns_for).
+    #:
+    #: v1.0 RC: 250 -> 224, and the number is DERIVED, not tuned by eye. At
+    #: the app's own default window (1180px) the content viewport is 754px,
+    #: which with 24px gutters gives three columns only while the unit is
+    #: <= 240. At 250 it resolved to TWO — six cards became three rows,
+    #: 473px of grid inside a 413px viewport, and the dashboard scrolled at
+    #: the size it opens at. A launcher whose six actions do not fit on the
+    #: default window is not a launcher. 224 leaves margin below the 240
+    #: ceiling (three columns hold from ~1130px wide) and stays well clear
+    #: of the 192px the card's own content actually needs, so nothing is
+    #: squeezed to buy the extra column. The app's MINIMUM window still
+    #: resolves to two columns and scrolls, which is correct: at 620px tall
+    #: no arrangement of six cards fits, and scrolling beats crushing.
+    ACTION_MIN_W = 224
     ACTION_MAX_COLS = 3
 
     # (category index, task) for each Quick Action — one per module, so the
@@ -420,6 +407,31 @@ class WelcomePage(QWidget):
         root.addWidget(self._hero)
 
         # ============ 2. QUICK ACTIONS ====================================
+        # The header travels INSIDE the scroll area with its own grid, and
+        # the pair is centred between two stretches rather than pinned to
+        # the top.
+        #
+        # Both halves of that are load-bearing. Removing the 210px health
+        # band left the six cards top-anchored above a half-canvas void,
+        # which reads as a page that failed to finish loading rather than
+        # as breathing room. Centring the block turns the same emptiness
+        # into margin. And the header has to ride WITH the grid to do it —
+        # centring the grid alone would have stranded "QUICK ACTIONS" at
+        # the top of the scroll area, a section title floating 200px above
+        # the section it names, which is exactly the proximity failure the
+        # category pages' band headers are tested against.
+        grid_host = ResponsiveGridHost()
+        host = QVBoxLayout(grid_host)
+        host.setContentsMargins(0, 0, 0, 0)
+        host.setSpacing(0)
+        # 1:2, not 1:1. True centring puts ~200px between the masthead and
+        # the section it introduces, and a gap that size reads as a missing
+        # element rather than as margin — the eye looks for what used to be
+        # there. Slack below the last card has no such problem: it is the
+        # page's bottom margin, closed by the footer rule. So the block
+        # sits high, with a third of the air above it and two thirds below.
+        host.addStretch(1)
+
         head = QHBoxLayout()
         head.setSpacing(TH.SPACE["lg"])
         self._section = QLabel("QUICK ACTIONS")
@@ -427,12 +439,17 @@ class WelcomePage(QWidget):
         self._rule = QFrame()
         self._rule.setFixedHeight(1)
         head.addWidget(self._rule, 1)
-        root.addLayout(head)
+        host.addLayout(head)
 
-        grid_host = ResponsiveGridHost()
-        self._grid = QGridLayout(grid_host)
-        self._grid.setContentsMargins(0, TH.SPACE["xxs"], 0, 0)
-        self._grid.setSpacing(TH.SPACE["lg"])
+        self._grid = QGridLayout()
+        # xl gutters, not the lg a category page uses: those grids carry up
+        # to twelve cards and want density, this one carries six on an
+        # otherwise empty canvas and wants air. The header gap matches, so
+        # the title sits one gutter above its cards.
+        self._grid.setContentsMargins(0, TH.SPACE["xl"], 0, 0)
+        self._grid.setSpacing(TH.SPACE["xl"])
+        host.addLayout(self._grid)
+        host.addStretch(2)
         # the grid re-columns off its OWN width — see ResponsiveGridHost
         grid_host.resized.connect(
             lambda w: self._relayout_actions(self._columns_for(w)))
@@ -471,6 +488,11 @@ class WelcomePage(QWidget):
         # violating the cards' own minimum heights, crushing them to as
         # little as 17px with their content spilling out. Scrolling is the
         # correct answer to "not enough room"; crushing never is.
+        #
+        # The centring stretches above cost this nothing: they carry no
+        # minimum, so on a short window they collapse to zero first and the
+        # block goes back to being top-anchored and scrollable. Air is
+        # what's given up when room runs out — never the cards.
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -479,92 +501,43 @@ class WelcomePage(QWidget):
         self._scroll.viewport().setStyleSheet("background: transparent;")
         root.addWidget(self._scroll, 1)
 
-        # ============ 4. SYSTEM HEALTH & ACTIVITY =========================
-        # v1.0's answer to the void below the Quick Actions grid: a fixed-
-        # height band of two live cards. FIXED height, deliberately — the
-        # scroll area above keeps the stretch, so a short window shrinks the
-        # (scrollable) action grid rather than crushing the meters, per the
-        # v10 "scrolling is the correct answer to not enough room" rule.
-        head2 = QHBoxLayout()
-        head2.setSpacing(TH.SPACE["lg"])
-        self._section2 = QLabel("SYSTEM HEALTH & ACTIVITY")
-        head2.addWidget(self._section2)
-        self._rule2 = QFrame()
-        self._rule2.setFixedHeight(1)
-        head2.addWidget(self._rule2, 1)
-        root.addLayout(head2)
+        # ============ 3. STATUS LINE — one rule, two captions ==============
+        # v1.0 RC LAYOUT PASS. This slot used to be a 158px band of two
+        # cards: SYSTEM PULSE (three meter bars) and MAINTENANCE &
+        # ATTENTION (a list of overdue routines). Together they cost ~210px
+        # of the dashboard's height — a third of the canvas — to say things
+        # the app already says elsewhere: the routine-due list duplicates
+        # the ACTION DUE badge every affected card carries, and the meters
+        # duplicate the Health Report. A launcher's job is to launch, so
+        # the whole band collapses to what actually could not be read
+        # anywhere at a glance: the machine's identity and its live load,
+        # on ONE hairline-separated caption row.
+        #
+        # No card chrome, deliberately — a bordered surface here would
+        # re-introduce the visual weight the band was removed for. The
+        # rule alone is enough to close the page.
+        self._foot_rule = QFrame()
+        self._foot_rule.setFixedHeight(1)
+        root.addWidget(self._foot_rule)
 
-        band = QHBoxLayout()
-        band.setSpacing(TH.SPACE["lg"])
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, TH.SPACE["xs"], 0, 0)
+        foot.setSpacing(TH.SPACE["lg"])
+        self._spec = QLabel(_system_spec_line())
+        foot.addWidget(self._spec)
+        foot.addStretch()
+        # Live load as text, not bars. At caption scale a meter bar reads
+        # as decoration; the number is the whole payload, and three of
+        # them fit on the row the spec line already occupies.
+        self._load = QLabel("")
+        foot.addWidget(self._load)
+        root.addLayout(foot)
 
-        # -- left: SYSTEM PULSE — live utilisation meters ---------------
+        self._t = t
+
         # Sampling is kernel32 reads on a 2 s timer that runs ONLY while
         # this page is visible (showEvent/hideEvent below) — the AmbientGlow
         # suspend discipline applied to data instead of paint.
-        self._pulse_card = DepthCard(radius=TH.RADIUS["card"], t=t)
-        # same card-glass material as the status strip — telemetry_qss is
-        # scoped to QFrame#telemetry, so the band cards take that name
-        self._pulse_card.setObjectName("telemetry")
-        self._pulse_card.setFixedHeight(158)
-        pl = QVBoxLayout(self._pulse_card)
-        pl.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
-                              TH.SPACE["lg"], TH.SPACE["md"])
-        pl.setSpacing(TH.SPACE["xxs"])
-        self._pulse_title = QLabel("SYSTEM PULSE")
-        pl.addWidget(self._pulse_title)
-        # The machine's identity, in the ONE place machine facts live now
-        # (v1.0 redundancy pass — see the hero's pill comment). The removed
-        # status strip's OS / core-count / RAM facts are folded in here as
-        # this card's subtitle, so the live meters below have the static
-        # spec they are measured against sitting directly above them.
-        self._pulse_spec = QLabel(_system_spec_line())
-        self._pulse_spec.setWordWrap(True)
-        pl.addWidget(self._pulse_spec)
-        pl.addSpacing(TH.SPACE["xxs"])
-        self._meters: dict[str, MeterBar] = {}
-        for key, label in (("cpu", "PROCESSOR"), ("mem", "MEMORY"),
-                           ("disk", "SYSTEM DRIVE")):
-            meter = MeterBar(label, t)
-            self._meters[key] = meter
-            pl.addWidget(meter)
-        pl.addStretch()
-        band.addWidget(self._pulse_card, 1)
-
-        # -- right: MAINTENANCE & ATTENTION -----------------------------
-        # v1.0 REDUNDANCY PASS: this slot used to be a second "Recent
-        # Activity" list — the same prefs.recent_operations() trail the
-        # sidebar panel already shows on every page. Two renderings of one
-        # list is not a dashboard, it is a duplicate, so the trail now
-        # lives ONLY in the sidebar and this card answers a question
-        # nothing else in the app did: which ROUTINE tasks are overdue?
-        #
-        # That also completes the recurring-task story (menu_structure's
-        # `recurring` key): the card badge tells you a single task is due,
-        # and this panel tells you at a glance whether anything is.
-        self._maint_card = DepthCard(radius=TH.RADIUS["card"], t=t)
-        self._maint_card.setObjectName("telemetry")
-        self._maint_card.setFixedHeight(158)
-        al = QVBoxLayout(self._maint_card)
-        al.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
-                              TH.SPACE["lg"], TH.SPACE["md"])
-        al.setSpacing(TH.SPACE["xxs"])
-        self._maint_title = QLabel("MAINTENANCE & ATTENTION")
-        al.addWidget(self._maint_title)
-        self._maint_empty = QLabel("")
-        self._maint_empty.setWordWrap(True)
-        al.addWidget(self._maint_empty)
-        self._rows_lay = QVBoxLayout()
-        self._rows_lay.setContentsMargins(0, TH.SPACE["xxs"], 0, 0)
-        self._rows_lay.setSpacing(TH.SPACE["xxs"])
-        al.addLayout(self._rows_lay)
-        al.addStretch()
-        band.addWidget(self._maint_card, 1)
-        root.addLayout(band)
-
-        self._maint_rows: list[QLabel] = []
-        self._t = t
-        self.refresh_maintenance()
-
         self._pulse_sampler = SystemPulseSampler()
         self._pulse_timer = QTimer(self)
         self._pulse_timer.setInterval(2000)
@@ -585,56 +558,10 @@ class WelcomePage(QWidget):
     def _tick_pulse(self):
         s = self._pulse_sampler.sample()
         cpu = s["cpu"]
-        self._meters["cpu"].set_value(
-            cpu, f"{round(cpu * 100)}%" if cpu is not None else "—")
-        self._meters["mem"].set_value(s["mem"], s["mem_text"])
-        self._meters["disk"].set_value(s["disk"], s["disk_text"])
-
-    # -- maintenance & attention ----------------------------------------
-    #: Rows the card can show before it would overflow its fixed height.
-    MAINT_ROWS = 3
-
-    def refresh_maintenance(self):
-        """Rebuild the overdue-routine list from stored run history.
-
-        Read straight from prefs rather than cached: the same honesty rule
-        the tweak probe follows — a task's last-run time can change from
-        under us (another Pulse window, a cleared history), so the answer
-        is always recomputed from storage."""
-        history = prefs.task_history()
-        due = due_routines(history)
-        for row in self._maint_rows:
-            self._rows_lay.removeWidget(row)
-            row.deleteLater()
-        self._maint_rows = []
-
-        if not due:
-            self._maint_empty.setText(
-                "All routine maintenance is up to date." if history
-                else "No maintenance run yet — Cache Clean and a Restore "
-                     "Point are good first steps.")
-            self._maint_empty.setVisible(True)
-        else:
-            self._maint_empty.setVisible(False)
-            for title, caption in due[: self.MAINT_ROWS]:
-                row = QLabel(f"●  {title}  —  {caption}")
-                row.setWordWrap(False)
-                self._maint_rows.append(row)
-                self._rows_lay.addWidget(row)
-            extra = len(due) - self.MAINT_ROWS
-            if extra > 0:
-                more = QLabel(f"    +{extra} more due")
-                self._maint_rows.append(more)
-                self._rows_lay.addWidget(more)
-        self._style_maintenance()
-
-    def _style_maintenance(self):
-        t = self._t
-        self._maint_empty.setStyleSheet(TH.label_qss(t, "caption"))
-        for row in self._maint_rows:
-            row.setStyleSheet(
-                f"color: {t['warn']}; font-size: 11px; font-weight: 600;"
-                "background: transparent; border: none;")
+        cpu_text = f"{round(cpu * 100)}%" if cpu is not None else "—"
+        self._load.setText(
+            f"CPU {cpu_text}   ·   Memory {s['mem_text']}"
+            f"   ·   System drive {s['disk_text']}")
 
     def action_cards(self) -> list[GlassCard]:
         """The dashboard's Quick Action cards — the applied-state probe
@@ -664,15 +591,16 @@ class WelcomePage(QWidget):
         for col in range(self.ACTION_MAX_COLS):
             self._grid.setColumnStretch(col, 1 if col < cols else 0)
         n_rows = (len(self._action_cards) + cols - 1) // cols
-        # v1.0: content rows take NO stretch, and one trailing row takes it
-        # all. The old version stretched every content row equally, so on a
-        # tall window two rows of cards were flung to opposite ends with a
-        # canyon of empty space between them — the "excessive empty space"
-        # the redesign called out. Anchoring the cards to the top with even
-        # gutters and pushing all slack below reads as a filled, deliberate
-        # grid instead.
+        # NO row takes stretch — not even a trailing one. The grid's job is
+        # now only to be exactly as tall as its cards; all vertical slack
+        # belongs to the two stretches wrapping header+grid in the host, so
+        # the whole block moves as one. A stretch row here would eat that
+        # slack first and re-anchor the cards to the top of a centred
+        # block, and an earlier version that stretched every CONTENT row
+        # instead flung the two rows to opposite ends with a canyon between
+        # them. Rows stay at their natural height; the gutter is the gutter.
         for row in range(max(self._grid.rowCount(), n_rows) + 1):
-            self._grid.setRowStretch(row, 1 if row == n_rows else 0)
+            self._grid.setRowStretch(row, 0)
         for i, card in enumerate(self._action_cards):
             self._grid.addWidget(card, i // cols, i % cols)
 
@@ -699,19 +627,11 @@ class WelcomePage(QWidget):
         for card in self._action_cards:
             card.apply_theme(t)
 
-        # -- system health & maintenance band -----------------------------
+        # -- footer status line --------------------------------------------
         self._t = t
-        self._section2.setStyleSheet(TH.label_qss(t, "section"))
-        self._rule2.setStyleSheet(TH.hub_group_rule_qss(t, t["accent2"]))
-        for card_frame in (self._pulse_card, self._maint_card):
-            card_frame.setStyleSheet(TH.telemetry_qss(t))
-            card_frame.set_theme(t)
-        for title in (self._pulse_title, self._maint_title):
-            title.setStyleSheet(TH.label_qss(t, "section"))
-        self._pulse_spec.setStyleSheet(TH.label_qss(t, "caption"))
-        for meter in self._meters.values():
-            meter.set_theme(t)
-        self._style_maintenance()
+        self._foot_rule.setStyleSheet(TH.hairline_qss(t))
+        for caption in (self._spec, self._load):
+            caption.setStyleSheet(TH.label_qss(t, "caption"))
 
 
 class CategoryPage(QWidget):
@@ -1231,7 +1151,6 @@ class PulseApp(QMainWindow):
         self._worker: PowerShellTask | None = None
         self._running_card: GlassCard | None = None
         self._running_item: dict | None = None
-        self._running_accent = ""
         self._run_started_at: float | None = None
         # Playbook orchestration (v10.3). Held so a second playbook — or a
         # single task — cannot start on top of a run already in flight.
@@ -1263,7 +1182,6 @@ class PulseApp(QMainWindow):
         # (a geometry saved while maximized comes back maximized here).
         self._sync_window_state()
         self._apply_theme(self.theme.t)
-        self._refresh_recent()
         self._refresh_task_history()
         self._install_shortcuts()
         QTimer.singleShot(300, self._startup_toasts)
@@ -1387,16 +1305,15 @@ class PulseApp(QMainWindow):
             self._nav_buttons.append(btn)
             side.addWidget(btn)
 
-        # -- Recent Operations (v10) ---------------------------
-        # Fills what used to be ~360px of empty rail below the nav with
-        # one-click re-runs of what the user actually did last. Sits
-        # directly under the modules (still in the "navigate/act" zone),
-        # with the stretch AFTER it so the elevation CTA stays anchored to
-        # the bottom. Hides itself entirely when there's no history.
-        side.addSpacing(TH.SPACE["xl"])
-        self._recent = RecentOperationsPanel(t)
-        self._recent.rerun_requested.connect(self._rerun_recent)
-        side.addWidget(self._recent)
+        # v1.0 RC: the rail ends at the modules. A "RECENT" panel used to
+        # sit here — three re-run rows added in v10 to fill the empty
+        # space below the nav. It was answering the wrong question: the
+        # rail's job is "where do I go", and a second, differently-styled
+        # list of accented rows directly beneath four nav buttons read as
+        # a fifth-through-seventh module far more often than it read as
+        # history. Every operation it offered is one click away in its
+        # module or one keystroke away in Ctrl+K, so removing it costs no
+        # reach and buys the nav an uncontested column.
         side.addStretch()
 
         # -- sidebar footer: elevation · identity (v8.1) --------
@@ -1519,7 +1436,6 @@ class PulseApp(QMainWindow):
         for page in self.pages:
             page.apply_theme(t)
         self.activity.apply_theme(t)
-        self._recent.apply_theme(t)
         self.toasts.apply_theme(t)
         self._set_status(self._status_state, self.status_text.text())
 
@@ -1685,29 +1601,6 @@ class PulseApp(QMainWindow):
             self._probe_thread = None
 
     # ============================================================
-    #  RECENT OPERATIONS (sidebar panel, persisted across sessions)
-    # ============================================================
-    def _refresh_recent(self):
-        # The operations trail has exactly ONE rendering (v1.0 redundancy
-        # pass): this sidebar panel, visible on every page. The dashboard
-        # showed a second copy of the same list until v1.0; its slot now
-        # carries overdue maintenance instead — see WelcomePage.
-        self._recent.set_entries(prefs.recent_operations())
-
-    def _rerun_recent(self, task: str):
-        """Re-run a remembered operation. Resolved back to its LIVE catalog
-        item rather than replayed from the stored copy, so a re-run always
-        picks up the current definition (timeout, confirm flag, selector) —
-        and an operation the catalog no longer defines fails loudly here
-        instead of being dispatched to a task the backend has dropped."""
-        for item, _breadcrumb in iter_leaf_items():
-            if item.get("task") == task:
-                self.request_task(item, None)
-                return
-        self.toasts.show(
-            "info", "That operation is no longer available in this version.", 4000)
-
-    # ============================================================
     #  PER-TASK RUN HISTORY (v10.1) — "Ran 3d ago · ~2m" on the card
     # ============================================================
     def _refresh_task_history(self):
@@ -1725,7 +1618,6 @@ class PulseApp(QMainWindow):
         # must be pushed together — running a cache clean has to clear its
         # ACTION DUE chip in the same pass that updates its caption.
         self._refresh_card_badges()
-        self.welcome.refresh_maintenance()
 
     def _record_task_history(self, outcome: str):
         """Fold the run that just settled into its task's history.
@@ -1742,21 +1634,6 @@ class PulseApp(QMainWindow):
         self._run_started_at = None
         prefs.record_task_run(item.get("task", ""), elapsed_ms, outcome)
         self._refresh_task_history()
-
-    def _record_recent(self, outcome: str):
-        """Called once a task settles. The card's own module accent and
-        glyph ride along so the sidebar row is colour-coded to the module
-        the operation came from."""
-        item = self._running_item
-        if item is None:
-            return
-        prefs.push_recent_operation(
-            task=item.get("task", ""),
-            title=item.get("title", ""),
-            glyph=item.get("glyph", ""),
-            accent=self._running_accent,
-            outcome=outcome)
-        self._refresh_recent()
 
     def _open_health_report(self):
         """Read-only, so it deliberately does NOT take the shell's task
@@ -1863,18 +1740,18 @@ class PulseApp(QMainWindow):
         seconds = run.duration_ms / 1000.0
         if run.cancelled:
             summary = f"{prefix}Stopped after {run.succeeded} of {len(run.playbook)} steps."
-            kind, flash = "warn", None
+            kind = "warn"
         elif run.halted_on is not None:
             step = run.playbook.steps[run.halted_on]
             summary = (f"{prefix}Halted at step {run.halted_on + 1} "
                        f"({step.title}). {run.succeeded} step(s) completed.")
-            kind, flash = "error", "err"
+            kind = "error"
         else:
             summary = (f"{prefix}{run.succeeded} of {len(run.playbook)} steps "
                        f"completed in {seconds:.0f}s.")
             if run.failed:
                 summary += f" {run.failed} optional step(s) failed."
-            kind, flash = ("warn" if run.failed else "ok"), "ok"
+            kind = "warn" if run.failed else "ok"
 
         dialog.set_status(summary, kind)
         dialog.enter_done_mode()
@@ -1886,8 +1763,6 @@ class PulseApp(QMainWindow):
         # A playbook changes several probed settings at once.
         QTimer.singleShot(400, self._refresh_tweak_state)
         self._refresh_task_history()
-        if flash:
-            self._refresh_recent()
 
     # ============================================================
     #  KEYBOARD LAYER (v10)
@@ -2148,9 +2023,8 @@ class PulseApp(QMainWindow):
                      office_paths: tuple[str, str] | None = None,
                      local_installer: tuple[str, str] | None = None):
         self._running_card = card
-        # remembered for the Recent Operations trail once this settles
+        # remembered so the run's history can be banked once it settles
         self._running_item = item
-        self._running_accent = accent_for_task(item.get("task"))
         # monotonic, not time.time(): this measures an ELAPSED interval, and
         # a wall clock can jump backwards mid-run (NTP correction, DST) and
         # bank a negative or wildly inflated duration into the average.
@@ -2240,11 +2114,10 @@ class PulseApp(QMainWindow):
 
     def _finish_common(self, flash: str | None = None):
         # Only a real verdict is worth remembering — a cancelled run passes
-        # flash=None and is deliberately left out of the trail, and out of
-        # the duration history: a stopped task is a partial measurement
-        # that would drag every "typically ~Ns" estimate downward.
+        # flash=None and is deliberately left out of the duration history:
+        # a stopped task is a partial measurement that would drag every
+        # "typically ~Ns" estimate downward.
         if flash:
-            self._record_recent(flash)
             self._record_task_history(flash)
         self._run_started_at = None
         self._running_item = None

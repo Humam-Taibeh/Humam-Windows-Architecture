@@ -1081,31 +1081,6 @@ def empty_state_qss(t: dict) -> str:
             "background: transparent; border: none;")
 
 
-def recent_row_qss(t: dict) -> str:
-    """One row in the sidebar's Recent Operations panel — the same ghost
-    treatment as a nav entry (transparent at rest, surface + accent line on
-    hover) so the block reads as part of the rail rather than a foreign
-    widget bolted underneath it. Left padding clears the painted module
-    glyph, right padding clears the outcome dot (see
-    widgets.RecentOperationRow.paintEvent)."""
-    return f"""
-        QPushButton {{
-            background-color: transparent;
-            border: 1px solid transparent;
-            border-radius: {RADIUS['chip']}px;
-            color: {t['text_muted']};
-            font-size: 12px; font-weight: 500;
-            text-align: left; padding-left: 34px; padding-right: 24px;
-        }}
-        QPushButton:hover {{
-            background-color: {t['card_hover']};
-            border: 1px solid {alpha(t['accent'], 0.22)};
-            color: {t['text']};
-        }}
-        QPushButton:pressed {{ background-color: {alpha(t['accent'], 0.16)}; }}
-    """
-
-
 def elevate_button_qss(t: dict) -> str:
     """Sidebar-footer 'Run as Administrator' call-to-action — the relocated,
     far more discoverable home for elevation (was a cramped title-bar badge).
@@ -1705,6 +1680,23 @@ def hub_group_rule_qss(t: dict, accent: str) -> str:
             "border: none;")
 
 
+def hairline_qss(t: dict) -> str:
+    """A neutral 1px divider — the quiet sibling of hub_group_rule_qss.
+
+    That one is an accent gradient that LEADS INTO a section: it starts
+    strong beside its label and fades away, carrying the eye rightward
+    into the band below. A rule that closes a page has the opposite job
+    and no label to anchor to, so an accent fade would read as a heading
+    whose title had gone missing. This is a flat panel hairline instead —
+    exactly what Apple's own separators are, and the only chrome the
+    dashboard's footer status line needs to sit against.
+
+    Painted as a background, not a border, so a QFrame with a fixed 1px
+    height renders the full line (a 1px border on a 1px frame collapses).
+    """
+    return f"background: {t['panel_line']}; border: none;"
+
+
 def icon_ghost_button_qss(t: dict, accent: str) -> str:
     """Small ghost icon-only button — the Dev Hub row's per-tool '⋯'
     install-options trigger."""
@@ -1960,39 +1952,25 @@ def hero_banner_qss(t: dict) -> str:
     """
 
 
-def telemetry_qss(t: dict) -> str:
-    """The Welcome dashboard's system status strip (OS · CPU · RAM, then the
-    engine/admin pills). v1.0 lifts it from the old flat `panel` fill — the
-    "flat/dull" surface the redesign called out — onto the same frosted
-    CARD material the module cards wear, with a top sheen, so it reads as a
-    real status bar with elevation rather than a recessed tray. The hero
-    banner stays dominant by size and radius, so the vertical hierarchy is
-    still banner → strip → launchpad."""
-    return f"""
-        QFrame#telemetry {{
-            background: {glass_fill(t, t['card'])};
-            border: 1px solid {t['card_line']};
-            border-radius: {RADIUS['card']}px;
-        }}
-    """
-
-
 def strip_status_qss(t: dict, ok: bool) -> str:
-    """An Engine/Admin state pill living at the right end of the status strip
-    (v1.0), relocated from the hero's own chip column so the masthead can be
-    a clean identity band and every system fact sits in one place.
+    """An Engine/Admin state pill, right-anchored in the hero masthead.
+
+    The name is historical: v1.0 moved these out of the hero into a
+    separate system status strip, and the v1.0 RC layout pass deleted that
+    strip and brought them back. Two session facts on the masthead is all
+    the dashboard states about itself now.
 
     Transparent fill with a toned border, NOT a tint of its own tone: a pill
     tinted in its own hue subtracts contrast from the text it carries (the
     measured badge-tint trap), and these run down to 11px. Contrast is then
-    tone-against-the-strip, which the palette already solves in both modes.
+    tone-against-the-card, which the palette already solves in both modes.
 
     The not-ok state is `warn` (amber), not `err` (red), for two reasons
     that agree: "Not Elevated" and "Engine Missing" are heads-up states the
     user acts on, not the failure of an operation the red tone is reserved
     for; and the sidebar's own unelevated CTA is already amber, so the two
     read as one signal. It is also the one that clears AA — the red measured
-    3.98:1 on this brighter card-glass strip in dark mode."""
+    3.98:1 on this brighter card-glass surface in dark mode."""
     color = t["ok"] if ok else t["warn"]
     return f"""
         QLabel {{
