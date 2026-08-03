@@ -216,16 +216,62 @@ def test_content_column_edges_line_up(window, qapp, width):
         def right(widget):
             return widget.mapTo(page, widget.rect().topRight()).x()
 
-        header, cards = page._bands[0]
-        assert header is not None
-        assert left(cards[0]) == left(page._home), (
-            f"@{width}px: cards start {left(cards[0]) - left(page._home)}px "
-            "from the page header's left edge")
+        # EVERY band, not just the first. v1.1 introduced bands smaller
+        # than the column count (System & Tweaks' two-card NETWORK band),
+        # and a header that spans the full width regardless draws its rule
+        # across empty canvas — invisible to a check that only ever looked
+        # at a band with more cards than columns.
+        for index, (header, cards) in enumerate(page._bands):
+            assert header is not None
+            assert left(cards[0]) == left(page._home), (
+                f"@{width}px band {index}: cards start "
+                f"{left(cards[0]) - left(page._home)}px from the page "
+                "header's left edge")
 
-        last = cards[min(page._cols, len(cards)) - 1]
-        assert right(header) == right(last), (
-            f"@{width}px: the band rule overhangs the last card by "
-            f"{right(header) - right(last)}px")
+            last = cards[min(page._cols, len(cards)) - 1]
+            assert right(header) == right(last), (
+                f"@{width}px band {index}: the band rule overhangs the last "
+                f"card of its first row by {right(header) - right(last)}px")
+    finally:
+        window.resize(original)
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("index", range(len(CATEGORIES)))
+def test_no_band_header_overlaps_its_own_cards(window, qapp, index):
+    """Vertical separation, MEASURED — the y-axis twin of the column-edge
+    check above, and a defect that shipped for exactly as long as nobody
+    measured it.
+
+    A card's height is heightForWidth-dependent, so Qt resolves it lazily
+    and the first layout pass sizes rows from provisional heights. On a
+    page whose band ends with a partly-filled row (Utilities & Tools: four
+    cards over three columns) that left the NEXT band's header drawn 18px
+    inside its own first card. _relayout early-returns while the column
+    count is unchanged, so nothing re-ran it either — the page corrected
+    itself only if an unrelated resize happened to re-activate the grid,
+    which is precisely the kind of bug that looks like a rendering glitch
+    and gets dismissed as one.
+    """
+    # The window fixture is shared for the whole session, so its size is
+    # borrowed and put back — a leaked resize silently re-measures every
+    # geometry test that runs after this one.
+    original = window.size()
+    window.resize(1500, 950)
+    try:
+        window.open_category(index)
+        for _ in range(8):
+            qapp.processEvents()
+        page = window.pages[index]
+
+        for band, (header, cards) in enumerate(page._bands):
+            assert header is not None
+            top = min(c.geometry().y() for c in cards)
+            bottom = header.geometry().y() + header.geometry().height()
+            assert bottom <= top, (
+                f"{CATEGORIES[index]['title']} band {band}: the header runs "
+                f"to y={bottom} but its first card starts at y={top} — the "
+                f"title is drawn {bottom - top}px inside the card it labels")
     finally:
         window.resize(original)
         qapp.processEvents()

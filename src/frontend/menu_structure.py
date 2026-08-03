@@ -93,10 +93,21 @@ Item schema:
              sub-item skips straight to that sub-item instead) rendering
              `items` as the same GlassCards a category page uses; picking
              one runs it through request_task() exactly as if it had lived
-             on the page directly. This is what lets a category collapse
-             to a handful of primary cards without deleting any actions —
-             see Microsoft Edge / Microsoft OneDrive / System Tools &
-             Utilities in CATEGORIES["software"].
+             on the page directly.
+
+             A hub is for a set of actions that are only safe or sensible
+             to offer TOGETHER — see Microsoft Edge / Microsoft OneDrive in
+             CATEGORIES["software"], where a teardown is kept beside its
+             counterpart restore. It is NOT a device for thinning a busy
+             page: SECTION BANDS do that (see category_bands) without
+             costing a click. The v1.1 reorganization deleted the one hub
+             that was doing the latter job — "System Tools & Utilities",
+             which had collected PATH Doctor, the Startup Manager and
+             Check for Updates behind a name that collided with the
+             Utilities & Tools MODULE, and had buried the app's single
+             highest-frequency software action two clicks deep. All three
+             are top-level cards now.
+
              iter_leaf_items() below expands every hub so leaf
              actions stay reachable from the Ctrl+K command palette.
              A hub may instead supply `groups` (list of
@@ -105,11 +116,10 @@ Item schema:
              a small "section" header above its cards, so a hub with many
              sub-actions stays tidy and scannable. NO hub uses `groups`
              today — the System Tools hub did until the v1.0 RC lifted Edge
-             and OneDrive out of it onto the page, leaving too few
-             sub-actions to need headers — but both shapes stay supported,
-             and hub_items() flattens either, so counters, the command
-             palette and hub navigation treat grouped and flat hubs
-             identically.
+             and OneDrive out of it onto the page, and the hub itself is
+             gone as of v1.1 — but both shapes stay supported, and
+             hub_items() flattens either, so counters, the command palette
+             and hub navigation treat grouped and flat hubs identically.
 """
 
 # ============================================================
@@ -369,32 +379,67 @@ CATEGORIES = [
         "icon": "📦",
         "glyph": "package",
         "title": "Software Management",
-        "tagline": "Deploy apps, runtimes and audit startup programs",
+        "tagline": "Install, update and remove software",
         "accent": "software",
-        "items": [
-            # -- THE CATALOG: every installable app, one card -------------
+        # BANDED (v1.1). This was the app's ONLY unbanded page, and the
+        # only one carrying five cards while its neighbours carried
+        # thirteen — because three of its operations were hidden inside a
+        # hub. With those promoted the module reads as the software
+        # LIFECYCLE, one band per stage: get it, keep it in shape, get rid
+        # of what shipped with the machine.
+        "groups": [
+            {"title": "INSTALL", "items": [
+                # -- THE CATALOG: every installable app, one card ---------
+                #
+                # `catalog: True` opens widgets.SoftwareCatalogDialog — the
+                # tabbed hub sourced from SOFTWARE_CATALOG above. It is a
+                # RUNNABLE action, not a `hub` container: there is exactly
+                # one destination behind it, so wrapping it in a HubDialog
+                # would add a click that asks nothing. Featured position
+                # (index 0) gives it the bento hero treatment on the page.
+                {"icon": "📦", "glyph": "package", "title": "Software Catalog",
+                 "desc": "Every app in one place — browsers, dev tools, games "
+                         "and runtimes, filtered by sub-category.",
+                 "task": "InstallCatalogApps", "timeout": 3600, "catalog": True},
+                {"icon": "📄", "title": "Microsoft Office Suite",
+                 "desc": "Word, Excel, PowerPoint and Outlook via the official ODT.",
+                 "glyph": "document", "task": "InstallOfficeODT", "timeout": 3600,
+                 "wizard": "office"},
+                # Office stays OUTSIDE the catalog deliberately: it ships as
+                # one Click-to-Run bundle with no per-app winget package, so
+                # it cannot be a row in a list whose every other row is a
+                # winget id. It gets the ODT wizard instead (see the
+                # 01-Catalogs.ps1 note), and a catalog row that silently
+                # behaved completely differently from its neighbours would
+                # be the worse lie.
+            ]},
+            # -- WHAT IS ALREADY ON THE MACHINE ---------------------------
             #
-            # `catalog: True` opens widgets.SoftwareCatalogDialog — the
-            # tabbed hub sourced from SOFTWARE_CATALOG above. It is a
-            # RUNNABLE action, not a `hub` container: there is exactly one
-            # destination behind it, so wrapping it in a HubDialog would
-            # add a click that asks nothing. Featured position (index 0)
-            # gives it the bento hero treatment on the page.
-            {"icon": "📦", "glyph": "package", "title": "Software Catalog",
-             "desc": "Every app in one place — browsers, dev tools, games "
-                     "and runtimes, filtered by sub-category.",
-             "task": "InstallCatalogApps", "timeout": 3600, "catalog": True},
-            {"icon": "📄", "title": "Microsoft Office Suite",
-             "desc": "Word, Excel, PowerPoint and Outlook via the official ODT.",
-             "glyph": "document", "task": "InstallOfficeODT", "timeout": 3600,
-             "wizard": "office"},
-            # Office stays OUTSIDE the catalog deliberately: it ships as one
-            # Click-to-Run bundle with no per-app winget package, so it
-            # cannot be a row in a list whose every other row is a winget
-            # id. It gets the ODT wizard instead (see the 01-Catalogs.ps1
-            # note), and a catalog row that silently behaved completely
-            # differently from its neighbours would be the worse lie.
-            # -- THE BUNDLED MICROSOFT APPS: one card per PRODUCT ---------
+            # v1.1: all three were sub-items of a hub called "System Tools
+            # & Utilities" — a name that collided with the Utilities &
+            # Tools MODULE, and a container that put Check for Updates
+            # (a dashboard Quick Action, and the software operation a user
+            # runs most often) behind two clicks while Edge and OneDrive,
+            # which a machine needs once ever, sat on the page. The hub is
+            # deleted; the band does its thinning job for free.
+            {"title": "MANAGE INSTALLED", "items": [
+                {"icon": "🔄", "title": "Check for Updates",
+                 "desc": "Live scan of installed apps — update exactly what you pick.",
+                 "glyph": "refresh", "task": "UpdateSelectedApps", "timeout": 3600,
+                 "update_center": True},
+                {"icon": "🚀", "title": "Startup Manager",
+                 "desc": "Boot-impact audit with instant enable/disable toggles.",
+                 "glyph": "boot", "task": "StartupReport", "timeout": 300,
+                 "startup_manager": True},
+                # Environment repair, and it belongs to SOFTWARE rather
+                # than to Maintenance: it exists to fix the aftermath of
+                # installing developer tooling — a winget install that
+                # landed a binary Windows then cannot find by name.
+                {"icon": "🧭", "title": "PATH Doctor",
+                 "desc": "Makes Windows find your dev tools by name in any terminal.",
+                 "glyph": "terminal", "task": "VerifyEnvironment", "timeout": 300},
+            ]},
+            # -- THE BUNDLED MICROSOFT APPS -------------------------------
             #
             # v1.0 RC: Edge and OneDrive were two titled groups buried
             # inside the System Tools hub, which put them two clicks deep
@@ -403,75 +448,70 @@ CATEGORIES = [
             # same kind of thing as the Catalog and Office — so they are
             # peers of those cards now, one card each.
             #
-            # Each stays a HUB rather than becoming two flat cards, because
-            # the remove/restore pair is the whole point: the teardown is
-            # only safe to offer BESIDE its counterpart restore, and a
-            # top-level page carrying a lone red "Purge OneDrive" would be
-            # advertising the destructive half. The hub keeps the pair
-            # together and keeps the danger one click in, while the card
-            # itself reads as calm and product-shaped on the page.
+            # v1.1 completes the set: Remove Bloatware performs the SAME
+            # verb on the SAME class of target (software Microsoft put on
+            # the machine before the user arrived), and it was filed under
+            # System & Tweaks / PRIVACY, so the app's three "remove what
+            # came preinstalled" actions lived in two different modules.
+            # NOTE: ApplyAllPrivacy still composes Remove-Bloatware in the
+            # backend — its description over there names that explicitly
+            # now that the card is no longer its neighbour.
             #
-            # A flat `items` list, not `groups`: two sub-actions need no
+            # Edge and OneDrive each stay a HUB rather than becoming flat
+            # cards, because the remove/restore pair is the whole point:
+            # the teardown is only safe to offer BESIDE its counterpart
+            # restore, and a top-level page carrying a lone red "Purge
+            # OneDrive" would be advertising the destructive half. The hub
+            # keeps the pair together and keeps the danger one click in,
+            # while the card itself reads as calm and product-shaped.
+            #
+            # Flat `items`, not `groups`: two or three sub-actions need no
             # section headers, and HubDialog's flat branch gives 2-4 cards
             # the equal-stretch treatment that fills the panel properly.
-            {"icon": "🌐", "glyph": "globe", "title": "Microsoft Edge",
-             "desc": "Purge Chromium Edge from Windows — or put it back. "
-                     "A backup is kept either way, so the removal is reversible.",
-             "hub": True,
-             "items": [
-                 {"icon": "🌐", "title": "Remove Microsoft Edge",
-                  "desc": "Force-purge Chromium Edge, with a backup kept.",
-                  "glyph": "delete", "task": "RemoveEdge", "timeout": 900, "confirm": True, "danger": True},
-                 {"icon": "🔁", "title": "Reinstall Microsoft Edge",
-                  "desc": "Reinstall Edge and restore your backed-up settings.",
-                  "glyph": "sync", "task": "RestoreEdge", "timeout": 1800},
-             ]},
-            {"icon": "☁️", "glyph": "cloud", "title": "Microsoft OneDrive",
-             "desc": "Uninstall OneDrive with your local files rescued first — "
-                     "or reinstall it and pick syncing back up.",
-             "hub": True,
-             "items": [
-                 # glyph `delete`, not `cloud`: this is the destructive half
-                 # of a pair, and it should carry the same glyph as its Edge
-                 # counterpart above rather than repeating the product glyph
-                 # its own hub card now owns.
-                 {"icon": "☁️", "title": "Purge OneDrive",
-                  "desc": "Back up local files, then uninstall OneDrive.",
-                  "glyph": "delete", "task": "RemoveOneDrive", "timeout": 900, "confirm": True, "danger": True},
-                 {"icon": "🔁", "title": "Install / Restore OneDrive",
-                  "desc": "Reinstall OneDrive so it's back and syncing.",
-                  "glyph": "sync", "task": "RestoreOneDrive", "timeout": 1800},
-             ]},
-            # -- HUB: environment repair and audits -----------------------
-            #
-            # Flat `items` since the v1.0 RC extraction. This hub used to
-            # carry three titled `groups` — MAINTENANCE & AUDITS plus the
-            # Edge and OneDrive pairs — and the grouping existed only
-            # because those pairs made the list long enough to need it.
-            # With the two products lifted out to their own cards above,
-            # what remains is one coherent set of three tools, and a lone
-            # section header over a hub's entire contents labels nothing.
-            #
-            # Hardware Diagnostics is NO LONGER here either: CPU-Z, GPU-Z,
-            # HWMonitor, CrystalDiskInfo and Afterburner are installable
-            # apps, so they belong in the catalog (System Runtimes &
-            # Utilities tab) with every other installable app. What stays
-            # here is what this hub is actually for — tools that INSPECT or
-            # REPAIR this machine rather than download something.
-            {"icon": "🛠️", "glyph": "tools", "title": "System Tools & Utilities",
-             "desc": "Environment repair, startup audits and update scans.",
-             "hub": True,
-             "items": [
-                 {"icon": "🧭", "title": "PATH Doctor",
-                  "desc": "Makes Windows find your dev tools by name in any terminal.",
-                  "glyph": "terminal", "task": "VerifyEnvironment", "timeout": 300},
-                 {"icon": "🚀", "title": "Startup Manager",
-                  "desc": "Boot-impact audit with instant enable/disable toggles.",
-                  "glyph": "boot", "task": "StartupReport", "timeout": 300, "startup_manager": True},
-                 {"icon": "🔄", "title": "Check for Updates",
-                  "desc": "Live scan of installed apps — update exactly what you pick.",
-                  "glyph": "refresh", "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
-             ]},
+            {"title": "PREINSTALLED & BUNDLED", "items": [
+                {"icon": "📦", "title": "Remove Bloatware",
+                 "desc": "Uninstall pre-loaded Store apps you never asked for.",
+                 "glyph": "delete", "task": "RemoveBloatware", "timeout": 900,
+                 "confirm": True},
+                {"icon": "🌐", "glyph": "globe", "title": "Microsoft Edge",
+                 "desc": "Purge Chromium Edge from Windows — or put it back. "
+                         "A backup is kept either way, so the removal is reversible.",
+                 "hub": True,
+                 "items": [
+                     {"icon": "🌐", "title": "Remove Microsoft Edge",
+                      "desc": "Force-purge Chromium Edge, with a backup kept.",
+                      "glyph": "delete", "task": "RemoveEdge", "timeout": 900, "confirm": True, "danger": True},
+                     {"icon": "🔁", "title": "Reinstall Microsoft Edge",
+                      "desc": "Reinstall Edge and restore your backed-up settings.",
+                      "glyph": "sync", "task": "RestoreEdge", "timeout": 1800},
+                 ]},
+                {"icon": "☁️", "glyph": "cloud", "title": "Microsoft OneDrive",
+                 "desc": "Uninstall OneDrive with your local files rescued first — "
+                         "or reinstall it and pick syncing back up.",
+                 "hub": True,
+                 "items": [
+                     # glyph `delete`, not `cloud`: this is the destructive
+                     # half of a pair, and it should carry the same glyph as
+                     # its Edge counterpart above rather than repeating the
+                     # product glyph its own hub card now owns.
+                     {"icon": "☁️", "title": "Purge OneDrive",
+                      "desc": "Back up local files, then uninstall OneDrive.",
+                      "glyph": "delete", "task": "RemoveOneDrive", "timeout": 900, "confirm": True, "danger": True},
+                     {"icon": "🔁", "title": "Install / Restore OneDrive",
+                      "desc": "Reinstall OneDrive so it's back and syncing.",
+                      "glyph": "sync", "task": "RestoreOneDrive", "timeout": 1800},
+                     # v1.1: MOVED here from Maintenance & Security /
+                     # RECOVERY. The folder is an artefact of Purge
+                     # OneDrive and of nothing else, and a user who has
+                     # just removed OneDrive should not have to change
+                     # module to find the files it rescued. This is the
+                     # third sub-action, which is exactly what the flat
+                     # branch's 2-4 card treatment is tuned for.
+                     {"icon": "📁", "title": "OneDrive Backup Folder",
+                      "desc": "Open files rescued before OneDrive removal.",
+                      "glyph": "folder", "task": "@open_onedrive_backup"},
+                 ]},
+            ]},
         ],
     },
     # --------------------------------------------------------
@@ -488,16 +528,24 @@ CATEGORIES = [
         "icon": "⚡",
         "glyph": "bolt",
         "title": "System & Tweaks",
-        "tagline": "Performance, interface and privacy tweaks",
+        "tagline": "Performance, network, interface and privacy",
         "accent": "optimization",
         # BANDED (v1.0+). Twelve cards in one undifferentiated grid was the
         # densest page in the app and gave no clue that it answers three
         # different questions — how fast is it, how does it look, what does
         # it leak. The bands are the merge comment above, finally made
-        # visible: the module stays one module, and its three halves stop
-        # having to be inferred from card order.
+        # visible: the module stays one module, and its halves stop having
+        # to be inferred from card order.
+        #
+        # v1.1 makes it FOUR bands. Networking had grown to two cards
+        # (the ping optimizer plus the DNS switcher) sitting fourth and
+        # fifth in a five-card PERFORMANCE band, so "where do I change my
+        # DNS?" was answered by reading the band rather than by scanning
+        # its title. A band header costs no click — that is the entire
+        # premise of category_bands — so a small, correctly-labelled band
+        # beats a larger one that hides two of its members.
         "groups": [
-            {"title": "PERFORMANCE", "items": [
+            {"title": "PERFORMANCE & POWER", "items": [
                 {"icon": "🕹️", "title": "Game Mode & Game Bar",
                  "desc": "Enable Game Mode, kill background recording.",
                  "glyph": "game", "task": "GameMode", "timeout": 120},
@@ -516,6 +564,11 @@ CATEGORIES = [
                          "sleep timeouts while on AC power.",
                  "glyph": "bolt", "task": "UltimatePowerPlan", "timeout": 300,
                  "note": "Desktop PCs only", "confirm": True},
+                {"icon": "🖱️", "title": "Disable Mouse Acceleration",
+                 "desc": "Raw pointer precision — no speed curves or thresholds.",
+                 "glyph": "mouse", "task": "DisableMouseAccel", "timeout": 120},
+            ]},
+            {"title": "NETWORK", "items": [
                 {"icon": "📡", "title": "Network & Ping Optimizer",
                  "desc": "Flush DNS and reset Winsock for lower latency.",
                  "glyph": "network", "task": "NetworkOptimization", "timeout": 300, "confirm": True},
@@ -526,9 +579,6 @@ CATEGORIES = [
                  "desc": "Switch a connection to Cloudflare, Quad9 or AdGuard — with a one-click way back.",
                  "glyph": "network", "task": "NetworkProfiles", "timeout": 300,
                  "dns_switcher": True},
-                {"icon": "🖱️", "title": "Disable Mouse Acceleration",
-                 "desc": "Raw pointer precision — no speed curves or thresholds.",
-                 "glyph": "mouse", "task": "DisableMouseAccel", "timeout": 120},
             ]},
             {"title": "INTERFACE", "items": [
                 {"icon": "🌙", "title": "Global Dark Mode",
@@ -544,15 +594,29 @@ CATEGORIES = [
                 # between its short menu and the classic one. This prunes
                 # the ENTRIES inside whichever menu is showing, using
                 # Windows' own block list — see 16-ContextMenu.ps1.
-                {"icon": "🧹", "title": "Context Menu Manager",
+                #
+                # v1.1 RENAME: "Context Menu Manager" -> "Right-Click Menu
+                # Entries". The two cards were adjacent, near-identically
+                # titled and did different things, which the old comment
+                # here could only warn about. Naming the NOUN each one
+                # operates on (the menu itself vs. the entries inside it)
+                # fixes the confusion on the page, and — unlike folding the
+                # pair into a hub — keeps both cards' APPLIED / DEFAULT
+                # state badges visible, which is the whole reason a
+                # probeable one-shot stays a top-level card.
+                {"icon": "🧹", "title": "Right-Click Menu Entries",
                  "desc": "See every right-click entry and hide the ones you don't use — fully reversible.",
                  "glyph": "list", "task": "ContextMenuScan", "timeout": 300,
                  "context_menu": True},
             ]},
-            {"title": "PRIVACY & CLEANUP", "items": [
-                {"icon": "📦", "title": "Remove Bloatware",
-                 "desc": "Uninstall pre-loaded Store apps you never asked for.",
-                 "glyph": "delete", "task": "RemoveBloatware", "timeout": 900, "confirm": True},
+            # Remove Bloatware left this band in v1.1 — it uninstalls
+            # preinstalled software, which is Software Management's job and
+            # is where Remove Edge and Purge OneDrive already lived. The
+            # full-pass card below still triggers Remove-Bloatware in the
+            # backend (see ApplyAllPrivacy in 30-GuiDispatcher.ps1), so its
+            # description now names bloatware explicitly rather than
+            # leaning on a neighbouring card that has moved away.
+            {"title": "PRIVACY", "items": [
                 {"icon": "🛡️", "title": "Disable Telemetry",
                  "desc": "Stop diagnostic data collection and scheduled tasks.",
                  "glyph": "shieldplain", "task": "DisableTelemetry", "timeout": 300},
@@ -563,7 +627,8 @@ CATEGORIES = [
                  "desc": "Stop Timeline activity sync to Microsoft servers.",
                  "glyph": "history", "task": "DisableActivityHistory", "timeout": 120},
                 {"icon": "🔒", "title": "Apply ALL Privacy Settings",
-                 "desc": "Run every privacy hardening action in one pass.",
+                 "desc": "One pass: telemetry, advertising ID, activity history "
+                         "and bloatware removal.",
                  "glyph": "defender", "task": "ApplyAllPrivacy", "timeout": 1800, "confirm": True},
             ]},
         ],
@@ -584,13 +649,21 @@ CATEGORIES = [
         "icon": "🔧",
         "glyph": "repair",
         "title": "Maintenance & Security",
-        "tagline": "Repair, clean-up, restore points and rollback",
+        "tagline": "Routines, disk space, drivers and rollback",
         "accent": "maintenance",
         # BANDED (v1.0+). The ROUTINE UPKEEP band is the load-bearing one:
-        # it collects exactly the four `recurring` tasks, so "what is due?"
+        # it collects exactly the `recurring` tasks, so "what is due?"
         # — the question this module exists to answer — is a glance at one
         # band instead of a scan for ACTION DUE badges scattered through
         # eleven cards.
+        #
+        # v1.1 makes that claim TRUE. It was written for four cards while
+        # SIX tasks carried `recurring`: Driver Backup (180d) and Missing
+        # Driver Scan (90d) sat in Utilities & Tools under a band titled
+        # "AUTOMATION & LOGS", where they were neither, and where their
+        # ACTION DUE badges were exactly the scattered ones this band
+        # exists to gather. Both moved here. Six cards is still well inside
+        # the eight the wall guard allows (tests/test_layout_contract.py).
         "groups": [
             {"title": "ROUTINE UPKEEP", "items": [
                 {"icon": "🛠️", "title": "System Repair (SFC + DISM)",
@@ -607,7 +680,21 @@ CATEGORIES = [
                  "desc": "Manual System Restore checkpoint — your safety net before big changes.",
                  "glyph": "restorepoint", "task": "CreateRestorePoint", "timeout": 600,
                  "recurring": 30},
+                {"icon": "💿", "title": "Driver Backup",
+                 "desc": "Export every current hardware driver to your Desktop.",
+                 "glyph": "save", "task": "DriverBackup", "timeout": 1800, "recurring": 180},
+                {"icon": "🔍", "title": "Missing Driver Scan",
+                 "desc": "Check Windows Update for drivers you're missing.",
+                 "glyph": "search", "task": "DriverScan", "timeout": 900, "recurring": 90},
             ]},
+            # Both disk QUESTIONS are answered in one band, deliberately.
+            # Drive Space Report (a snapshot written to the log) and
+            # Storage Analyzer (the interactive walk) overlap, and the
+            # report reads like a natural fit for Utilities' inspection
+            # band — but splitting them would put "how full is it?" and
+            # "what is filling it?" in different modules, and the report is
+            # also a step in playbooks/post-install-clean.json. They stay
+            # adjacent, beside the actions that act on the answer.
             {"title": "DISK & SPACE", "items": [
                 {"icon": "📈", "title": "Drive Space Report",
                  "desc": "Free / used space snapshot for every fixed drive.",
@@ -626,7 +713,13 @@ CATEGORIES = [
                  "desc": "Bring hibernation (and hiberfil.sys) back.",
                  "glyph": "battery", "task": "EnableHibernation", "timeout": 120},
             ]},
-            {"title": "RECOVERY", "items": [
+            # OneDrive Backup Folder left this band in v1.1. It is an
+            # artefact of Purge OneDrive and of nothing else, so it now
+            # lives inside the Microsoft OneDrive hub in Software
+            # Management, beside the action that creates it — a user who
+            # has just removed OneDrive should not have to change module
+            # to reach the files it rescued for them.
+            {"title": "RECOVERY & ROLLBACK", "items": [
                 # Pulse creates restore points and calls them the safety net
                 # every rollback depends on, but until now offered no way to
                 # see whether any exist. A guarantee with no receipt is not a
@@ -642,9 +735,6 @@ CATEGORIES = [
                 {"icon": "🔧", "title": "Restore Services",
                  "desc": "Re-enable Windows services disabled by the optimizer.",
                  "glyph": "repair", "task": "RestoreServices", "timeout": 300},
-                {"icon": "☁️", "title": "OneDrive Backup Folder",
-                 "desc": "Open files rescued before OneDrive removal.",
-                 "glyph": "folder", "task": "@open_onedrive_backup"},
             ]},
         ],
     },
@@ -662,12 +752,21 @@ CATEGORIES = [
         "icon": "📊",
         "glyph": "info",
         "title": "Utilities & Tools",
-        "tagline": "Reports, licence status, driver tools and playbooks",
+        "tagline": "Reports, licence state and playbooks",
         "accent": "information",
         # BANDED (v1.0+). The split is what each card DOES to the machine:
         # the inspection band only ever reads, the automation band replays
         # and records. Worth stating visually in the one module whose whole
         # promise is "nothing here changes a setting on its own".
+        #
+        # v1.1 finally makes that promise literal. Driver Backup WROTE a
+        # folder of exported drivers to the Desktop and Missing Driver Scan
+        # was a recurring routine; both moved to Maintenance & Security's
+        # ROUTINE UPKEEP band with the other recurring tasks. What is left
+        # is the reference desk — six cards that read the machine or replay
+        # work against it — and a deliberately calm page. Modules want
+        # COHERENT weight, not equal weight: this one earns its place by
+        # being the one surface where nothing can surprise you.
         "groups": [
             {"title": "REPORTS & INSPECTION", "items": [
                 {"icon": "📊", "title": "System Info Snapshot",
@@ -695,12 +794,6 @@ CATEGORIES = [
                 {"icon": "📘", "title": "Playbooks",
                  "desc": "Run a saved sequence of tasks — preview it first with a dry run.",
                  "glyph": "boot", "task": "@playbooks"},
-                {"icon": "💿", "title": "Driver Backup",
-                 "desc": "Export every current hardware driver to your Desktop.",
-                 "glyph": "save", "task": "DriverBackup", "timeout": 1800, "recurring": 180},
-                {"icon": "🔍", "title": "Missing Driver Scan",
-                 "desc": "Check Windows Update for drivers you're missing.",
-                 "glyph": "search", "task": "DriverScan", "timeout": 900, "recurring": 90},
                 {"icon": "📜", "title": "View Operation Log",
                  "desc": "Open the full Pulse operation log.",
                  "glyph": "log", "task": "@open_log"},

@@ -352,7 +352,7 @@ GLYPHS: dict[str, tuple[str, str]] = {
     'globe':         ("", "🧰"),                    # Browsers & daily apps
     'code':          ("", "🎓"),                    # Developer & University Hub
     'game':          ("", "🎮"),                    # Gaming / Game Mode
-    'tools':         ("", "🛠️"),                   # System Tools & Utilities
+    'tools':         ("", "🛠️"),                   # System Repair (SFC + DISM)
     # --- optimization ---
     'moon':          ("", "🌙"),                    # Global Dark Mode
     'mouse':         ("", "🖱️"),                   # Mouse acceleration
@@ -1661,10 +1661,12 @@ def catalog_search_qss(t: dict, accent: str) -> str:
 
 
 def hub_group_header_qss(t: dict, accent: str) -> str:
-    """Sub-group title inside a grouped hub's landing screen (System Tools
-    & Utilities): the 'section' typographic role, lifted from text_faint
-    to a soft accent tint so group boundaries register on first scan —
-    the label half of the header row; hub_group_rule_qss is the other."""
+    """Sub-group title inside a grouped hub's landing screen: the
+    'section' typographic role, lifted from text_faint to a soft accent
+    tint so group boundaries register on first scan — the label half of
+    the header row; hub_group_rule_qss is the other. No hub declares
+    `groups` today (see HubDialog), so this styles a supported shape
+    rather than a live one."""
     return (f"color: {alpha(accent, 0.90)}; font-size: 10px; font-weight: 700;"
             f"background: transparent; border: none; letter-spacing: 4px;")
 

@@ -4122,7 +4122,10 @@ class ContextMenuDialog(InspectorDialog):
     """
 
     TASK = "ContextMenuScan"
-    TITLE = "🧹  Context Menu Manager"
+    # Matches the card's v1.1 title. The dialog and the card that opens it
+    # naming the same thing differently is how a user ends up unsure which
+    # of the two context-menu cards they actually clicked.
+    TITLE = "🧹  Right-Click Menu Entries"
     LOADING = "Reading shell context-menu handlers…"
     ACCENT_KEY = "optimization"
     TIMEOUT = 300
@@ -4458,13 +4461,20 @@ class ShortcutSheetDialog(PulseDialog):
 class HubDialog(PulseDialog):
     """A primary hub card's landing screen: its sub-actions rendered as
     the exact same GlassCard a category page uses — zero new card design,
-    100% visual parity with the page this modal is standing in for. This
-    is what lets Software Management stay five spacious primary cards
-    (Software Catalog / Office / Microsoft Edge / Microsoft OneDrive /
-    System Tools & Utilities) while holding nine operations: each hub is
-    just a focused, one-level-deeper page. The Edge and OneDrive hubs
-    carry two sub-actions each — a removal and its counterpart restore —
-    which is the shape the flat branch below is tuned for.
+    100% visual parity with the page this modal is standing in for. Each
+    hub is just a focused, one-level-deeper page.
+
+    TWO hubs remain as of v1.1, both in Software Management: Microsoft
+    Edge (remove / reinstall) and Microsoft OneDrive (purge / restore /
+    open the rescued files). Both exist for the same reason — a teardown
+    is only safe to offer BESIDE its counterpart restore — and both are
+    the 2-4 sub-action shape the flat branch below is tuned for.
+
+    A hub is NOT a way to thin a busy page; section bands do that without
+    costing a click. The v1.1 reorganization deleted the hub that was
+    doing it ("System Tools & Utilities", whose name also collided with
+    the Utilities & Tools module) and promoted its three tools onto the
+    page — see menu_structure's `hub` documentation.
 
     Picking a sub-card closes this dialog and hands it back via
     `chosen_item`; the caller runs it through the normal request_task()
@@ -4510,8 +4520,9 @@ class HubDialog(PulseDialog):
             #
             # No hub declares `groups` as of the v1.0 RC (System Tools was
             # the last, and lost its headers when Edge and OneDrive moved
-            # out to their own cards). The branch stays because the shape
-            # is still supported and a hub can grow back into it.
+            # out to their own cards; the hub itself is gone as of v1.1).
+            # The branch stays because the shape is still supported and a
+            # hub can grow back into it.
             for gi, group in enumerate(groups):
                 if gi > 0:
                     host_lay.addSpacing(TH.SPACE["md"])

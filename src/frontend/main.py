@@ -997,7 +997,20 @@ class CategoryPage(QWidget):
                     # unused columns still includes the grid spacing before
                     # them, so on a 3-up page the header's rule overhung the
                     # last card's right edge by exactly one 16px gutter.
-                    self._grid.addWidget(header, row, 0, 1, cols)
+                    #
+                    # ...and never more columns than the band actually
+                    # FILLS. v1.1 gave the app its first bands smaller than
+                    # the column count (NETWORK holds two cards), and the
+                    # status filter can reduce any band to one at any time.
+                    # A header spanning the full width then draws its rule
+                    # out across empty canvas, which reads as cards that
+                    # failed to load rather than as a small deliberate
+                    # group — the same overhang defect as above, just at
+                    # the scale of whole columns instead of one gutter.
+                    # Hugging keeps every rule flush with the last card of
+                    # the row it labels.
+                    self._grid.addWidget(header, row, 0, 1,
+                                         min(cols, len(visible_here)))
                     row += 1
             for i, card in enumerate(visible_here):
                 self._grid.addWidget(card, row + i // cols, i % cols)
@@ -1018,6 +1031,31 @@ class CategoryPage(QWidget):
         # all slack below reads as a deliberate result set.
         for r in range(max(self._grid.rowCount(), row) + 1):
             self._grid.setRowStretch(r, 1 if r == row else 0)
+        # ...then make Qt re-measure once the cards know their real heights.
+        #
+        # A card's height is heightForWidth-dependent (ClampedLabel wraps
+        # its description against the final column width), and Qt resolves
+        # that lazily — so this first pass sizes every ROW from provisional
+        # heights. A band whose last row is only partly filled then leaves
+        # the next band's header overlapping its own cards: Utilities &
+        # Tools (4 cards over 3 columns) drew its AUTOMATION & LOGS title
+        # 18px INSIDE the Playbooks card. Nothing re-ran the layout either,
+        # because _relayout early-returns while the column count is
+        # unchanged, so the page stayed wrong until an unrelated resize
+        # happened to re-activate the grid.
+        #
+        # This is the same lazy-resolution defect the sparse branch above
+        # already guards against by re-checking its unit width; the banded
+        # path needs the row equivalent. Deferred by one turn so the
+        # pending geometry has actually settled before we re-measure.
+        QTimer.singleShot(0, self._remeasure_rows)
+
+    def _remeasure_rows(self):
+        """Drop the grid's cached sizes and re-activate it — see the note at
+        the end of _relayout. Safe to call spuriously: it re-runs a layout
+        pass and never touches _relayout's own state, so it cannot recurse."""
+        self._grid.invalidate()
+        self._grid.activate()
 
     def _sparse_unit(self) -> int:
         """The ONE column width every sparse card shares.
