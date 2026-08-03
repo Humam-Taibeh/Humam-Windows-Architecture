@@ -57,7 +57,9 @@ from utils.helpers import (  # noqa: E402
     PowerShellTask, SystemPulseSampler, TaskResult, ToastManager, has_battery,
 )
 from frontend import theme as TH  # noqa: E402
-from frontend.animations import CascadeAnimator, PageFader  # noqa: E402
+from frontend.animations import (  # noqa: E402
+    CASCADE_BUDGET_MS, CASCADE_MS, PAGE_FADE_MS, CascadeAnimator, PageFader,
+)
 from frontend.menu_structure import (  # noqa: E402
     CATEGORIES, SOFTWARE_CATALOG, category_bands,
     category_operations, find_action_anywhere,
@@ -663,10 +665,6 @@ class CategoryPage(QWidget):
     SPARSE_MAX_CARDS = 2
     SPARSE_CARD_W = 430
 
-    #: Grid row the filtered-empty label is parked on — past any plausible
-    #: number of band-header + card rows a category page can produce.
-    _EMPTY_ROW = 900
-
     #: (label, badge-state key) for the header's status filter. "" is the
     #: unfiltered default; every other key is a state GlassCard can badge
     #: (see GlassCard._STATE_BADGES), so no option can be a dead end.
@@ -691,6 +689,18 @@ class CategoryPage(QWidget):
         self._t = t
         self._cols = 0
         self._applied_unit = 0     # see _relayout / _sparse_unit
+        #: Highest grid row this page has ever given a stretch factor to.
+        #: _relayout clears stretches up to here (and no further) before
+        #: setting the new ones — see the note where it is used.
+        self._stretch_high = 0
+        #: Coalescing timer for the deferred row re-measure. ONE timer,
+        #: restarted, instead of a QTimer.singleShot per _relayout: a live
+        #: drag-resize fires _relayout per resize step, and singleShot
+        #: queued an independent invalidate+activate for every one of them.
+        self._remeasure = QTimer(self)
+        self._remeasure.setSingleShot(True)
+        self._remeasure.setInterval(0)
+        self._remeasure.timeout.connect(self._remeasure_rows)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(TH.SPACE["sm"], TH.SPACE["sm"],
@@ -824,19 +834,33 @@ class CategoryPage(QWidget):
         # matches must NOT recentre it mid-keystroke — sparse is a property
         # of what the page is, not of what a query left showing.
         self._sparse = len(self.cards) <= self.SPARSE_MAX_CARDS
-        self._relayout(2)   # safe default; the first resize event corrects it
 
         # Empty state — a filter that matches nothing must say so; a blank
         # grid is indistinguishable from a broken page.
         self._empty = QLabel("No operations match that filter.")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty.hide()
-        # Parked on a row far below any real content. It used to sit at
-        # MAX_COLUMNS+1 (row 5), which was safely past the end only while a
-        # page was a single unbanded block; a banded page interleaves header
-        # rows with card rows and reaches row 5 easily, which would have
-        # dropped the empty-state label into the middle of the grid.
-        self._grid.addWidget(self._empty, self._EMPTY_ROW, 0, 1, self.MAX_COLUMNS)
+        # PLACED BY _relayout, on the row directly after the last band —
+        # not parked at a fixed row far below the content.
+        #
+        # Parking it at a fixed row 900 was the safe answer to a real
+        # problem: a banded page interleaves header rows with card rows and
+        # reaches row 5 easily, so the label's old home at MAX_COLUMNS+1 sat
+        # in the middle of the grid. But a QGridLayout is sized by its
+        # highest occupied cell, so one widget at row 900 gave every page a
+        # 901-row grid — and _relayout cleared row stretches by sweeping
+        # `range(rowCount() + 1)`, which both cost ~0.29 ms of pure
+        # bookkeeping per relayout AND grew the grid by one more row every
+        # single time it ran (setRowStretch on a row past the end EXTENDS
+        # the grid). Measured live it had already reached 904 rows, climbing
+        # by one per resize step, forever.
+        #
+        # Putting the label where it actually belongs removes both the sweep
+        # cost and the growth by construction: the grid is now exactly as
+        # tall as its content, and _relayout's own high-water mark
+        # (_stretch_high) bounds the clear.
+        self._empty_row = -1
+        self._relayout(2)   # safe default; the first resize event corrects it
 
         self._scroll.setWidget(grid_host)
         self._scroll.viewport().setStyleSheet("background: transparent;")
@@ -960,6 +984,9 @@ class CategoryPage(QWidget):
         for header, _cards in self._bands:
             if header is not None:
                 self._grid.removeWidget(header)
+        if self._empty_row >= 0:
+            self._grid.removeWidget(self._empty)
+            self._empty_row = -1
         if self._sparse:
             self._relayout_sparse(cols, unit)
             return
@@ -1017,6 +1044,12 @@ class CategoryPage(QWidget):
                 self._grid.addWidget(card, row + i // cols, i % cols)
             if visible_here:
                 row += (len(visible_here) + cols - 1) // cols
+        # The filtered-empty label lands on the row after the content — it
+        # is the only thing on screen when it is visible, so "after the
+        # content" and "row 0" are the same place in practice, and it can
+        # never be caught between two bands the way a fixed row could.
+        self._empty_row = row
+        self._grid.addWidget(self._empty, row, 0, 1, max(1, cols))
         # Content rows take NO stretch and one trailing row takes it all —
         # the dashboard's rule (WelcomePage._relayout_actions), shared so
         # every grid in the app anchors the same way.
@@ -1030,7 +1063,24 @@ class CategoryPage(QWidget):
         # any time, and those three floated in the middle of the canvas
         # with dead space above AND below. Anchoring to the top and pushing
         # all slack below reads as a deliberate result set.
-        for r in range(max(self._grid.rowCount(), row) + 1):
+        #
+        # Swept against our OWN high-water mark, never against
+        # grid.rowCount(). Two reasons, both measured:
+        #
+        #   * setRowStretch() on a row past the end EXTENDS the grid, so
+        #     sweeping `range(rowCount() + 1)` added a row on every call —
+        #     unbounded growth driven by how much the user navigated and
+        #     resized (observed at 904 rows and still climbing by one per
+        #     relayout).
+        #   * that sweep was ~100% of _relayout's cost: 925 setRowStretch
+        #     calls at 0.29 ms against 0.003 ms for the nine rows a real
+        #     page actually has.
+        #
+        # The high-water mark clears exactly what a previous, taller layout
+        # may have left set, which is the only thing rowCount() was ever
+        # standing in for.
+        self._stretch_high = max(self._stretch_high, row)
+        for r in range(self._stretch_high + 1):
             self._grid.setRowStretch(r, 1 if r == row else 0)
         # ...then make Qt re-measure once the cards know their real heights.
         #
@@ -1049,7 +1099,13 @@ class CategoryPage(QWidget):
         # already guards against by re-checking its unit width; the banded
         # path needs the row equivalent. Deferred by one turn so the
         # pending geometry has actually settled before we re-measure.
-        QTimer.singleShot(0, self._remeasure_rows)
+        #
+        # Coalesced onto ONE restartable timer rather than a fresh
+        # singleShot per call: a drag-resize runs _relayout per resize step,
+        # and each singleShot queued its own independent invalidate+activate
+        # to run after the drag — dozens of redundant full layout passes
+        # landing back to back at exactly the moment the window settles.
+        self._remeasure.start()
 
     def _remeasure_rows(self):
         """Drop the grid's cached sizes and re-activate it — see the note at
@@ -1090,10 +1146,16 @@ class CategoryPage(QWidget):
         for col in range(1, n + 1):
             self._grid.setColumnMinimumWidth(col, unit)
         n_rows = (len(self._visible) + n - 1) // n
-        for row in range(max(self._grid.rowCount(), n_rows) + 1):
+        # Bounded by our own high-water mark, not by rowCount() — see the
+        # matching note in _relayout for why sweeping rowCount() both cost
+        # and LEAKED a row per call.
+        self._stretch_high = max(self._stretch_high, n_rows)
+        for row in range(self._stretch_high + 1):
             self._grid.setRowStretch(row, 1 if row == n_rows else 0)
         for i, card in enumerate(self._visible):
             self._grid.addWidget(card, i // n, 1 + i % n)
+        self._empty_row = n_rows
+        self._grid.addWidget(self._empty, n_rows, 0, 1, n + 2)
 
     # Column counts are driven by ResponsiveGridHost.resized (see the grid
     # construction above): the width that chooses the column count IS the
@@ -1101,6 +1163,40 @@ class CategoryPage(QWidget):
     # replaces the old resizeEvent/showEvent pair, which measured the page
     # and the scroll viewport respectively — two different numbers, one of
     # them lagging a layout pass behind the other.
+
+    def entrance_waves(self) -> tuple[list[GlassCard], list[int]]:
+        """The cards to animate on this page's first reveal, paired with the
+        WAVE (grid row) each one belongs to.
+
+        Two things this fixes about the old `cascade.play(page.cards)`:
+
+        * it hands over the VISIBLE cards. `self.cards` includes everything
+          the status filter has hidden, and the cascade staged each of those
+          too — an opacity effect installed, a position driven and an effect
+          torn down for cards that were never on screen, and (worse) their
+          indices still consumed stagger slots, so a filtered page waited
+          out an entrance for cards it wasn't showing.
+        * it groups by ROW instead of by index. A row lights as one, which
+          is how the eye reads a grid, and it divides the wave count by the
+          column count — 14 cards over 3 columns is 5 waves, not 14.
+
+        The row arithmetic deliberately mirrors _relayout's; the cascade
+        must animate the layout that exists, not a second guess at it.
+        """
+        shown = {id(c) for c in self._visible}
+        cols = max(1, self._cols)
+        cards: list[GlassCard] = []
+        waves: list[int] = []
+        wave = 0
+        for _header, band_cards in self._bands:
+            here = [c for c in band_cards if id(c) in shown]
+            if not here:
+                continue
+            for i, card in enumerate(here):
+                cards.append(card)
+                waves.append(wave + i // cols)
+            wave += (len(here) + cols - 1) // cols
+        return cards, waves
 
     def focus_filter(self):
         """Ctrl+Shift+F target — open the status dropdown.
@@ -1211,6 +1307,10 @@ class PulseApp(QMainWindow):
 
         self.cascade = CascadeAnimator(self)
         self.fader = PageFader(self)
+        #: Module indices whose entrance cascade has already played. A page
+        #: is revealed once; every return to it is instant. See
+        #: open_category.
+        self._revealed: set[int] = set()
 
         self.ps1_path = self._locate_ps1()
         self.is_admin = self._check_admin()
@@ -1525,18 +1625,51 @@ class PulseApp(QMainWindow):
         self._select_nav(None)
         if self.stack.currentIndex() != 0:
             self.cascade.stop()
+            # The fade puts a QGraphicsOpacityEffect on the whole page for
+            # its duration, which routes every frame through an offscreen
+            # buffer (~13.8 ms a frame against ~10.0 plain). Keeping the
+            # ambient wash out of that window is the difference between a
+            # smooth 150 ms fade and a fade that drops frames.
+            self._glow.defer(PAGE_FADE_MS)
             self.stack.setCurrentIndex(0)
             self.fader.fade_in(self.welcome, rise_px=10)
 
     def open_category(self, index: int):
+        """Switch to a module. INSTANT for any page already seen.
+
+        The pages are all built up front and live in the QStackedWidget, so
+        the switch itself is just a raise: measured at 1.7 ms median, warm,
+        on the densest module. Every other millisecond of the old ~500 ms
+        switch was the entrance animation withholding cards that were
+        already laid out and painted (see animations.CASCADE_BUDGET_MS for
+        the arithmetic).
+
+        So the entrance is now what it was always meant to be — a FIRST
+        IMPRESSION, not a toll. A module you have already opened comes back
+        the way a stacked page should: immediately, at the scroll position
+        and filter you left it on. Re-running a staggered reveal on a page
+        the user has already read is pure latency dressed as polish, and it
+        is what made the four modules feel heavy to move between.
+        """
         self._select_nav(index)
         page = self.pages[index]
         if self.stack.currentWidget() is page:
             return
         self.cascade.stop()
+        # Hand the GUI thread to the transition. The ambient wash forces a
+        # full-window repaint through every translucent surface above it
+        # (~18.5 ms, of which the card grid is ~10.9), and landing one on
+        # top of the switch's own repaint is a visible hitch — see
+        # AmbientGlow.defer. Covers the instant path too: that still
+        # repaints the entire content column.
+        self._glow.defer(PAGE_FADE_MS)
         self.stack.setCurrentIndex(index + 1)
+        if index in self._revealed:
+            return
+        self._revealed.add(index)
+        self._glow.defer(CASCADE_BUDGET_MS + CASCADE_MS)
         # let the layout place the cards, then run the staggered entrance
-        QTimer.singleShot(0, lambda p=page: self.cascade.play(p.cards))
+        QTimer.singleShot(0, lambda p=page: self.cascade.play(*p.entrance_waves()))
 
     def _select_nav(self, index: int | None):
         for i, btn in enumerate(self._nav_buttons):

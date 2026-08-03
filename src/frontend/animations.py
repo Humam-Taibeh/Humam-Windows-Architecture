@@ -40,9 +40,31 @@ from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 # ============================================================
 HOVER_MS      = 130    # glow ramp in/out
 CASCADE_MS    = 170    # per-card entrance
-CASCADE_GAP   = 26     # stagger between cards
+CASCADE_GAP   = 26     # stagger between waves
 CASCADE_RISE  = 18     # px slide-up distance
 PAGE_FADE_MS  = 150    # stacked-page cross fade
+
+#: Hard ceiling on a cascade's STAGGER window, and the reason navigation
+#: stopped feeling slow.
+#:
+#: The stagger used to be `card_index * CASCADE_GAP`, i.e. unbounded in the
+#: number of cards. Measured on the shipping pages, that made the entrance
+#: duration a function of page density:
+#:
+#:     Utilities & Tools   14 cards -> 13*26 + 170 = 508 ms
+#:     Software Management 13 cards -> 12*26 + 170 = 482 ms
+#:
+#: and 508 ms is exactly what the switch to that module measured end to end.
+#: The page was laid out and painted within ~2 ms; everything after that was
+#: this animation withholding content. A denser module was PUNISHED with a
+#: longer wait, which is precisely backwards.
+#:
+#: Two changes bound it. Callers now stagger by WAVE (a grid row) rather
+#: than per card — cards that share a row light together, which is how the
+#: eye reads a grid anyway — and whatever the wave count, the total stagger
+#: is compressed to fit this budget. The entrance can never cost more than
+#: CASCADE_BUDGET_MS + CASCADE_MS, on any page, at any column count.
+CASCADE_BUDGET_MS = 190
 SHIMMER_MS    = 1200   # one full progress sweep (indeterminate loop, not a
                        # transition — left at its original pace on purpose)
 
@@ -582,13 +604,40 @@ class CascadeAnimator(QObject):
         self._staged: list[tuple[QWidget, QGraphicsOpacityEffect, QPoint]] = []
         self._host: QWidget | None = None
 
+    @staticmethod
+    def wave_stagger(waves: list[int], stagger_ms: int = CASCADE_GAP,
+                     budget_ms: int = CASCADE_BUDGET_MS) -> float:
+        """The per-wave delay that fits `waves` inside the stagger budget.
+
+        Returns `stagger_ms` outright while the entrance already fits, so a
+        short page keeps the hand-tuned rhythm exactly; a page with more
+        waves than the budget allows gets them proportionally tightened
+        rather than serialised. See CASCADE_BUDGET_MS.
+        """
+        span = max(waves) if waves else 0
+        if span <= 0:
+            return float(stagger_ms)
+        return min(float(stagger_ms), budget_ms / float(span))
+
     def play(self, widgets: list[QWidget],
+             waves: list[int] | None = None,
              stagger_ms: int = CASCADE_GAP,
              duration_ms: int = CASCADE_MS,
-             rise_px: int = CASCADE_RISE):
+             rise_px: int = CASCADE_RISE,
+             budget_ms: int = CASCADE_BUDGET_MS):
+        """Run the entrance over `widgets`.
+
+        `waves` assigns each widget to a stagger group — pass the widget's
+        GRID ROW and a row lights as one, which both reads better than a
+        left-to-right trickle and shortens the entrance by the column
+        count. Defaults to one wave per widget (the pre-v1.1 behaviour).
+        """
         self.stop()  # settle any previous run instantly
         if not widgets:
             return
+        if waves is None or len(waves) != len(widgets):
+            waves = list(range(len(widgets)))
+        gap = self.wave_stagger(waves, stagger_ms, budget_ms)
 
         # This animation drives each card's `pos` DIRECTLY, which means it
         # is briefly fighting the layout that owns those positions. If the
@@ -627,7 +676,7 @@ class CascadeAnimator(QObject):
             both.addAnimation(rise)
 
             seq = QSequentialAnimationGroup()
-            seq.addPause(i * stagger_ms)
+            seq.addPause(int(waves[i] * gap))
             seq.addAnimation(both)
             group.addAnimation(seq)
 

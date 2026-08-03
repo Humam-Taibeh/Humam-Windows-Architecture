@@ -1712,14 +1712,71 @@ class AmbientGlow(QWidget):
        uniform noise. Each star is a cached soft-glow texture blitted at
        its own scale, not a hard-edged ellipse.
 
-    Driven by one QTimer at ~28 fps (slow drift stays perfectly smooth at
-    that rate) that suspends whenever the widget is hidden, so a minimized
-    or backgrounded window pays nothing. DENSITY IS NOT INTENSITY: the
-    count went up 3x, the per-star peak alpha did not (theme.py documents
-    why the brand pair reads neon past ~0.16) — this is ambient
-    luminescence, never a light show."""
+    Driven by ONE self-rescheduling timer (see _INTERVAL_MS and _arm) that
+    suspends whenever the widget is hidden, so a minimized or backgrounded
+    window pays nothing. DENSITY IS NOT INTENSITY: the count went up 3x,
+    the per-star peak alpha did not (theme.py documents why the brand pair
+    reads neon past ~0.16) — this is ambient luminescence, never a light
+    show."""
 
-    _INTERVAL_MS = 36          # ~28 fps — slow motion reads smooth, CPU low
+    # ================================================================
+    #  FRAME RATE — matched to the signal, and governed under load
+    # ================================================================
+    # This widget is the BOTTOM of the shell's z-order and every surface
+    # above it is translucent by design (the content frame is
+    # rgba(5, 6, 10, 0.45); the cards are glass). So a Qt update() here is
+    # never "repaint the wash": it dirties the full window, and Qt must
+    # then repaint every non-opaque widget intersecting it, bottom-up.
+    #
+    # Measured on the reference machine at 1300x860, one ambient frame:
+    #
+    #     the glow's own paint ..............  2.7 ms
+    #     every widget above it ............. 15.7 ms   <- 85% of the frame
+    #     ---------------------------------------------
+    #     tick -> window settled ............ 18.5 ms
+    #
+    # of which the 14-card grid alone is 10.9 ms. At the old 36 ms interval
+    # that saturated the GUI thread: sampled over 3.0 s of idle, the app
+    # blocked itself for 1385 ms — 46.2% of wall time — in blocks of up to
+    # 31 ms, and the timer could only actually deliver 21 of the 28 frames
+    # it asked for. Every click, hover and page switch queued behind that,
+    # which is what "the app feels like it's freezing" was.
+    #
+    # The rate is now derived instead of chosen, and the derivation is the
+    # whole argument for it being free: _LAYER_MS already rebuilds the orb
+    # composite only 10x a second, so at 36 ms THE ORBS WERE IDENTICAL ON
+    # THREE CONSECUTIVE FRAMES — two of every three full-window repaints
+    # painted the same aurora. Sampling the wash at the cadence it actually
+    # changes at is not a quality cut; it is deleting duplicate frames.
+    #
+    # The only thing that moved faster was the star field, and barely: the
+    # quickest tier drifts 0.044 of the widget height per second, so 38 px/s
+    # — 3.8 px per frame at this interval, on a sprite whose soft glow tail
+    # is ~16 px wide. Twinkle tops out at 1.4 Hz and is still sampled seven
+    # times a cycle.
+    _INTERVAL_MS = 100         # base cadence, locked to _LAYER_MS
+
+    #: Ceiling the governor may back off to when the GUI thread is busy
+    #: (~4.5 fps). Past this the orb drift starts to visibly step.
+    _MAX_INTERVAL_MS = 220
+
+    #: Timer lateness, in ms, treated as "the main thread is contended".
+    #: A tick that fires this far past its due time means real work was
+    #: queued ahead of it, so the ambient yields ground instead of piling
+    #: another full-window repaint onto the backlog. Below it, the interval
+    #: eases back toward _INTERVAL_MS.
+    #:
+    #: MEASURED, not guessed, and the measurement is the whole point: a
+    #: threshold under the noise floor makes the governor ratchet itself to
+    #: the ceiling and stay there. Sampling a pinned 100 ms cadence over 8 s
+    #: of a genuinely idle app (blocking event loop, not a poll loop) gives
+    #: a lateness of median 9.9 ms, p99 17.8, max 17.8 — Windows' ~15.6 ms
+    #: timer granularity plus the odds of the tick's own repaint straddling
+    #: the next expiry. None of that is contention. At 6.0 it fired on 77%
+    #: of idle frames and pinned the field at 4.4 fps; at 30 it fires on
+    #: 0.0% of them, while the stalls worth reacting to (a resize drag, a
+    #: task streaming console output) sit far above it.
+    _LATE_MS = 30.0
 
     #: Depth tiers, far to near: (share of the field, radius range in px,
     #: upward speed range in fractions of height/sec, alpha scale). The
@@ -1786,9 +1843,21 @@ class AmbientGlow(QWidget):
         self._bias_x = 0.0
         self._bias_y = 0.0
 
+        # SINGLE-SHOT, re-armed at the end of every tick. A repeating timer
+        # queues its next timeout while the previous frame is still being
+        # painted, so under load the ambient stacks up behind itself; a
+        # chained single-shot cannot, and it is what lets the interval be
+        # re-derived per frame (see _arm / _governed_interval).
         self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
         self._timer.setInterval(self._INTERVAL_MS)
         self._timer.timeout.connect(self._tick)
+        self._interval = float(self._INTERVAL_MS)
+        self._armed_at = 0.0
+        #: perf_counter deadline before which ambient frames are skipped —
+        #: see defer(). Not a suspend: the timer keeps ticking so the field
+        #: resumes on its own with no bookkeeping at the call site.
+        self._defer_until = 0.0
 
     # -- particle field ---------------------------------------
     def _build_particles(self):
@@ -1842,11 +1911,64 @@ class AmbientGlow(QWidget):
     def showEvent(self, e):
         super().showEvent(e)
         if not self._suspended:
-            self._timer.start()
+            self._arm()
 
     def hideEvent(self, e):
         super().hideEvent(e)
         self._timer.stop()
+
+    # -- frame governor ---------------------------------------
+    def _arm(self, delay_ms: float | None = None):
+        """Schedule the next ambient frame. `_armed_at` is what the next
+        tick measures its own lateness against."""
+        delay = self._interval if delay_ms is None else delay_ms
+        self._armed_at = time.perf_counter()
+        self._timer.start(int(max(1.0, delay)))
+
+    def _govern(self, late_ms: float):
+        """Re-derive the interval from how contended the GUI thread is.
+
+        Lateness is used rather than the frame's own paint cost because it
+        is the honest signal: a tick that fires on time proves the thread
+        had room for it, and one that fires late proves something more
+        important was queued ahead — a click, a relayout, a resize step,
+        a task's console output. Backing off then is what keeps the wash
+        from competing with the work the user is actually waiting on, and
+        it needs no knowledge of what that work was.
+
+        Both directions are deliberately partial. Backing off by HALF the
+        overshoot keeps one hiccup — a dialog opening, a single slow
+        repaint — from slamming the field to the ceiling it then has to
+        crawl back from; sustained contention still reaches it within a few
+        frames. Recovering 10% a frame eases back in over ~1 s, where
+        snapping straight to the base rate after one quiet frame would
+        oscillate against the very load it just yielded to.
+        """
+        if late_ms > self._LATE_MS:
+            self._interval = min(float(self._MAX_INTERVAL_MS),
+                                 self._interval + late_ms * 0.5)
+        else:
+            self._interval = max(float(self._INTERVAL_MS),
+                                 self._interval * 0.90)
+
+    def defer(self, ms: float):
+        """Skip ambient frames for `ms` — the GUI thread is about to do
+        something the user is watching.
+
+        This is NOT suspend(): the timer keeps running and the field picks
+        itself back up unaided, so a caller can fire and forget. It exists
+        because the ambient field's cost is not its own paint (2.7 ms) but
+        the full-window repaint it forces through every translucent surface
+        above it (18.5 ms all told, 10.9 of that the card grid) — landing
+        one of those in the middle of a page transition is what put a
+        visible hitch in navigation. Deferring is free: the wash is
+        ambient, and nobody has ever looked at it during a click.
+
+        Extends an existing deferral rather than shortening it, so
+        overlapping callers cannot cut each other short.
+        """
+        self._defer_until = max(self._defer_until,
+                                time.perf_counter() + max(0.0, ms) / 1000.0)
 
     def suspend(self):
         """Pause the animation while the window is minimized, or for the
@@ -1873,18 +1995,45 @@ class AmbientGlow(QWidget):
             self._layer = None      # rebuild once, at the final size
             self.update()
         if self.isVisible() and not self._timer.isActive():
-            self._timer.start()
+            self._interval = float(self._INTERVAL_MS)
+            self._arm()
 
     def _tick(self):
-        dt = self._INTERVAL_MS / 1000.0
+        now = time.perf_counter()
+        # Elapsed is MEASURED, never assumed. The interval is no longer a
+        # constant (see _govern), and the drift/twinkle/wrap maths below all
+        # integrate against it — reading it off the nominal interval would
+        # make the field speed up and slow down with the frame rate, which
+        # is the one artefact a variable rate could actually introduce.
+        # Clamped so a stalled frame (a modal, a resize drag) resumes rather
+        # than teleporting the whole field.
+        elapsed = (now - self._armed_at) if self._armed_at else self._interval / 1000.0
+        late = max(0.0, elapsed * 1000.0 - self._interval)
+        self._govern(late)
+
+        if now < self._defer_until:
+            # An interaction owns the GUI thread — re-arm for whatever is
+            # left of the deferral and paint nothing.
+            self._arm((self._defer_until - now) * 1000.0)
+            return
+
+        dt = min(max(elapsed, 0.001), self._MAX_INTERVAL_MS / 1000.0)
         self._t += dt
         # Pointer bias: one QCursor.pos() read per tick (microseconds), no
         # event filters — the glow is mouse-transparent, so polling here is
         # the only way to see the cursor at all. The target eases via an
-        # exponential lerp (~0.6 s time constant at 28 fps): the field
-        # drifts after the cursor, never chases it. Outside the window the
-        # target is neutral, so the lean releases just as gently. The bias
-        # is consumed by _build_layer at its own 100 ms cadence.
+        # exponential lerp with a ~0.6 s time constant: the field drifts
+        # after the cursor, never chases it. Outside the window the target
+        # is neutral, so the lean releases just as gently. The bias is
+        # consumed by _build_layer at its own 100 ms cadence.
+        #
+        # The smoothing factor is SOLVED from dt rather than hard-coded, so
+        # the lean takes 0.6 s of wall time at any frame rate. It used to be
+        # a flat 0.055 per frame, which silently meant "0.6 s, but only at
+        # 36 ms frames" — under the governor that would have stretched the
+        # same lean to seconds on exactly the busy machines where a slow
+        # parallax reads as the app lagging behind the mouse.
+        ease = 1.0 - math.exp(-dt / 0.6)
         tx = ty = 0.0
         w, h = self.width(), self.height()
         if w > 0 and h > 0:
@@ -1894,8 +2043,8 @@ class AmbientGlow(QWidget):
             if -0.55 <= fx <= 0.55 and -0.55 <= fy <= 0.55:
                 tx = max(-0.5, min(0.5, fx))
                 ty = max(-0.5, min(0.5, fy))
-        self._bias_x += (tx - self._bias_x) * 0.055
-        self._bias_y += (ty - self._bias_y) * 0.055
+        self._bias_x += (tx - self._bias_x) * ease
+        self._bias_y += (ty - self._bias_y) * ease
         for pt in self._particles:
             pt["y"] -= pt["spd"] * dt
             if pt["y"] < -0.03:
@@ -1909,6 +2058,7 @@ class AmbientGlow(QWidget):
             elif pt["x"] > 1.03:
                 pt["x"] -= 1.06
         self.update()
+        self._arm()
 
     # -- orb pixmap cache -------------------------------------
     # v10: orbs are rendered ONCE at a fixed texture size and SCALED on
