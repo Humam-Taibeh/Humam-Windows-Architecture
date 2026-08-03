@@ -227,7 +227,7 @@ function Invoke-GuiTask {
             #  those arrays remain live.)
             # (InstallOfficeApps retired: Microsoft Teams was dropped and
             #  OneDrive's GUI install/restore now runs through RestoreOneDrive
-            #  under System Tools & Utilities. $Apps_OfficeCompanions survives
+            #  under the Microsoft OneDrive card. $Apps_OfficeCompanions survives
             #  only as the console App Deployment Hub's OneDrive category.)
             "InstallOfficeODT" {
                 if ([string]::IsNullOrWhiteSpace($OfficeSetupPath) -or [string]::IsNullOrWhiteSpace($OfficeConfigPath)) {

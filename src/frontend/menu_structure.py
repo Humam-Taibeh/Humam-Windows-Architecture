@@ -95,17 +95,21 @@ Item schema:
              one runs it through request_task() exactly as if it had lived
              on the page directly. This is what lets a category collapse
              to a handful of primary cards without deleting any actions —
-             see the System Tools & Utilities hub in CATEGORIES["software"].
+             see Microsoft Edge / Microsoft OneDrive / System Tools &
+             Utilities in CATEGORIES["software"].
              iter_leaf_items() below expands every hub so leaf
              actions stay reachable from the Ctrl+K command palette.
              A hub may instead supply `groups` (list of
              {"title": str, "items": list[dict]}) in place of a flat
              `items` list: the HubDialog then renders each group's title as
              a small "section" header above its cards, so a hub with many
-             sub-actions stays tidy and scannable (System Tools &
-             Utilities uses this). hub_items() flattens either shape, so
-             counters, the command palette and hub navigation treat grouped
-             and flat hubs identically.
+             sub-actions stays tidy and scannable. NO hub uses `groups`
+             today — the System Tools hub did until the v1.0 RC lifted Edge
+             and OneDrive out of it onto the page, leaving too few
+             sub-actions to need headers — but both shapes stay supported,
+             and hub_items() flattens either, so counters, the command
+             palette and hub navigation treat grouped and flat hubs
+             identically.
 """
 
 # ============================================================
@@ -390,19 +394,65 @@ CATEGORIES = [
             # id. It gets the ODT wizard instead (see the 01-Catalogs.ps1
             # note), and a catalog row that silently behaved completely
             # differently from its neighbours would be the worse lie.
-            # -- HUB: environment repair, audits, remove/restore pairs ----
+            # -- THE BUNDLED MICROSOFT APPS: one card per PRODUCT ---------
             #
-            # Grouped, not flat: the sub-actions read as clutter in one
-            # undifferentiated list, so they're split into three scannable
-            # sub-groups the HubDialog renders under small "section" headers
-            # — Maintenance & Audits (the always-useful utilities), then the
-            # Edge and OneDrive remove/restore pairs kept together so each
-            # app's teardown and its counterpart restore sit side by side.
-            # `groups` is the grouped analogue of a hub's flat `items`;
-            # menu_structure's hub_items() flattens it for the command
-            # palette / counters and main.py's hub navigation.
+            # v1.0 RC: Edge and OneDrive were two titled groups buried
+            # inside the System Tools hub, which put them two clicks deep
+            # and filed the two apps most people actually want to remove
+            # under "utilities". They are products, not utilities — the
+            # same kind of thing as the Catalog and Office — so they are
+            # peers of those cards now, one card each.
             #
-            # Hardware Diagnostics is NO LONGER here: CPU-Z, GPU-Z,
+            # Each stays a HUB rather than becoming two flat cards, because
+            # the remove/restore pair is the whole point: the teardown is
+            # only safe to offer BESIDE its counterpart restore, and a
+            # top-level page carrying a lone red "Purge OneDrive" would be
+            # advertising the destructive half. The hub keeps the pair
+            # together and keeps the danger one click in, while the card
+            # itself reads as calm and product-shaped on the page.
+            #
+            # A flat `items` list, not `groups`: two sub-actions need no
+            # section headers, and HubDialog's flat branch gives 2-4 cards
+            # the equal-stretch treatment that fills the panel properly.
+            {"icon": "🌐", "glyph": "globe", "title": "Microsoft Edge",
+             "desc": "Purge Chromium Edge from Windows — or put it back. "
+                     "A backup is kept either way, so the removal is reversible.",
+             "hub": True,
+             "items": [
+                 {"icon": "🌐", "title": "Remove Microsoft Edge",
+                  "desc": "Force-purge Chromium Edge, with a backup kept.",
+                  "glyph": "delete", "task": "RemoveEdge", "timeout": 900, "confirm": True, "danger": True},
+                 {"icon": "🔁", "title": "Reinstall Microsoft Edge",
+                  "desc": "Reinstall Edge and restore your backed-up settings.",
+                  "glyph": "sync", "task": "RestoreEdge", "timeout": 1800},
+             ]},
+            {"icon": "☁️", "glyph": "cloud", "title": "Microsoft OneDrive",
+             "desc": "Uninstall OneDrive with your local files rescued first — "
+                     "or reinstall it and pick syncing back up.",
+             "hub": True,
+             "items": [
+                 # glyph `delete`, not `cloud`: this is the destructive half
+                 # of a pair, and it should carry the same glyph as its Edge
+                 # counterpart above rather than repeating the product glyph
+                 # its own hub card now owns.
+                 {"icon": "☁️", "title": "Purge OneDrive",
+                  "desc": "Back up local files, then uninstall OneDrive.",
+                  "glyph": "delete", "task": "RemoveOneDrive", "timeout": 900, "confirm": True, "danger": True},
+                 {"icon": "🔁", "title": "Install / Restore OneDrive",
+                  "desc": "Reinstall OneDrive so it's back and syncing.",
+                  "glyph": "sync", "task": "RestoreOneDrive", "timeout": 1800},
+             ]},
+            # -- HUB: environment repair and audits -----------------------
+            #
+            # Flat `items` since the v1.0 RC extraction. This hub used to
+            # carry three titled `groups` — MAINTENANCE & AUDITS plus the
+            # Edge and OneDrive pairs — and the grouping existed only
+            # because those pairs made the list long enough to need it.
+            # With the two products lifted out to their own cards above,
+            # what remains is one coherent set of three tools, and a lone
+            # section header over a hub's entire contents labels nothing.
+            #
+            # Hardware Diagnostics is NO LONGER here either: CPU-Z, GPU-Z,
             # HWMonitor, CrystalDiskInfo and Afterburner are installable
             # apps, so they belong in the catalog (System Runtimes &
             # Utilities tab) with every other installable app. What stays
@@ -411,34 +461,16 @@ CATEGORIES = [
             {"icon": "🛠️", "glyph": "tools", "title": "System Tools & Utilities",
              "desc": "Environment repair, startup audits and update scans.",
              "hub": True,
-             "groups": [
-                 {"title": "MAINTENANCE & AUDITS", "items": [
-                     {"icon": "🧭", "title": "PATH Doctor",
-                      "desc": "Makes Windows find your dev tools by name in any terminal.",
-                      "glyph": "terminal", "task": "VerifyEnvironment", "timeout": 300},
-                     {"icon": "🚀", "title": "Startup Manager",
-                      "desc": "Boot-impact audit with instant enable/disable toggles.",
-                      "glyph": "boot", "task": "StartupReport", "timeout": 300, "startup_manager": True},
-                     {"icon": "🔄", "title": "Check for Updates",
-                      "desc": "Live scan of installed apps — update exactly what you pick.",
-                      "glyph": "refresh", "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
-                 ]},
-                 {"title": "MICROSOFT EDGE", "items": [
-                     {"icon": "🌐", "title": "Remove Microsoft Edge",
-                      "desc": "Force-purge Chromium Edge, with a backup kept.",
-                      "glyph": "delete", "task": "RemoveEdge", "timeout": 900, "confirm": True, "danger": True},
-                     {"icon": "🔁", "title": "Reinstall Microsoft Edge",
-                      "desc": "Reinstall Edge and restore your backed-up settings.",
-                      "glyph": "sync", "task": "RestoreEdge", "timeout": 1800},
-                 ]},
-                 {"title": "MICROSOFT ONEDRIVE", "items": [
-                     {"icon": "☁️", "title": "Purge OneDrive",
-                      "desc": "Back up local files, then uninstall OneDrive.",
-                      "glyph": "cloud", "task": "RemoveOneDrive", "timeout": 900, "confirm": True, "danger": True},
-                     {"icon": "🔁", "title": "Install / Restore OneDrive",
-                      "desc": "Reinstall OneDrive so it's back and syncing.",
-                      "glyph": "sync", "task": "RestoreOneDrive", "timeout": 1800},
-                 ]},
+             "items": [
+                 {"icon": "🧭", "title": "PATH Doctor",
+                  "desc": "Makes Windows find your dev tools by name in any terminal.",
+                  "glyph": "terminal", "task": "VerifyEnvironment", "timeout": 300},
+                 {"icon": "🚀", "title": "Startup Manager",
+                  "desc": "Boot-impact audit with instant enable/disable toggles.",
+                  "glyph": "boot", "task": "StartupReport", "timeout": 300, "startup_manager": True},
+                 {"icon": "🔄", "title": "Check for Updates",
+                  "desc": "Live scan of installed apps — update exactly what you pick.",
+                  "glyph": "refresh", "task": "UpdateSelectedApps", "timeout": 3600, "update_center": True},
              ]},
         ],
     },
@@ -718,10 +750,12 @@ def category_bands(category: dict) -> list[tuple[str, list[dict]]]:
 def hub_items(hub: dict) -> list[dict]:
     """Flat list of a hub's runnable sub-actions, regardless of whether the
     hub stores them directly under `items` or split across titled `groups`
-    (the System Tools & Utilities hub uses `groups` so the HubDialog can
-    render them under section headers). Every consumer that needs the leaf
-    actions — the command palette, the operation counter, hub navigation —
-    goes through here so grouped and flat hubs behave identically."""
+    (which the HubDialog renders under section headers — no hub declares
+    `groups` today, see the module docstring). Every consumer that needs
+    the leaf actions — the command palette, the operation counter, hub
+    navigation — goes through here so grouped and flat hubs behave
+    identically, which is what let the System Tools hub drop from `groups`
+    to `items` without a single caller changing."""
     if hub.get("groups"):
         return [sub for group in hub["groups"] for sub in group["items"]]
     return hub.get("items", [])

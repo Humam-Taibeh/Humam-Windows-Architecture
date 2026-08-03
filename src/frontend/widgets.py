@@ -4459,10 +4459,12 @@ class HubDialog(PulseDialog):
     """A primary hub card's landing screen: its sub-actions rendered as
     the exact same GlassCard a category page uses — zero new card design,
     100% visual parity with the page this modal is standing in for. This
-    is what lets Software Management collapse to four spacious primary
-    cards (Browsers & Daily Apps / Developer & University Hub / Gaming &
-    Launchers / System Tools & Utilities) without deleting a single
-    existing action: each hub is just a focused, one-level-deeper page.
+    is what lets Software Management stay five spacious primary cards
+    (Software Catalog / Office / Microsoft Edge / Microsoft OneDrive /
+    System Tools & Utilities) while holding nine operations: each hub is
+    just a focused, one-level-deeper page. The Edge and OneDrive hubs
+    carry two sub-actions each — a removal and its counterpart restore —
+    which is the shape the flat branch below is tuned for.
 
     Picking a sub-card closes this dialog and hands it back via
     `chosen_item`; the caller runs it through the normal request_task()
@@ -4494,18 +4496,22 @@ class HubDialog(PulseDialog):
         host_lay = scroll_host_layout(host, "md")
         groups = hub.get("groups")
         if groups:
-            # Grouped hub (System Tools & Utilities): each group opens with
-            # a header ROW — an accent-tinted section title plus a 1px rule
-            # fading out to the right (hub_group_header_qss /
-            # hub_group_rule_qss) — then its cards at natural height, the
-            # whole list top-anchored with a trailing stretch. Rhythm is
-            # proximity-correct: a header sits tight over its own cards and
-            # a full extra step away from the previous group's last card,
-            # so the three clusters read at a glance. With this many
-            # sub-actions the point is a tidy, scannable list that scrolls
-            # - NOT the equal-stretch "fill the screen" treatment used for
-            # the sparse flat hubs below, which would balloon each card and
-            # swallow the headers.
+            # Grouped hub: each group opens with a header ROW — an
+            # accent-tinted section title plus a 1px rule fading out to the
+            # right (hub_group_header_qss / hub_group_rule_qss) — then its
+            # cards at natural height, the whole list top-anchored with a
+            # trailing stretch. Rhythm is proximity-correct: a header sits
+            # tight over its own cards and a full extra step away from the
+            # previous group's last card, so the clusters read at a glance.
+            # For a hub long enough to need headers the point is a tidy,
+            # scannable list that scrolls - NOT the equal-stretch "fill the
+            # screen" treatment used for the sparse flat hubs below, which
+            # would balloon each card and swallow the headers.
+            #
+            # No hub declares `groups` as of the v1.0 RC (System Tools was
+            # the last, and lost its headers when Edge and OneDrive moved
+            # out to their own cards). The branch stays because the shape
+            # is still supported and a hub can grow back into it.
             for gi, group in enumerate(groups):
                 if gi > 0:
                     host_lay.addSpacing(TH.SPACE["md"])
@@ -4526,20 +4532,31 @@ class HubDialog(PulseDialog):
                     host_lay.addWidget(card)
             host_lay.addStretch(1)
         else:
-            # Every card gets an EQUAL stretch factor and no trailing spacer -
-            # with only a handful of sub-actions per hub, top-anchoring them
-            # with dead space below (the old behavior) read as an empty,
-            # unfinished sub-menu on the new, much taller responsive panel.
-            # Stretching each card to share the leftover height instead makes
-            # 2-4 sub-actions fill the screen generously, exactly like the
-            # premium, fully-populated feel of a normal category page; once
-            # there are enough items to exceed the natural minimum heights,
-            # the scroll area takes over automatically.
+            # Cards at NATURAL height, the whole list centred between two
+            # stretches. Top-anchoring them with dead space below (the
+            # original behaviour) read as an empty, unfinished sub-menu on
+            # the tall responsive panel — but the fix for that, an equal
+            # stretch factor on every card and no spacer, only worked while
+            # a hub had 3+ sub-actions to absorb the surplus.
+            #
+            # v1.0 RC put that to the test: extracting Edge and OneDrive
+            # onto the Software Management page gave the app its first
+            # TWO-item hubs, and two cards cannot absorb a panel's worth of
+            # slack. GlassCard caps at CARD_MAX_H, so the stretch could not
+            # grow them past 156 and the leftover fell into the gaps
+            # instead — two normal cards adrift in ~90px of nothing, the
+            # exact "unfinished sub-menu" look the stretch was meant to
+            # cure. Centring moves the surplus OUTSIDE the list, where it
+            # reads as margin, and it degrades correctly: at 3-4 items the
+            # cards already fill the panel and the stretches collapse to
+            # nothing, leaving that case rendering exactly as before.
+            host_lay.addStretch(1)
             for item in hub.get("items", []):
                 card = GlassCard(item, accent, t)
                 card.setMinimumHeight(110)
                 card.clicked.connect(lambda it=item: self._choose(it))
-                host_lay.addWidget(card, 1)
+                host_lay.addWidget(card)
+            host_lay.addStretch(1)
         scroll.setWidget(host)
         # Stretch factor, not a maximumHeight cap: the panel itself is now
         # a fixed size derived from the host window (see _dialog_chrome's

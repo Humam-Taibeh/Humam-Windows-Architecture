@@ -82,7 +82,7 @@ $Apps_Tools = @(
 # itself is NOT in this catalog. Microsoft Teams was dropped from the
 # catalog entirely. OneDrive DOES ship as a real standalone winget
 # package; in the GUI its install/restore lives beside Purge OneDrive
-# under System Tools & Utilities (RestoreOneDrive task), and the console
+# under the Microsoft OneDrive card (RestoreOneDrive task), and the console
 # App Deployment Hub still exposes it here as a Smart-Deploy category.
 # Leading comma forces the single-element array to stay nested (same
 # PowerShell flattening pitfall documented for $Apps_DevContainers).
