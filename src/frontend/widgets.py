@@ -5196,7 +5196,16 @@ class LiveConsole(QPlainTextEdit):
 
     def paintEvent(self, e):
         super().paintEvent(e)
-        if self.toPlainText():
+        # document().isEmpty(), NOT toPlainText(). The old test materialised
+        # the ENTIRE buffer into a Python str on every repaint just to ask
+        # whether it had any text — 216 KB and 236.6 us at the 2000-line
+        # ceiling, against 2.6 us for the O(1) question (91x). That cost sat
+        # directly in the streaming hot path: the console repaints on every
+        # output line, so the most expensive paint was the one during the
+        # busiest task. The two agree on every state this branch can see —
+        # fresh, filled, and cleared (QTextDocument is "empty" exactly when
+        # it holds one empty block, which is what toPlainText() renders "").
+        if not self.document().isEmpty():
             return
         # Custom empty state — a small on-brand "pulse" waveform motif in
         # place of the generic gray placeholder text QPlainTextEdit would
@@ -5724,7 +5733,7 @@ class ToggleSwitch(QWidget):
         self._busy = False
         self._pos = 1.0 if checked else 0.0
         self._on_color = QColor(t["ok"])
-        self._off_color = QColor(t["panel_line"])
+        self._off_color = self._track_off(t)
         self._thumb_color = QColor("#ffffff")
 
         self._anim = QVariantAnimation(self)
@@ -5742,9 +5751,35 @@ class ToggleSwitch(QWidget):
         self._busy_anim.valueChanged.connect(lambda _v: self.update())
 
     # -- theming ------------------------------------------------
+    @staticmethod
+    def _track_off(t: dict) -> QColor:
+        """The OFF track, composited to an OPAQUE colour.
+
+        TWO bugs lived in the one line this replaces, `QColor(t["panel_line"])`:
+
+        1. QColor CANNOT PARSE rgba(). panel_line is 'rgba(255, 255, 255,
+           0.075)' — QSS notation, which QColor rejects, yielding an INVALID
+           QColor that Qt paints as opaque BLACK. Every switch in the Startup
+           Manager drew a hard black pill in its off state, in both themes;
+           on the light card (#ffffff) that was the most conspicuous surface
+           in the app. TH.to_qcolor exists precisely to parse these.
+        2. Alpha would have been dropped anyway. paintEvent rebuilds the
+           track from .red()/.green()/.blue() to cross-fade toward `ok`, so a
+           translucent QColor loses its alpha there and paints at full
+           strength — pure white in dark mode.
+
+        So the tint is flattened HERE, against the opaque row surface
+        (bg_solid + card), exactly the way TH.blend() and the contrast tests
+        composite every other translucent token. Result: #27292e on the dark
+        row, #e6e6e7 on the light one — the subtle recessed well the token
+        was always naming.
+        """
+        return TH.to_qcolor(
+            TH.blend(TH.blend(t["bg_solid"], t["card"]), t["panel_line"]))
+
     def apply_theme(self, t: dict):
         self._on_color = QColor(t["ok"])
-        self._off_color = QColor(t["panel_line"])
+        self._off_color = self._track_off(t)
         self.update()
 
     # -- state ----------------------------------------------------

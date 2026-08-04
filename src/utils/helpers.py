@@ -646,13 +646,24 @@ class PowerShellTask(QObject):
             # thing that happens to the child (see ProcessJob.assign for the
             # bounded race this leaves).
             job = ProcessJob()
+            # PUBLISHED IMMEDIATELY, before Popen — not alongside `_process`
+            # after it. The `finally` block closes whatever `self._job` holds,
+            # so a job that is still only a local when Popen raises
+            # (powershell.exe missing, policy-blocked process creation, an
+            # exhausted desktop heap) is never closed at all: measured at
+            # exactly one leaked kernel handle per failed spawn, for the life
+            # of the GUI process. Publishing here makes the handle owned from
+            # the instant it exists. cancel() tolerates the widened window —
+            # it only terminates the job, which is empty until assign(), and
+            # it skips the taskkill path entirely while `_process` is None.
+            with self._proc_lock:
+                self._job = job
 
             process = subprocess.Popen(argv, **popen_kwargs)
             job.assign(process)
 
             with self._proc_lock:
                 self._process = process
-                self._job = job
             # cancel() may have fired between Popen and the store above -
             # honor it now, or the kill would race the first pipe read.
             if self._cancel_evt.is_set():
