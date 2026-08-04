@@ -533,6 +533,32 @@ function Write-AlreadyOK { param($Text) Write-Host "   $Script:Check  $Text" -Fo
 #  line before its verdict. src/utils/helpers.py (PowerShellTask) parses it
 #  into TaskResult.data and never prints it to the live console.
 # ============================================================
+function Write-GuiLine {
+    <#
+    .SYNOPSIS
+        Writes one ##PULSE## wire-protocol line straight to stdout.
+
+    .DESCRIPTION
+        [Console]::Out, NOT Write-Output, and the difference is not stylistic.
+        Write-Output writes to the PIPELINE - so a payload emitted from inside
+        a function becomes part of that function's RETURN VALUE instead of
+        reaching the pipe. That is not hypothetical: the streamed update scan
+        calls its callbacks from inside Invoke-DeepUpdateScan, and with
+        Write-Output every STAGE and ITEM line was silently captured into the
+        scan's own result object. The frontend saw none of them, and the
+        function's return value quietly became an array of strings with the
+        real hashtable buried at the end.
+
+        Console.Out has no such coupling: it is the process's stdout, which is
+        the pipe helpers.py reads, regardless of which call frame emits it.
+        Flushed explicitly so a streamed line arrives while it is still news -
+        the whole point of the incremental channels is latency.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Line)
+    [Console]::Out.WriteLine($Line)
+    [Console]::Out.Flush()
+}
+
 function Write-GuiData {
     <# Emits $Data (any JSON-serializable object, typically an array of
        PSCustomObjects) as one ##PULSE##DATA| line. ConvertTo-Json on
@@ -544,7 +570,55 @@ function Write-GuiData {
     if ($Data -is [array] -and -not $Json.TrimStart().StartsWith('[')) {
         $Json = "[$Json]"
     }
-    Write-Output "##PULSE##DATA|$Json"
+    Write-GuiLine "##PULSE##DATA|$Json"
+}
+
+# ============================================================
+#  GUI INCREMENTAL CHANNEL (v10.3)
+#  ##PULSE##ITEM|<json>   one result, the moment it is known
+#  ##PULSE##STAGE|<text>  what the task is doing right now
+#
+#  WHY THIS EXISTS. DATA is a single line emitted when a task has finished
+#  assembling its whole payload, which is the right shape for a report and
+#  the wrong shape for a scan. The update scan spends most of its time in
+#  one long winget call, so the GUI sat on a shimmer bar for ~30 seconds
+#  with nothing to show and no way to tell a slow scan from a hung one.
+#
+#  These two channels do not replace DATA - the scan still emits its
+#  complete array at the end, so a caller that ignores streaming behaves
+#  exactly as before. They are a progressive PREVIEW of that same payload:
+#  every ITEM is an element the final DATA array will also contain, so the
+#  frontend can render rows as they arrive and then reconcile against the
+#  authoritative document without ever showing a row that later vanishes.
+#
+#  Both are payload lines: helpers.py routes them to their own signals and
+#  keeps them out of the live console, exactly like DATA and META.
+# ============================================================
+function Write-GuiItem {
+    <# Emits ONE result object as it is discovered. Never throws and never
+       aborts the scan that produced it: a streamed preview row is a
+       convenience, and losing one costs a few hundred milliseconds of
+       progressive rendering, not a result - the final Write-GuiData payload
+       still carries it. #>
+    param([Parameter(Mandatory = $true)]$Item)
+    try {
+        $Json = $Item | ConvertTo-Json -Depth 6 -Compress
+        Write-GuiLine "##PULSE##ITEM|$Json"
+    } catch {
+        Write-Log "Write-GuiItem failed (non-fatal): $($_.Exception.Message)"
+    }
+}
+
+function Write-GuiStage {
+    <# Emits the current phase of a long task as one human-readable line, for
+       the GUI to show where a spinner alone would be. Plain text, not JSON:
+       it is a sentence for a person, and giving it a schema would invite
+       callers to put structure in it that belongs in ITEM. #>
+    param([Parameter(Mandatory = $true)][string]$Text)
+    # Newlines would split into two lines and orphan the second half of the
+    # message as raw console output, so collapse any whitespace run to a space.
+    $Clean = ($Text -replace '\s+', ' ').Trim()
+    if ($Clean) { Write-GuiLine "##PULSE##STAGE|$Clean" }
 }
 
 # ============================================================
@@ -571,7 +645,7 @@ function Write-GuiMeta {
     param([Parameter(Mandatory = $true)][hashtable]$Meta)
     try {
         $Json = [PSCustomObject]$Meta | ConvertTo-Json -Depth 6 -Compress
-        Write-Output "##PULSE##META|$Json"
+        Write-GuiLine "##PULSE##META|$Json"
     } catch {
         Write-Log "Write-GuiMeta failed (non-fatal): $($_.Exception.Message)"
     }

@@ -1875,8 +1875,12 @@ class GlassCard(QFrame):
             ring = QColor(self._glow.color)
             ring.setAlphaF(0.95)
             p.setPen(QPen(ring, 2.0))
+            # radius - 1.5, matching the 1.5 inset: see the concentricity
+            # note in animations.paint_accent_hairline. At radius - 1 this
+            # ring drifted the same 0.2px at the corners and read as a
+            # double edge against the card's own border.
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5),
-                              radius - 1, radius - 1)
+                              radius - 1.5, radius - 1.5)
         p.end()
 
 
@@ -5295,6 +5299,20 @@ class StatusDot(QLabel):
     def __init__(self, glyph: str = "●", parent: QWidget | None = None):
         super().__init__(glyph, parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # THE DOT MUST DECLARE ITS OWN TRANSPARENCY. This was the one QLabel
+        # in the app that never received a stylesheet, and that was the bug
+        # behind the "box behind the green dot": an ancestor's stylesheet
+        # makes QStyleSheetStyle set WA_StyledBackground on every descendant,
+        # so Qt fills the widget rect with the palette's Window brush — the
+        # `overlay` token, rgba(5, 6, 10, 0.45) — BEFORE paintEvent runs.
+        # The label stretches to the full 44px rail height while the glyph is
+        # 12px, so that fill rendered as a hard-edged 12x42 slab standing
+        # behind the dot. Every other label in the app escapes it through
+        # label_qss's `background: transparent; border: none`, so the dot says
+        # the same thing here. Set once in __init__, not in apply_theme: the
+        # dot's colour is painted by hand in paintEvent (see set_color), so
+        # nothing about this rule varies with the theme.
+        self.setStyleSheet("background: transparent; border: none;")
         self._color = QColor("#3fb950")
         self._breath = 1.0
         self._busy = False
@@ -7244,6 +7262,10 @@ class UpdateCenterDialog(PulseDialog):
         self._rows: dict[str, UpdateRow] = {}
         self._thread: QThread | None = None
         self._worker: PowerShellTask | None = None
+        # True once a streamed result has flipped the dialog onto the results
+        # page — decides whether a phase line belongs on the loading page or
+        # in the subtitle (see _on_stage).
+        self._streaming = False
         accent = t["accent"]
 
         panel = _dialog_chrome(self, t, accent, responsive=True)
@@ -7284,10 +7306,15 @@ class UpdateCenterDialog(PulseDialog):
         self._shimmer = ShimmerBar(height=6)
         self._shimmer.set_theme(t)
         lay.addWidget(self._shimmer)
-        label = QLabel("Checking every installed app against winget's catalog…")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet(TH.label_qss(t, "body"))
-        lay.addWidget(label)
+        # Kept as an attribute so the backend's live ##PULSE##STAGE| lines can
+        # replace it. A shimmer bar over a fixed sentence cannot distinguish a
+        # scan that is working from one that has hung, which is exactly what
+        # made a 30s scan feel broken; naming the current phase can.
+        self._loading_label = QLabel("Reading your installed programs…")
+        self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_label.setWordWrap(True)
+        self._loading_label.setStyleSheet(TH.label_qss(t, "body"))
+        lay.addWidget(self._loading_label)
         lay.addStretch()
         row = QHBoxLayout()
         row.addStretch()
@@ -7442,13 +7469,27 @@ class UpdateCenterDialog(PulseDialog):
             return  # a scan is already in flight
         self._subtitle.setText("Scanning installed apps against winget…")
         self._clear_rows()
+        self._streaming = False
+        self._loading_label.setText("Reading your installed programs…")
         self._stack.setCurrentWidget(self._loading_page)
         self._shimmer.start()
 
         thread = QThread(self)
-        worker = PowerShellTask(self._ps1_path, "ScanForUpdates", timeout=90)
+        # 240s, not 90s. The deep scan reads both registry architectures, both
+        # hives and the Appx catalogue before winget's network pass even
+        # starts, and the old 90s ceiling was already close on a machine with
+        # a few hundred installed programs and a cold winget source cache.
+        # Killing a scan that is visibly streaming results would be the worst
+        # possible outcome of a change made to stop it looking hung.
+        worker = PowerShellTask(self._ps1_path, "ScanForUpdates", timeout=240)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        # Streamed preview (v10.3): rows land as the backend finds them, so
+        # the first real results are on screen about a second in instead of
+        # after the whole scan. `finished` still reconciles against the
+        # authoritative payload — see _on_scan_finished.
+        worker.item.connect(self._on_item_streamed)
+        worker.stage.connect(self._on_stage)
         worker.finished.connect(self._on_scan_finished)
         worker.failed.connect(self._on_scan_failed)
         worker.finished.connect(thread.quit)
@@ -7457,6 +7498,35 @@ class UpdateCenterDialog(PulseDialog):
         self._thread = thread
         self._worker = worker
         thread.start()
+
+    # -- streaming ----------------------------------------------------
+    def _on_stage(self, text: str):
+        """One backend phase line. Shown wherever the user is currently
+        looking: the loading page while it is still empty, the subtitle once
+        results have started arriving."""
+        if not text:
+            return
+        if self._streaming:
+            self._subtitle.setText(text)
+        else:
+            self._loading_label.setText(text)
+
+    def _on_item_streamed(self, entry: object):
+        """One update, the moment the backend found it.
+
+        The FIRST item is what flips the dialog off the loading page — not a
+        timer and not the scan finishing — so the list starts filling at the
+        earliest moment there is anything true to show. Duplicate ids are
+        ignored: the backend already de-duplicates across its scan phases,
+        and this is the second line of defence that keeps a streamed row from
+        ever appearing twice."""
+        row = self._make_row(entry)
+        if row is None:
+            return
+        if not self._streaming:
+            self._streaming = True
+            self._stack.setCurrentWidget(self._results_page)
+        self._update_count()
 
     def _on_thread_finished(self):
         if self._worker is not None:
@@ -7476,10 +7546,14 @@ class UpdateCenterDialog(PulseDialog):
             return
         updates = result.data if isinstance(result.data, list) else []
         if not updates:
+            # No authoritative results. Any rows streamed in must go: a
+            # preview that the final document does not confirm was wrong, and
+            # leaving it on screen would offer an update that isn't there.
+            self._clear_rows()
             self._subtitle.setText("Every installed app is up to date.")
             self._stack.setCurrentWidget(self._empty_page)
             return
-        self._populate_rows(updates)
+        self._reconcile_rows(updates)
         self._stack.setCurrentWidget(self._results_page)
 
     def _show_error(self, message: str):
@@ -7490,29 +7564,63 @@ class UpdateCenterDialog(PulseDialog):
 
     # -- row management -------------------------------------------------
     def _clear_rows(self):
+        # setParent(None) before deleteLater for the reason spelled out on
+        # StartupManagerDialog._clear_rows: a deferred delete leaves the row
+        # in the widget tree, and a rescan that streams new rows in
+        # immediately would stack them on top of the outgoing ones.
         self._rows.clear()
         while self._host_lay.count() > 1:   # keep the trailing stretch
             item = self._host_lay.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
 
-    def _populate_rows(self, updates: list):
-        self._clear_rows()
+    def _make_row(self, entry: object) -> UpdateRow | None:
+        """Build and append one UpdateRow, or None if `entry` is unusable or
+        already on screen. The single place a row is created, shared by the
+        streamed path and the final reconciliation, so a row can never differ
+        depending on which one produced it."""
+        if not isinstance(entry, dict):
+            return None
+        app_id = str(entry.get("Id", "")).strip()
+        if not app_id or app_id in self._rows:
+            return None
+        name = str(entry.get("Name") or app_id)
+        current = str(entry.get("CurrentVersion") or "—")
+        available = str(entry.get("AvailableVersion") or "—")
+        row = UpdateRow(app_id, name, current, available, self._t)
+        row.checkbox.toggled.connect(self._update_count)
+        row.options_requested.connect(self._open_tool_wizard)
+        self._rows[app_id] = row
+        self._host_lay.insertWidget(self._host_lay.count() - 1, row)
+        return row
+
+    def _reconcile_rows(self, updates: list):
+        """Settle the streamed preview against the authoritative payload.
+
+        Rows are ADDED for anything the stream missed and REMOVED for
+        anything the final document does not contain — a preview row that the
+        backend did not confirm must not survive, or the dialog would offer an
+        update that no longer exists. Rows already on screen are left in place
+        rather than rebuilt, so a checkbox the user has already unticked keeps
+        its state instead of silently re-arming itself when the scan lands."""
+        confirmed: list[str] = []
         for entry in updates:
             if not isinstance(entry, dict):
                 continue
             app_id = str(entry.get("Id", "")).strip()
             if not app_id:
                 continue
-            name = str(entry.get("Name") or app_id)
-            current = str(entry.get("CurrentVersion") or "—")
-            available = str(entry.get("AvailableVersion") or "—")
-            row = UpdateRow(app_id, name, current, available, self._t)
-            row.checkbox.toggled.connect(self._update_count)
-            row.options_requested.connect(self._open_tool_wizard)
-            self._rows[app_id] = row
-            self._host_lay.insertWidget(self._host_lay.count() - 1, row)
+            confirmed.append(app_id)
+            self._make_row(entry)
+
+        for app_id in [a for a in self._rows if a not in confirmed]:
+            row = self._rows.pop(app_id)
+            self._host_lay.removeWidget(row)
+            row.setParent(None)
+            row.deleteLater()
+
         # Same sentence shape SoftwareCatalogDialog uses for its selection —
         # one consistent voice across every selector in the app.
         self._subtitle.setText(
@@ -7587,6 +7695,12 @@ class StartupRow(QFrame):
         self._enabled = bool(item["Enabled"])
         self._impact = str(item.get("Impact") or "Medium")
         self._recommendation = str(item.get("Recommendation") or "Review")
+        # A protected component (audio stack, security agent, input driver —
+        # see StartupProtectedRules in 05-Startup.ps1). It reads as an
+        # ordinary "Safe to Keep" otherwise, which understates it: the row
+        # still toggles, but the user should know this one is load-bearing
+        # before they flip it.
+        self._protected = bool(item.get("Protected"))
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(TH.SPACE["lg"], TH.SPACE["md"],
@@ -7601,9 +7715,15 @@ class StartupRow(QFrame):
         name_row.addWidget(self._name)
         self._impact_badge = QLabel(f"{self._impact.upper()} IMPACT")
         name_row.addWidget(self._impact_badge)
-        self._rec_badge = QLabel(self._REC_LABELS.get(self._recommendation, self._recommendation))
+        self._rec_badge = QLabel(
+            "System Critical" if self._protected
+            else self._REC_LABELS.get(self._recommendation, self._recommendation))
         name_row.addWidget(self._rec_badge)
         name_row.addStretch()
+        if self._protected:
+            self.setToolTip(
+                "Pulse never recommends disabling this one, and “Optimize "
+                "Startup” will not touch it. You can still toggle it by hand.")
         col.addLayout(name_row)
 
         type_label = "Registry (Run key)" if item.get("Type") == "Registry" else "Startup folder shortcut"
@@ -7640,7 +7760,8 @@ class StartupRow(QFrame):
         self.setStyleSheet(TH.startup_row_qss(t))
         self._name.setStyleSheet(TH.label_qss(t, "card"))
         self._impact_badge.setStyleSheet(TH.impact_badge_qss(t, self._impact))
-        self._rec_badge.setStyleSheet(TH.recommendation_badge_qss(t, self._recommendation))
+        self._rec_badge.setStyleSheet(
+            TH.recommendation_badge_qss(t, self._recommendation, self._protected))
         self._meta.setStyleSheet(TH.label_qss(t, "caption"))
         self.switch.apply_theme(t)
 
@@ -7781,19 +7902,45 @@ class StartupManagerDialog(PulseDialog):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(TH.SPACE["md"])
 
+        # The summary strip IS the filter control (v10.3). These three read
+        # as counts, so they were being clicked as filters; they are now
+        # exactly that. Clicking one isolates the matching items, clicking it
+        # again (or "All") clears back to the full list — a filter you cannot
+        # switch off is a trap, so the reset is always one click away and
+        # always visible.
         summary = QHBoxLayout()
         summary.setSpacing(TH.SPACE["sm"])
-        self._chip_enabled = QLabel("")
-        self._chip_enabled.setStyleSheet(TH.stat_chip_qss(t, "neutral"))
-        summary.addWidget(self._chip_enabled)
-        self._chip_disabled = QLabel("")
-        self._chip_disabled.setStyleSheet(TH.stat_chip_qss(t, "neutral"))
-        summary.addWidget(self._chip_disabled)
-        self._chip_recommended = QLabel("")
-        self._chip_recommended.setStyleSheet(TH.stat_chip_qss(t, "warn"))
-        summary.addWidget(self._chip_recommended)
+        self._filter = "all"
+        self._chips: dict[str, tuple[QPushButton, str]] = {}
+
+        def chip(key: str, tone: str, tip: str) -> QPushButton:
+            btn = QPushButton("")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(tip)
+            btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            btn.clicked.connect(lambda _=False, k=key: self._toggle_filter(k))
+            self._chips[key] = (btn, tone)
+            summary.addWidget(btn)
+            return btn
+
+        self._chip_all = chip(
+            "all", "accent", "Show every startup item")
+        self._chip_enabled = chip(
+            "enabled", "neutral", "Show only the items that launch at sign-in")
+        self._chip_disabled = chip(
+            "disabled", "neutral", "Show only the items you have already disabled")
+        self._chip_recommended = chip(
+            "recommended", "warn",
+            "Show only the enabled items this audit recommends disabling")
         summary.addStretch()
         lay.addLayout(summary)
+
+        # Says what the current filter is hiding. Empty (and hidden) on the
+        # unfiltered list, so it costs nothing until it has something to say.
+        self._filter_note = QLabel("")
+        self._filter_note.setStyleSheet(TH.label_qss(t, "caption"))
+        self._filter_note.hide()
+        lay.addWidget(self._filter_note)
 
         self._optimize_btn = QPushButton("⚡  Optimize Startup")
         self._optimize_btn.setFixedHeight(38)
@@ -7837,6 +7984,12 @@ class StartupManagerDialog(PulseDialog):
             return
         self._subtitle.setText("Auditing Run keys and Startup folders…")
         self._clear_rows()
+        # Back to the full list for a fresh scan. Carrying a filter across a
+        # rescan can land the user on an empty list whose emptiness is the
+        # filter's doing, not the machine's — and "my startup items vanished"
+        # is not a thing this dialog should ever be able to suggest.
+        self._filter = "all"
+        self._filter_note.hide()
         self._stack.setCurrentWidget(self._loading_page)
         self._shimmer.start()
 
@@ -7891,16 +8044,58 @@ class StartupManagerDialog(PulseDialog):
 
     # -- row management -------------------------------------------------
     def _clear_rows(self):
+        """Empty the list, NOW.
+
+        setParent(None) before deleteLater(), because deleteLater alone is
+        not immediate: it posts a DeferredDelete that a plain
+        processEvents() does not even deliver. takeAt() only unhooks the
+        widget from the LAYOUT — it stays a child of the host and keeps
+        painting at its last geometry until the deletion actually lands.
+        That was survivable when this ran once per scan; it is not now that
+        every filter click rebuilds the list, because the old rows would
+        linger over the new ones for a frame. Re-parenting to None removes
+        it from the widget tree synchronously; deleteLater still frees it."""
         self._rows.clear()
         while self._host_lay.count() > 1:   # keep the trailing stretch
             item = self._host_lay.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
 
+    #: Which items each filter admits. One predicate per chip, so the chip's
+    #: COUNT and the rows it isolates are computed from the same rule and
+    #: cannot disagree — a filter pill that says "13 disabled" and then shows
+    #: eleven rows is worse than no filter at all.
+    _FILTERS = {
+        "all":         lambda it: True,
+        "enabled":     lambda it: bool(it.get("Enabled")),
+        "disabled":    lambda it: not it.get("Enabled"),
+        "recommended": lambda it: bool(it.get("Enabled")) and it.get("Recommendation") == "Disable",
+    }
+
+    def _toggle_filter(self, key: str):
+        """Apply a filter, or clear it when the active chip is re-clicked."""
+        self._filter = "all" if (key == self._filter and key != "all") else key
+        self._render_rows()
+        self._update_summary()
+
     def _populate_rows(self, items: list[dict]):
-        self._clear_rows()
         self._items = {str(it["Id"]): it for it in items}
+        self._render_rows()
+        self._update_summary()
+
+    def _render_rows(self):
+        """Rebuild the list for the current filter.
+
+        Rebuilt rather than show/hide-ing existing rows: the section headers
+        carry per-section COUNTS, so hiding rows underneath them would leave
+        "Recommended to Disable · 7" sitting above three visible items. Fully
+        re-rendering keeps every number on screen true to what is on screen.
+        Startup lists are tens of items, not thousands, so this is cheap."""
+        self._clear_rows()
+        keep = self._FILTERS.get(self._filter, self._FILTERS["all"])
+        items = [it for it in self._items.values() if keep(it)]
 
         buckets: dict[str, list[dict]] = {"Disable": [], "Review": [], "Keep": [], "_off": []}
         for it in items:
@@ -7926,17 +8121,36 @@ class StartupManagerDialog(PulseDialog):
                 row.toggle_requested.connect(self._on_toggle_requested)
                 self._rows[str(it["Id"])] = row
                 self._host_lay.insertWidget(self._host_lay.count() - 1, row)
-        self._update_summary()
+
+        if self._filter == "all":
+            self._filter_note.hide()
+        else:
+            hidden = len(self._items) - len(items)
+            self._filter_note.setText(
+                f"Filtered — {len(items)} of {len(self._items)} items shown "
+                f"({hidden} hidden). Click the highlighted pill again, or “All”, "
+                "to show everything.")
+            self._filter_note.show()
 
     def _update_summary(self):
         items = list(self._items.values())
-        enabled = sum(1 for it in items if it.get("Enabled"))
-        disabled = len(items) - enabled
-        recommended = sum(
-            1 for it in items if it.get("Enabled") and it.get("Recommendation") == "Disable")
-        self._chip_enabled.setText(f"{enabled} enabled")
-        self._chip_disabled.setText(f"{disabled} disabled")
-        self._chip_recommended.setText(f"{recommended} recommended to disable")
+        counts = {key: sum(1 for it in items if pred(it))
+                  for key, pred in self._FILTERS.items()}
+        labels = {
+            "all":         f"All {counts['all']}",
+            "enabled":     f"{counts['enabled']} enabled",
+            "disabled":    f"{counts['disabled']} disabled",
+            "recommended": f"{counts['recommended']} recommended to disable",
+        }
+        for key, (btn, tone) in self._chips.items():
+            btn.setText(labels[key])
+            btn.setStyleSheet(TH.filter_chip_qss(self._t, tone, active=(self._filter == key)))
+            # An empty bucket is not a filter worth offering — clicking it
+            # would blank the list with no way to tell that from a bug. "All"
+            # stays live regardless, because it is the way back.
+            btn.setEnabled(key == "all" or counts[key] > 0)
+
+        recommended = counts["recommended"]
         self._optimize_btn.setEnabled(recommended > 0)
         self._optimize_btn.setText(
             f"⚡  Optimize Startup ({recommended})" if recommended else "⚡  Optimize Startup — all clear")
@@ -7947,9 +8161,16 @@ class StartupManagerDialog(PulseDialog):
         self._pump_toggle_queue()
 
     def _start_optimize(self):
+        # `not Protected` is belt-and-braces over the backend's tier order:
+        # StartupProtectedRules already returns 'Keep' for anything critical,
+        # so a protected item cannot reach this list. It is asserted here
+        # anyway because this is the ONE control that disables things in bulk
+        # without the user seeing each one, and a future rule that widened a
+        # Disable pattern must not be able to sweep the audio stack into it.
         recommended_ids = [
             it["Id"] for it in self._items.values()
             if it.get("Enabled") and it.get("Recommendation") == "Disable"
+            and not it.get("Protected")
         ]
         if not recommended_ids:
             return

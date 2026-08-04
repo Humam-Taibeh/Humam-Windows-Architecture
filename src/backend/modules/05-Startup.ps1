@@ -209,11 +209,61 @@ function Get-AllStartupItems {
 }
 
 # ============================================================
-#  STARTUP OPTIMIZER — recommendation engine (v6.3)
-#  Pattern-matched against "Name Command" (lowercased). Order matters:
-#  the disable list is checked first, so a known heavy app never gets
-#  shadowed by a coincidental keep-pattern match.
+#  STARTUP OPTIMIZER — recommendation engine (v6.3, safety-tiered in v10.3)
+#
+#  THREE TIERS, EVALUATED IN THIS ORDER:
+#    1. PROTECTED  never recommended for disabling, whatever else matches
+#    2. Disable    known boot-time offenders
+#    3. Keep       recognised-but-harmless publishers
+#  Anything unmatched falls through to 'Review'.
+#
+#  WHY A THIRD TIER EXISTS. Until v10.3 there were only two lists and the
+#  DISABLE list was checked first, on the reasoning that a known heavy app
+#  should not be shadowed by a coincidental keep-pattern match. That
+#  ordering is right for the Disable-vs-Keep question and wrong for safety:
+#  it means any pattern that accidentally matches a sound driver, an input
+#  helper or a security agent recommends disabling it, and the keep rule
+#  written specifically to protect that component never gets consulted. The
+#  cost of the two mistakes is not symmetric — over-recommending a game
+#  launcher wastes nothing, while telling a user to disable their audio
+#  stack or their antivirus breaks the machine and can't be spotted from
+#  the row's own wording. So the protected tier goes FIRST and is absolute,
+#  and the Disable-before-Keep precedence is preserved below it, unchanged.
 # ============================================================
+
+# Components that must never be recommended for disabling. Deliberately
+# broader than the old keep list: it now covers the whole audio stack
+# (every common vendor HDA helper, not just Realtek), input and IME,
+# pointing devices, accessibility, storage/RAID drivers and endpoint
+# security. These still appear in the manager and can still be toggled by
+# hand — this governs what Pulse RECOMMENDS and what "Optimize Startup"
+# will touch in bulk, which is the part the user is trusting.
+$Script:StartupProtectedRules = @(
+    @{ Pattern = 'defender|windowssecurity|securityhealth|msmpeng|msascui|smartscreen';
+       Reason = "Windows Security component — disabling it weakens malware protection." }
+    @{ Pattern = 'securityagent|antivirus|endpoint protection|crowdstrike|sentinelone|malwarebytes|sophos|eset|kaspersky|bitdefender|mcafee|norton|trendmicro|carbonblack';
+       Reason = "Security / endpoint-protection agent — must keep running from boot to protect the machine." }
+    # The audio stack, in full. A missing tray helper here does not merely
+    # lose an equaliser: on many laptops it is what performs jack-detection
+    # and output switching, so disabling it can leave the machine silent.
+    @{ Pattern = 'realtek|rtkaud|rthdvcpl|ravcpl|rtkngui|audiodg|hdaudio|hd audio|audio.*(service|manager|control|effects)|nahimic|waves.*(maxx|audio)|maxxaudio|dolby|dtsapo|dts.*audio|sonic.*(studio|suite)|smartaudio|conexant|cxuiusvc|idt.*audio|sttray|cirrus|creative.*audio|sound.*(blaster|research)|asio';
+       Reason = "Audio driver / sound-device helper — jack detection, device switching and effects depend on it." }
+    @{ Pattern = 'ctfmon|tabtip|imecmnt|ime\b|inputpersonalization|textinputhost';
+       Reason = "Windows text-input / IME subsystem — required for keyboard layout and language switching." }
+    @{ Pattern = 'synaptics|syntpenh|elan|etdctrl|alps.*point|touchpad|precision touchpad|trackpoint';
+       Reason = "Touchpad / pointing-device driver — gestures, scrolling and its settings page depend on it." }
+    @{ Pattern = 'wacom|huion|xp-?pen|tablet.*(driver|service)';
+       Reason = "Graphics tablet driver — pen input stops working the moment it is not running." }
+    @{ Pattern = 'narrator|magnify|osk\.exe|on-?screen keyboard|accessibility|assistive';
+       Reason = "Accessibility tool — for some users this is how the machine is operated at all." }
+    @{ Pattern = 'iastor|rapidstorage|intel.*rapid|raid.*(monitor|service)|amd.*raid';
+       Reason = "Storage / RAID controller helper — monitors the array your drives depend on." }
+    @{ Pattern = 'bthserv|bluetooth.*(service|stack)|widcomm|intel.*bluetooth';
+       Reason = "Bluetooth stack component — paired keyboards, mice and headsets depend on it at sign-in." }
+    @{ Pattern = 'lenovo.*(power|battery)|dell.*(power|battery)|hp.*(power|battery)|power.*manager|thermal.*(manager|framework)';
+       Reason = "Vendor power / thermal manager — battery life and fan behaviour are controlled here." }
+)
+
 $Script:StartupDisableRules = @(
     @{ Pattern = 'onedrive';                              Impact = 'Medium'; Reason = "Cloud sync — keeps syncing in the background; launch it manually or sign in to files.com when you actually need it." }
     @{ Pattern = 'dropbox';                                Impact = 'Medium'; Reason = "Cloud sync client — adds boot time for a service you can start on demand." }
@@ -238,7 +288,11 @@ $Script:StartupDisableRules = @(
     @{ Pattern = 'yourphone|phonelink';                     Impact = 'Low';    Reason = "Phone Link — only useful if you actively use phone/PC linking." }
     @{ Pattern = 'creativecloud|cc[_ ]?library|coreSync';   Impact = 'High';   Reason = "Adobe Creative Cloud desktop — one of the heaviest known startup offenders." }
     @{ Pattern = 'javaupdater|jusched';                      Impact = 'Low';    Reason = "Java's background updater — safe to check manually instead." }
-    @{ Pattern = 'nvidia.*(container|telemetry)|nvcontainer'; Impact = 'Low';  Reason = "NVIDIA telemetry/container helper — the display driver itself does not need it at boot." }
+    # Telemetry only. `nvcontainer` was dropped from this pattern in v10.3:
+    # NVIDIA Display Container LS is what backs the control panel and the
+    # driver's own settings, so recommending it for disabling was advice that
+    # broke display configuration to save a few megabytes.
+    @{ Pattern = 'nvidia.*telemetry|nvtelemetry';            Impact = 'Low';  Reason = "NVIDIA telemetry helper — the display driver itself does not need it at boot." }
 )
 
 $Script:StartupKeepRules = @(
@@ -259,31 +313,42 @@ $Script:StartupKeepRules = @(
 # regex evaluation with zero I/O.
 $Script:_RegexOpts = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor `
     [System.Text.RegularExpressions.RegexOptions]::Compiled
-foreach ($Rule in $Script:StartupDisableRules) { $Rule.Regex = [regex]::new($Rule.Pattern, $Script:_RegexOpts) }
-foreach ($Rule in $Script:StartupKeepRules)    { $Rule.Regex = [regex]::new($Rule.Pattern, $Script:_RegexOpts) }
+foreach ($Rule in $Script:StartupProtectedRules) { $Rule.Regex = [regex]::new($Rule.Pattern, $Script:_RegexOpts) }
+foreach ($Rule in $Script:StartupDisableRules)   { $Rule.Regex = [regex]::new($Rule.Pattern, $Script:_RegexOpts) }
+foreach ($Rule in $Script:StartupKeepRules)      { $Rule.Regex = [regex]::new($Rule.Pattern, $Script:_RegexOpts) }
 
 function Get-StartupRecommendation {
     <# Returns @{ Recommendation='Disable'|'Keep'|'Review'; Impact='High'|
-       'Medium'|'Low'; Reason=<string> } for one Get-AllStartupItems entry.
-       Pure in-memory string/regex work - no registry, filesystem or
-       network access, so this is intentionally cheap no matter how many
-       startup items are being scored. #>
+       'Medium'|'Low'; Reason=<string>; Protected=<bool> } for one
+       Get-AllStartupItems entry. Pure in-memory string/regex work - no
+       registry, filesystem or network access, so this is intentionally
+       cheap no matter how many startup items are being scored.
+
+       Tier order is the safety contract - see the note above the rule
+       lists. Protected wins over everything, absolutely; below it, Disable
+       still beats Keep exactly as before. #>
     param($Item)
     $Hay = "$($Item.Name) $($Item.Command)"
+    foreach ($Rule in $Script:StartupProtectedRules) {
+        if ($Rule.Regex.IsMatch($Hay)) {
+            return @{ Recommendation = 'Keep'; Impact = 'Low'; Reason = $Rule.Reason; Protected = $true }
+        }
+    }
     foreach ($Rule in $Script:StartupDisableRules) {
         if ($Rule.Regex.IsMatch($Hay)) {
-            return @{ Recommendation = 'Disable'; Impact = $Rule.Impact; Reason = $Rule.Reason }
+            return @{ Recommendation = 'Disable'; Impact = $Rule.Impact; Reason = $Rule.Reason; Protected = $false }
         }
     }
     foreach ($Rule in $Script:StartupKeepRules) {
         if ($Rule.Regex.IsMatch($Hay)) {
-            return @{ Recommendation = 'Keep'; Impact = 'Low'; Reason = $Rule.Reason }
+            return @{ Recommendation = 'Keep'; Impact = 'Low'; Reason = $Rule.Reason; Protected = $false }
         }
     }
     return @{
         Recommendation = 'Review'
         Impact         = 'Medium'
         Reason         = "Not a recognized publisher — check what it is before disabling it."
+        Protected      = $false
     }
 }
 
@@ -309,6 +374,10 @@ function Get-StartupReportData {
             Recommendation  = $Rec.Recommendation
             Impact          = $Rec.Impact
             Reason          = $Rec.Reason
+            # Surfaced to the GUI so a protected component can be labelled as
+            # such in its row, rather than looking like an ordinary "Safe to
+            # Keep" suggestion the user might reasonably overrule.
+            Protected       = [bool]$Rec.Protected
         }
     }
     return $Result | Sort-Object `

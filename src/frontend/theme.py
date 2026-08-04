@@ -2086,6 +2086,62 @@ def stat_chip_qss(t: dict, tone: str = "neutral") -> str:
     """
 
 
+def filter_chip_qss(t: dict, tone: str = "neutral", active: bool = False) -> str:
+    """The interactive sibling of stat_chip_qss: a summary pill that is also
+    the control that filters the list it summarises (widgets.
+    StartupManagerDialog's enabled / disabled / recommended chips).
+
+    Same geometry and tone tokens as stat_chip_qss on purpose — these ARE
+    those chips, now clickable, and a filter that changed shape the moment it
+    became interactive would read as a different control. What it adds is the
+    three states a filter needs and a stat pill does not:
+
+      * rest   — identical to the stat chip, so nothing shouts
+      * hover  — the tone's border firms up, the standard "this is clickable"
+      * ACTIVE — filled with the tone at full strength, because the one thing
+        a filter must never do is leave the user unable to tell that the list
+        in front of them is filtered.
+
+    THE ACTIVE STATE IS A SOLID FILL, not a heavier tint, and that is a
+    contrast decision rather than a taste one. The obvious alternative —
+    keeping the tone as the TEXT colour over a stronger tone-tinted fill —
+    measures 3.94:1 for accent and 3.95:1 for warn against the light theme's
+    white card, i.e. it fails AA on exactly the state that most needs to be
+    readable. Flipping to the canvas colour on a solid tone fill measures
+    4.81:1 at its worst (light/warn) and 13.26:1 at its best, so every tone
+    clears AA in both themes.
+
+    Hover on an ACTIVE chip therefore moves only the border. Touching the
+    fill or the text would put that hard-won 4.81:1 back in play for the sake
+    of a hover cue, and the border ring reads just as clearly.
+    """
+    colors = {"neutral": t["text_soft"], "accent": t["accent"],
+              "warn": t["warn"], "ok": t["ok"], "err": t["err"]}
+    color = colors.get(tone, t["text_soft"])
+    if active:
+        base = (f"color: {t['bg_solid']}; background: {color};"
+                f" border: 1px solid {color};")
+        hover = f"border: 1px solid {t['bg_solid']};"
+    elif tone == "neutral":
+        base = (f"color: {color}; background: {t['card']};"
+                f" border: 1px solid {t['card_line']};")
+        hover = (f"background: {blend(t['card'], t['card_hover'])};"
+                 f" border: 1px solid {alpha(t['text_soft'], 0.42)};")
+    else:
+        base = (f"color: {color}; background: {alpha(color, 0.10)};"
+                f" border: 1px solid {alpha(color, 0.35)};")
+        hover = (f"background: {alpha(color, 0.18)};"
+                 f" border: 1px solid {alpha(color, 0.60)};")
+    geometry = (f"font-size: {TYPE['body']}px; font-weight: 600;"
+                f" border-radius: {RADIUS['plaque']}px; padding: 7px 14px;")
+    return f"""
+        QPushButton {{ {geometry} {base} text-align: center; }}
+        QPushButton:hover {{ {geometry} {base} {hover} }}
+        QPushButton:disabled {{ {geometry} color: {t['text_faint']};
+            background: {t['panel']}; border: 1px solid {t['panel_line']}; }}
+    """
+
+
 def version_chip_qss(t: dict, accent: bool = False) -> str:
     """Version number pill in an update row — muted for 'current', lit
     with the accent for 'available' so the eye lands on what's new."""
@@ -2112,10 +2168,20 @@ def impact_badge_qss(t: dict, level: str) -> str:
     """
 
 
-def recommendation_badge_qss(t: dict, recommendation: str) -> str:
-    """Disable/Keep/Review recommendation tag on a startup row."""
-    color = {"Disable": t["warn"], "Keep": t["ok"], "Review": t["accent2"]}.get(
-        recommendation, t["text_faint"])
+def recommendation_badge_qss(t: dict, recommendation: str,
+                             protected: bool = False) -> str:
+    """Disable/Keep/Review recommendation tag on a startup row.
+
+    `protected` marks a system-critical component (the audio stack, a
+    security agent, an input driver — see StartupProtectedRules in
+    05-Startup.ps1). It borrows the `accent` token rather than `ok`: green
+    would say "this one is fine to leave alone", and the point of the badge
+    is the stronger claim that this one should be left alone."""
+    if protected:
+        color = t["accent"]
+    else:
+        color = {"Disable": t["warn"], "Keep": t["ok"], "Review": t["accent2"]}.get(
+            recommendation, t["text_faint"])
     return f"""
         color: {color}; font-size: {TYPE['meta']}px; font-weight: 700;
         background: {alpha(color, 0.10)}; border: 1px solid {alpha(color, 0.35)};

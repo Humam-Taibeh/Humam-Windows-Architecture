@@ -79,11 +79,20 @@ VERDICT_SENTINEL = "##PULSE##"
 VERDICT_DATA_PREFIX = VERDICT_SENTINEL + "DATA|"
 # Verdict metrics prefix (v10.3) - see TaskResult.meta above.
 VERDICT_META_PREFIX = VERDICT_SENTINEL + "META|"
+# Incremental channels (v10.3). ITEM carries ONE result the moment the
+# backend finds it; STAGE carries a human-readable line about what the task
+# is doing right now. Both exist because DATA is emitted once, at the end,
+# which left a long scan looking hung - see the channel note in
+# 00-Foundation.ps1. Every ITEM is also an element of the final DATA array,
+# so a streamed row is a preview that the authoritative payload confirms.
+VERDICT_ITEM_PREFIX = VERDICT_SENTINEL + "ITEM|"
+VERDICT_STAGE_PREFIX = VERDICT_SENTINEL + "STAGE|"
 # Sentinel lines that are machine payloads rather than the verdict. The
 # backwards verdict scan and the live console both skip these; adding a
 # new payload channel means adding it here, or the newest one becomes
 # whatever the GUI mistakes for a verdict.
-VERDICT_PAYLOAD_PREFIXES = (VERDICT_DATA_PREFIX, VERDICT_META_PREFIX)
+VERDICT_PAYLOAD_PREFIXES = (VERDICT_DATA_PREFIX, VERDICT_META_PREFIX,
+                            VERDICT_ITEM_PREFIX, VERDICT_STAGE_PREFIX)
 
 # Fallback per-step timeout for a playbook step whose catalog item has no
 # explicit one. Generous: a playbook runs unattended, so a step that is
@@ -375,6 +384,14 @@ class PowerShellTask(QObject):
     output = Signal(str, bool)      # (text, replace_last): replace_last=True rewrites
                                     # the console's newest line in place — the CR
                                     # progress semantics of sfc / DISM / winget
+    # Incremental results (v10.3). `item` fires once per ##PULSE##ITEM| line
+    # with the decoded object; `stage` once per ##PULSE##STAGE| line. Both are
+    # emitted from the worker thread exactly like `output`, so Qt delivers
+    # them to a GUI-thread receiver through a queued connection. A dialog
+    # that connects neither behaves exactly as before — the final `finished`
+    # payload is unchanged and still carries every item.
+    item = Signal(object)
+    stage = Signal(str)
 
     def __init__(self, ps1_path: str, task_name: str, timeout: int = 120,
                  app_ids: list[str] | None = None, dry_run: bool = False,
@@ -661,11 +678,30 @@ class PowerShellTask(QObject):
             replace_next = False        # a bare CR marks the NEXT segment as
                                         # an in-place rewrite of the last line
 
+            def _emit_incremental(text: str):
+                """Fan a streamed payload line out to its signal.
+
+                Deliberately forgiving: a malformed ITEM is dropped rather
+                than aborted on, because these lines are a live PREVIEW of
+                the final DATA document. Losing one costs a row appearing a
+                few seconds later than it could have; raising here would
+                lose the whole scan the user is waiting on.
+                """
+                if text.startswith(VERDICT_ITEM_PREFIX):
+                    try:
+                        self.item.emit(json.loads(text[len(VERDICT_ITEM_PREFIX):]))
+                    except ValueError:
+                        pass
+                elif text.startswith(VERDICT_STAGE_PREFIX):
+                    self.stage.emit(text[len(VERDICT_STAGE_PREFIX):])
+
             def _apply(text: str, replace: bool):
                 if replace and lines:
                     lines[-1] = text
                 else:
                     lines.append(text)
+                if text:
+                    _emit_incremental(text)
                 if text and not text.startswith(VERDICT_PAYLOAD_PREFIXES):
                     # The console shows the human-readable verdict, not the
                     # machine sentinel; `lines` keeps the raw text for parsing.

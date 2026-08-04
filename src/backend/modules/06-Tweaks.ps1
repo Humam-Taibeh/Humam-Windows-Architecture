@@ -55,18 +55,92 @@ function Invoke-Tweak {
     if ($Tweak.RefreshShell) { Invoke-ShellThemeRefresh }
 }
 
+function Restart-ExplorerShell {
+    <#
+    .SYNOPSIS
+        Cycles explorer.exe so File Explorer, the taskbar and the context
+        menus rebuild against the current theme instead of the one they
+        cached at sign-in. Returns $true when a live shell is running again.
+
+    .DESCRIPTION
+        THE SINGLE-INSTANCE TRAP, and why this is not just
+        `Stop-Process -Name explorer -Force; Start-Process explorer`.
+        Windows usually relaunches the shell by itself a moment after
+        explorer.exe dies (that is what makes the desktop come back on its
+        own). explorer.exe is also single-instance AS A SHELL: run it while a
+        shell already owns the desktop and it does not become a second shell,
+        it opens a FILE EXPLORER WINDOW. So the naive pair races - when the
+        auto-restart wins, the user is left staring at a stray window of their
+        Documents folder that they never asked for.
+
+        So: kill, wait for the auto-restart, and only start a shell ourselves
+        if none came back. That covers both machines - the ones that relaunch
+        and the ones configured not to - and leaves no stray window on either.
+
+        The relaunch is ANCHORED through Get-SystemBinary: this can run
+        elevated, and a planted explorer.exe earlier in PATH would otherwise
+        inherit that token. Same reasoning as Enable-ClassicContextMenu.
+    #>
+    if (Test-DryRun "Restart explorer.exe so File Explorer, the taskbar and context menus pick up the theme immediately") { return $false }
+
+    try {
+        Stop-Process -Name explorer -Force -ErrorAction Stop
+    } catch {
+        # No explorer running (a kiosk/alternate shell, or it already died) is
+        # not a failure - there is simply nothing to cycle.
+        Write-Log "ExplorerRestart: could not stop explorer.exe - $($_.Exception.Message)"
+    }
+
+    # Give Windows its own chance to bring the shell back before we do.
+    # ~3s in 250ms steps: long enough for the usual auto-restart, short
+    # enough that a machine which will NOT auto-restart is not left without
+    # a desktop while we wait.
+    $Shell = $null
+    for ($i = 0; $i -lt 12; $i++) {
+        Start-Sleep -Milliseconds 250
+        $Shell = Get-Process -Name explorer -ErrorAction SilentlyContinue
+        if ($Shell) { break }
+    }
+
+    if (-not $Shell) {
+        try {
+            Start-Process -FilePath (Get-SystemBinary "explorer") -ErrorAction Stop
+            Start-Sleep -Milliseconds 500
+            $Shell = Get-Process -Name explorer -ErrorAction SilentlyContinue
+        } catch {
+            Write-Log "ExplorerRestart: relaunch failed - $($_.Exception.Message)"
+        }
+    }
+
+    if ($Shell) {
+        Write-Success "Windows Explorer restarted - the taskbar, File Explorer and context menus now match the new theme."
+        return $true
+    }
+    Write-Warn "Windows Explorer did not come back automatically. Press Ctrl+Shift+Esc and run 'explorer.exe' from File > Run new task if your desktop is missing."
+    return $false
+}
+
 function Invoke-ShellThemeRefresh {
     <# Applies a just-written theme change (Dark/Light) to the RUNNING shell so
        the taskbar and open surfaces repaint immediately instead of glitching
-       until the next sign-in. Two non-disruptive steps (deliberately NOT an
-       explorer.exe restart, which would close the user's open File Explorer
-       windows for a mere theme toggle):
+       until the next sign-in. Three steps, in order of blast radius:
          1. Broadcast WM_SETTINGCHANGE('ImmersiveColorSet') so every top-level
-            window re-reads the theme.
+            window re-reads the theme. This is what updates non-shell apps,
+            which an Explorer restart does NOT touch - so it stays, and it
+            goes first.
          2. ie4uinit.exe -show to refresh the shell's icon/theme caches.
+         3. Restart explorer.exe (v10.3). Steps 1-2 alone were the previous
+            behaviour, and they left real stale surfaces behind: the taskbar
+            keeps its old acrylic tint, and Explorer's ribbon/nav pane and the
+            Win11 context menus stay on the theme they were built with, because
+            those surfaces resolve their brushes once at shell start and ignore
+            ImmersiveColorSet. Cycling the shell is the only thing that clears
+            them. It costs the user their open File Explorer windows, which is
+            a real cost - hence Restart-ExplorerShell's care not to ALSO leave
+            a stray window behind (see its note on the single-instance trap).
        Best-effort: any step failing is logged, never fatal - worst case the
        theme still applies on next sign-in. #>
-    if (Test-DryRun "Refresh the Windows shell so the theme change applies immediately (WM_SETTINGCHANGE broadcast + ie4uinit -show)") { return }
+    if (Test-DryRun "Refresh the Windows shell so the theme change applies immediately (WM_SETTINGCHANGE broadcast + ie4uinit -show + explorer.exe restart)") { return }
 
     try {
         if (-not ([System.Management.Automation.PSTypeName]'Pulse.ShellNative').Type) {
@@ -92,6 +166,11 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint M
         Write-Log "ShellThemeRefresh: ie4uinit -show failed - $($_.Exception.Message)"
     }
 
+    # Step 3 - the one that clears the cached taskbar/Explorer/context-menu
+    # surfaces. Writes its own success/warning line, so this function's
+    # closing line below stays about the broadcast half.
+    [void](Restart-ExplorerShell)
+
     Write-Success "Windows shell refreshed - the theme change is visible immediately."
 }
 
@@ -115,14 +194,11 @@ function Enable-ClassicContextMenu {
         Write-Success "Classic context menu restored."
 
         if (Ask-User "Restart Windows Explorer" "Applies the classic menu immediately by restarting explorer.exe.") {
-            Invoke-Mutation -Description "Restart explorer.exe to apply the classic context menu" -Action {
-                Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 1
-                # Anchored: this runs elevated, and a planted explorer.exe
-                # earlier in PATH would inherit that token (00-Foundation.ps1).
-                Start-Process -FilePath (Get-SystemBinary "explorer")
-                Write-Success "Explorer restarted. Classic menu should now be active."
-            } | Out-Null
+            # Shared with the theme refresh (v10.3). This used to kill and
+            # relaunch inline, which raced Windows' own auto-restart and could
+            # leave a stray File Explorer window open on top of the desktop -
+            # see Restart-ExplorerShell's note on the single-instance trap.
+            [void](Restart-ExplorerShell)
         } else {
             Write-Info "Change will take effect after you sign out or restart Explorer manually."
         }
@@ -134,6 +210,103 @@ function Enable-ClassicContextMenu {
 # ============================================================
 #  SMART SYSTEM TWEAKS
 # ============================================================
+function Set-LiveMouseCurve {
+    <#
+    .SYNOPSIS
+        Pushes the mouse acceleration triple into the RUNNING user session via
+        SystemParametersInfo, so a pointer-precision change is felt on the very
+        next mouse movement instead of at the next sign-in.
+
+    .DESCRIPTION
+        WHY THE REGISTRY IS NOT ENOUGH. HKCU:\Control Panel\Mouse is where
+        Windows PERSISTS the pointer ballistics, but win32k reads that hive
+        once, when the user session's input state is initialised. Writing the
+        three values changed the stored setting and nothing about the live
+        pointer, which is exactly the "it only applies after a reboot" report:
+        the tweak was never wrong, it just was not being told to take effect.
+
+        SPI_SETMOUSE is the one that matters. Its pvParam is an array of THREE
+        ints - {xThreshold, yThreshold, acceleration} - which map to
+        MouseThreshold1 / MouseThreshold2 / MouseSpeed respectively, and all
+        zeroes is the documented "1:1, no ballistics" curve.
+
+        SPI_SETMOUSESPEED is deliberately used to RE-STAMP the speed the user
+        already has, read back through SPI_GETMOUSESPEED first, never to set a
+        value of our own. Pointer SPEED (1-20) is a different setting from
+        pointer ACCELERATION, and silently moving a user's sensitivity while
+        they asked to disable acceleration would be a change they never
+        requested. Re-applying the current value is still worth doing: it
+        forces the ballistics table to be rebuilt, which is what makes some
+        vendor mouse filter drivers honour the new curve without a re-plug.
+
+        SPIF_UPDATEINIFILE | SPIF_SENDCHANGE persists the change through
+        Windows' own path and broadcasts WM_SETTINGCHANGE, so Settings and
+        Control Panel show the new state instead of a stale cached one.
+
+        Best-effort by contract: returns $true/$false and never throws. The
+        registry write is the durable half and has already happened by the time
+        this runs, so a failure here costs the user immediacy, not the tweak.
+    #>
+    param(
+        [int]$Threshold1 = 0,
+        [int]$Threshold2 = 0,
+        [int]$Acceleration = 0
+    )
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'Pulse.MouseNative').Type) {
+            Add-Type -Namespace Pulse -Name MouseNative -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError=true)]
+public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, int[] pvParam, uint fWinIni);
+
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError=true)]
+public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref int pvParam, uint fWinIni);
+
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError=true)]
+public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, System.IntPtr pvParam, uint fWinIni);
+'@ -ErrorAction Stop
+        }
+    } catch {
+        Write-Log "LiveMouseCurve: could not load user32 SystemParametersInfo - $($_.Exception.Message)"
+        return $false
+    }
+
+    $SPI_SETMOUSE      = 0x0004
+    $SPI_GETMOUSESPEED = 0x0070
+    $SPI_SETMOUSESPEED = 0x0071
+    $SPIF_UPDATEINIFILE = 0x01
+    $SPIF_SENDCHANGE    = 0x02
+    $Flags = $SPIF_UPDATEINIFILE -bor $SPIF_SENDCHANGE
+
+    $Ok = $true
+    try {
+        # The acceleration curve itself. Order is {x, y, accel} - NOT the
+        # registry's MouseSpeed-first ordering.
+        $Curve = [int[]]@($Threshold1, $Threshold2, $Acceleration)
+        if (-not [Pulse.MouseNative]::SystemParametersInfo($SPI_SETMOUSE, 0, $Curve, $Flags)) {
+            Write-Log "LiveMouseCurve: SPI_SETMOUSE failed (win32 error $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error()))."
+            $Ok = $false
+        }
+    } catch {
+        Write-Log "LiveMouseCurve: SPI_SETMOUSE threw - $($_.Exception.Message)"
+        $Ok = $false
+    }
+
+    try {
+        # Read the user's CURRENT sensitivity and write the same number back -
+        # see the note above on why this never invents a value.
+        $Speed = 0
+        if ([Pulse.MouseNative]::SystemParametersInfo($SPI_GETMOUSESPEED, 0, [ref]$Speed, 0) -and $Speed -gt 0) {
+            [void][Pulse.MouseNative]::SystemParametersInfo($SPI_SETMOUSESPEED, 0, [System.IntPtr]$Speed, $Flags)
+        }
+    } catch {
+        # Non-fatal even within the best-effort contract: the curve above is
+        # what actually disables acceleration, this only nudges the driver.
+        Write-Log "LiveMouseCurve: SPI_SETMOUSESPEED re-stamp skipped - $($_.Exception.Message)"
+    }
+
+    return $Ok
+}
+
 function Disable-MouseAcceleration {
     New-SystemRestorePoint
     $Path = "HKCU:\Control Panel\Mouse"
@@ -141,6 +314,14 @@ function Disable-MouseAcceleration {
     $Thr1  = Get-RegValue -Path $Path -Name "MouseThreshold1"
     $Thr2  = Get-RegValue -Path $Path -Name "MouseThreshold2"
     if ($Speed -eq "0" -and $Thr1 -eq "0" -and $Thr2 -eq "0") {
+        # The registry already says "off" - but that is a claim about what is
+        # STORED, and this tweak's whole failure mode was a stored value the
+        # live session had never picked up. Re-assert the curve so an
+        # already-applied tweak still guarantees a 1:1 pointer right now,
+        # rather than reporting success on a session that is still accelerating.
+        if (-not (Test-DryRun "Re-apply the raw pointer curve to the live session (SystemParametersInfo SPI_SETMOUSE)")) {
+            [void](Set-LiveMouseCurve)
+        }
         Write-AlreadyOK "Mouse acceleration is already disabled."
         return
     }
@@ -151,7 +332,20 @@ function Disable-MouseAcceleration {
         Set-RegValue -Path $Path -Name "MouseSpeed" -Value "0"
         Set-RegValue -Path $Path -Name "MouseThreshold1" -Value "0"
         Set-RegValue -Path $Path -Name "MouseThreshold2" -Value "0"
-        Write-Success "Raw pointer precision applied (mouse acceleration fully disabled)."
+        # Live half. Runs AFTER the writes on purpose: Set-RegValue's
+        # Assert-UserRegPathTargetable throws when Pulse is elevated as a
+        # different account than the signed-in user, and in that case this
+        # process's session is the wrong one to be reprogramming anyway.
+        if (Test-DryRun "Apply the raw pointer curve to the live session (SystemParametersInfo SPI_SETMOUSE, thresholds and acceleration = 0)") {
+            return
+        }
+        if (Set-LiveMouseCurve) {
+            Write-Success "Raw pointer precision applied (mouse acceleration fully disabled, active immediately - no reboot needed)."
+        } else {
+            # The durable half succeeded, so this is not a task failure - but
+            # it must not claim immediacy it did not deliver.
+            Write-Warn "Mouse acceleration disabled in the registry, but the live session could not be updated - it will take effect at your next sign-in."
+        }
     } catch {
         # A real failure (registry keys restricted by policy) - Write-ErrorX,
         # not Write-Warn, so Complete-GuiTask's fail counter (30-GuiDispatcher.ps1)

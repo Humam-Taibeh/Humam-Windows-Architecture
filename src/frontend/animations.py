@@ -184,6 +184,13 @@ def paint_glow_frame(painter: QPainter, rect, radius: int,
     center = cursor if cursor is not None else QPointF(rect.center())
     reach = max(rect.width(), rect.height()) * 0.95
     inner = rect.adjusted(1, 1, -1, -1)
+    # Shrunk with the inset, for the reason spelled out in
+    # paint_accent_hairline: an inset rounded rect at an unchanged radius is
+    # not concentric with its boundary. It matters less here (both passes are
+    # soft gradients) but pass 2 is a 1.6px near-crisp edge sitting directly
+    # under the hairline, so leaving it mis-curved would put back a faint
+    # second corner line the moment the hairline stopped drawing one.
+    inner_radius = max(0.0, radius - 1)
 
     # pass 1: soft outer halo
     halo = QRadialGradient(center, reach)
@@ -194,7 +201,7 @@ def paint_glow_frame(painter: QPainter, rect, radius: int,
     c2.setAlphaF(0.0)
     halo.setColorAt(1.0, c2)
     painter.setPen(QPen(QBrush(halo), 5.0))
-    painter.drawRoundedRect(inner, radius, radius)
+    painter.drawRoundedRect(inner, inner_radius, inner_radius)
 
     # pass 2: crisp inner edge
     edge = QRadialGradient(center, reach * 0.8)
@@ -205,7 +212,7 @@ def paint_glow_frame(painter: QPainter, rect, radius: int,
     e2.setAlphaF(0.10 * intensity)
     edge.setColorAt(1.0, e2)
     painter.setPen(QPen(QBrush(edge), 1.6))
-    painter.drawRoundedRect(inner, radius, radius)
+    painter.drawRoundedRect(inner, inner_radius, inner_radius)
     painter.restore()
 
 
@@ -227,6 +234,22 @@ def paint_accent_hairline(painter: QPainter, rect, radius: int,
     software rasteriser evaluates a GRADIENT pen per pixel along the stroke
     (~114 us a card). A flat colour is a fast path — microseconds — and
     caching it per hover frame would cost more than it saved.
+
+    CONCENTRICITY (the corner-doubling fix). `radius` is the radius of the
+    surface's OUTER boundary — the one QSS draws at the widget rect. Insetting
+    a rounded rect does not preserve its corner geometry: the arc centre moves
+    in with the rect, so an inset path drawn at the SAME radius bulges away
+    from the boundary everywhere except the four straight runs. At the 45°
+    point of a 14px corner the stroke landed 0.707px inside the boundary
+    instead of 0.5 — a 0.207px drift, invisible on the flat edges and just
+    wide enough at the corners for antialiasing to resolve the hairline and
+    the card's own border as TWO lines. That is the ugly double edge; the
+    hairline was never misplaced, only mis-curved.
+
+    Concentric requires shrinking the radius by the same inset, so the arc
+    centre stays put. The inset is derived from the pen width rather than
+    hardcoded, so a caller asking for a heavier stroke still gets it fully
+    inside the boundary instead of half of it clipped away.
     """
     if intensity <= 0.01:
         return
@@ -236,8 +259,10 @@ def paint_accent_hairline(painter: QPainter, rect, radius: int,
     edge = QColor(color)
     edge.setAlphaF(max(0.0, min(1.0, alpha * intensity)))
     painter.setPen(QPen(edge, width))
-    inner = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
-    painter.drawRoundedRect(inner, radius, radius)
+    inset = width / 2.0
+    inner = QRectF(rect).adjusted(inset, inset, -inset, -inset)
+    r = max(0.0, radius - inset)
+    painter.drawRoundedRect(inner, r, r)
     painter.restore()
 
 

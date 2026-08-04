@@ -342,12 +342,30 @@ function Invoke-GuiTask {
                     Write-Output "##PULSE##ERROR|winget is unavailable and could not be bootstrapped. Install 'App Installer' from the Microsoft Store, then retry."
                     break
                 }
-                $Updates = @(Get-WingetUpgradeList)
+                # Streamed (v10.3). Every update is emitted as its own
+                # ##PULSE##ITEM| line the moment the scan finds it, and each
+                # phase announces itself on ##PULSE##STAGE|, so the Update
+                # Center fills in progressively instead of showing a shimmer
+                # bar for half a minute. The complete ##PULSE##DATA| document
+                # is still written at the end and remains authoritative - the
+                # streamed rows are a preview of it, never a replacement.
+                $Scan = Invoke-DeepUpdateScan `
+                    -OnStage { param($Text) Write-GuiStage $Text } `
+                    -OnItem  { param($Item) Write-GuiItem $Item }
+                $Updates = @($Scan.Updates)
                 Write-GuiData -Data $Updates
+
+                $Scanned = "Scanned $($Scan.Inventory.Count) installed program(s)"
+                # Reported, not hidden: these are programs that genuinely have
+                # no package source behind them, and saying so is the honest
+                # version of "every installed program was checked".
+                $NoSource = if ($Scan.UnmatchedCount -gt 0) {
+                    " ($($Scan.UnmatchedCount) have no automated update source)"
+                } else { "" }
                 if ($Updates.Count -eq 0) {
-                    Write-Output "##PULSE##SUCCESS|Everything is up to date — no updates found."
+                    Write-Output "##PULSE##SUCCESS|$Scanned — everything is up to date$NoSource."
                 } else {
-                    Write-Output "##PULSE##SUCCESS|Found $($Updates.Count) update(s) available."
+                    Write-Output "##PULSE##SUCCESS|$Scanned — $($Updates.Count) update(s) available$NoSource."
                 }
                 break
             }
@@ -356,13 +374,32 @@ function Invoke-GuiTask {
                     Write-Output "##PULSE##ERROR|winget is unavailable and could not be bootstrapped. Install 'App Installer' from the Microsoft Store, then retry."
                     break
                 }
-                # Re-scan for the current Id -> Name pairs so Invoke-GuiBulkDeploy
+                # Resolve the current Id -> Name pairs so Invoke-GuiBulkDeploy
                 # (and Smart-Deploy underneath it) get real display names instead
                 # of bare winget Ids — same live-progress, retry and exit-code
                 # handling as every other bulk deploy, just fed an "upgrade"
                 # queue instead of an "install" one.
-                $UpgList = @(Get-WingetUpgradeList)
-                $AppList = @($UpgList | ForEach-Object { , @($_.Id, $_.Name) })
+                #
+                # Via the local package index, NOT a second full upgrade scan:
+                # names are all this needs, `winget list` has every one of them,
+                # and it measured ~0.9s against ~13s for the network pass. The
+                # user has already waited through one scan to pick these apps;
+                # making them wait through another before the first byte
+                # downloads was pure dead time.
+                $Index = Get-WingetPackageIndex
+                $AppList = @($Script:SelectedAppIds | Where-Object { $_ } | ForEach-Object {
+                    $Id = $_
+                    $Name = if ($Index.ContainsKey($Id) -and -not [string]::IsNullOrWhiteSpace($Index[$Id].Name)) {
+                        $Index[$Id].Name
+                    } else {
+                        # Not in the local index (a Store-only package, or one
+                        # whose id came from the msstore pass). The id is a
+                        # worse label than a name but an honest one, and the
+                        # deploy itself keys on the id regardless.
+                        $Id
+                    }
+                    , @($Id, $Name)
+                })
                 Invoke-GuiBulkDeploy $AppList "App Updates" -SelectedIds $Script:SelectedAppIds
                 break
             }

@@ -202,6 +202,12 @@ function Restore-OriginalRegValue {
 function Restore-DarkModeTweak {
     $Ok  = Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "AppsUseLightTheme" -DefaultIfMissing "1"
     $Ok  = (Restore-OriginalRegValue -TweakKey "DarkMode" -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "SystemUsesLightTheme" -DefaultIfMissing "1") -and $Ok
+    # Symmetric with applying it (Invoke-Tweak honours the catalog's
+    # RefreshShell flag): a theme revert that does not refresh the shell
+    # leaves exactly the stale taskbar/Explorer surfaces the apply path was
+    # taught to clear, so the card would toggle to "default" while the desktop
+    # visibly stayed dark.
+    if ($Ok) { Invoke-ShellThemeRefresh }
     if ($Ok) { Write-Success "Dark Mode reverted." } else { Write-ErrorX "Dark Mode reset incomplete - see the error(s) above." }
     return $Ok
 }
@@ -210,6 +216,29 @@ function Restore-MouseAccelTweak {
     $Ok  = Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -DefaultIfMissing "1" -Type String
     $Ok  = (Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -DefaultIfMissing "6" -Type String) -and $Ok
     $Ok  = (Restore-OriginalRegValue -TweakKey "MouseAccel" -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -DefaultIfMissing "10" -Type String) -and $Ok
+    # The revert has to reach the live session for the same reason the apply
+    # does (see Set-LiveMouseCurve in 06-Tweaks.ps1): win32k does not re-read
+    # this hive on its own, so restoring the values alone would leave the user
+    # on the raw curve while the registry claimed acceleration was back. Read
+    # the restored values back rather than assuming Windows' defaults - a
+    # snapshot may hold whatever non-default curve the user actually had.
+    if ($Ok -and -not (Test-DryRun "Apply the restored pointer curve to the live session (SystemParametersInfo SPI_SETMOUSE)")) {
+        $Path = "HKCU:\Control Panel\Mouse"
+        # These are REG_SZ, and a profile can carry anything in them. Parse
+        # defensively and fall back to the Windows default rather than letting
+        # a malformed value throw out of a revert that already succeeded.
+        $Read = {
+            param([string]$Name, [int]$Default)
+            $Raw = "$(Get-RegValue -Path $Path -Name $Name)".Trim()
+            $Parsed = 0
+            if ([int]::TryParse($Raw, [ref]$Parsed)) { return $Parsed }
+            return $Default
+        }
+        [void](Set-LiveMouseCurve `
+            -Threshold1   (& $Read "MouseThreshold1" 6) `
+            -Threshold2   (& $Read "MouseThreshold2" 10) `
+            -Acceleration (& $Read "MouseSpeed" 1))
+    }
     if ($Ok) { Write-Success "Mouse acceleration reverted." } else { Write-ErrorX "Mouse acceleration reset incomplete - see the error(s) above." }
     return $Ok
 }

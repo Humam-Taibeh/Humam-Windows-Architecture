@@ -173,31 +173,64 @@ function ConvertFrom-WingetUpgradeTable {
         breaks the instant an app name contains a space (most of them do).
         Malformed/unrecognized rows are skipped individually rather than
         aborting the whole scan - a partial result beats a hard failure.
+
+        TWO TABLES, NOT ONE (v10.3). `winget upgrade` prints a SECOND table
+        after the first, introduced by "The following packages have an
+        upgrade available, but require explicit targeting for upgrade:" -
+        and that table has its OWN column widths, because winget re-measures
+        them per table. This used to lock onto the first header and slice
+        every later line at those offsets, which had two consequences:
+        the packages in the second table (Discord, on the machine this was
+        found on) were mangled or lost, and the introducing SENTENCE was
+        itself sliced into a phantom package that reached the Update Center
+        as a row reading "The following packages have an upgrade avail" ->
+        "r upgrade:". Headers are therefore re-detected as they appear and
+        the offsets re-read from each one.
+
+        REJECTING PROSE. That phantom row is why a data row now has to prove
+        it is one: in an aligned table every column starts after padding, so
+        the character immediately before each column offset is a space. Prose
+        that happens to be long enough to reach those offsets is not aligned
+        to them and fails the check. This is a structural test rather than a
+        blacklist of winget's current sentences, which would need updating
+        every time the CLI reworded one.
     #>
     param([string[]]$Raw)
 
     if (-not $Raw) { return @() }
     $Lines = @($Raw | Where-Object { $_ -and $_.Trim() -ne '' })
 
-    $HeaderIdx = -1
-    for ($i = 0; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i] -match '^Name\s+Id\s+Version\s+Available') { $HeaderIdx = $i; break }
-    }
-    if ($HeaderIdx -eq -1) { return @() }   # "No installed package found..." / "No applicable update found"
-
-    $Header = $Lines[$HeaderIdx]
-    $NameStart      = $Header.IndexOf("Name")
-    $IdStart        = $Header.IndexOf("Id")
-    $VersionStart   = $Header.IndexOf("Version")
-    $AvailableStart = $Header.IndexOf("Available")
-    $SourceStart    = $Header.IndexOf("Source")   # may be -1 (msstore-only listings omit it)
-
+    $NameStart = -1; $IdStart = -1; $VersionStart = -1; $AvailableStart = -1; $SourceStart = -1
+    $HaveHeader = $false
     $Items = @()
-    for ($i = $HeaderIdx + 2; $i -lt $Lines.Count; $i++) {   # +2 skips header + "----" separator
-        $Line = $Lines[$i]
-        if ($Line -match '^\d+\s+upgrades?\s+available' -or $Line -match '^-+$') { continue }
+
+    foreach ($Line in $Lines) {
+        # A new header resets the column geometry for everything after it.
+        if ($Line -match '^Name\s+Id\s+Version\s+Available') {
+            $NameStart      = $Line.IndexOf("Name")
+            $IdStart        = $Line.IndexOf("Id")
+            $VersionStart   = $Line.IndexOf("Version")
+            $AvailableStart = $Line.IndexOf("Available")
+            $SourceStart    = $Line.IndexOf("Source")   # may be -1 (msstore-only listings omit it)
+            $HaveHeader = $true
+            continue
+        }
+        # Nothing before the first header is data ("No installed package
+        # found...", source-agreement banners, progress residue).
+        if (-not $HaveHeader) { continue }
+        if ($Line -match '^-+$') { continue }                      # the ---- rule under a header
+        if ($Line -match '^\d+\s+upgrades?\s+available') { continue }
         if ($Line -match '^\d+\s+package\(s\)') { continue }
         if ($Line.Length -le $IdStart) { continue }
+
+        # Column-alignment proof - see REJECTING PROSE above.
+        $Aligned = $true
+        foreach ($Boundary in @($IdStart, $VersionStart, $AvailableStart, $SourceStart)) {
+            if ($Boundary -le 0 -or $Boundary -ge $Line.Length) { continue }
+            if ($Line[$Boundary - 1] -ne ' ') { $Aligned = $false; break }
+        }
+        if (-not $Aligned) { continue }
+
         try {
             $AvailEnd = if ($SourceStart -gt $AvailableStart) { $SourceStart } else { $Line.Length }
             $Name = $Line.Substring($NameStart, [Math]::Min($IdStart, $Line.Length) - $NameStart).Trim()
@@ -220,6 +253,338 @@ function ConvertFrom-WingetUpgradeTable {
         }
     }
     return $Items
+}
+
+# ============================================================
+#  DEEP INSTALLED-PROGRAM INVENTORY (v10.3)
+# ============================================================
+# Registry Uninstall keys, all four of them, plus the Appx catalogue. This
+# is the SAME set Windows' own "Installed apps" page shows, which is the
+# bar: an updater that only knows what winget's default listing knows is
+# blind to everything installed by an MSI or a bundled setup that never
+# registered with a package source.
+#
+# The four hives are not interchangeable and all four are required:
+#   HKLM ...\Uninstall                      64-bit machine-wide installs
+#   HKLM ...\WOW6432Node\...\Uninstall      32-bit machine-wide installs
+#   HKCU ...\Uninstall                      per-user installs (Chrome, Teams,
+#                                           anything installed without admin)
+#   HKCU ...\WOW6432Node\...\Uninstall      per-user 32-bit; rare but real
+# A 32-bit PowerShell would see the WOW6432Node view AS the plain path and
+# silently enumerate it twice while missing the 64-bit set entirely, so both
+# paths are always listed explicitly and the results de-duplicated by key.
+$Script:UninstallKeyPaths = @(
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";              Scope = "Machine"; Arch = "X64" }
+    @{ Path = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";  Scope = "Machine"; Arch = "X86" }
+    @{ Path = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";              Scope = "User";    Arch = "X64" }
+    @{ Path = "HKCU:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";  Scope = "User";    Arch = "X86" }
+)
+
+function Get-InstalledProgramInventory {
+    <#
+    .SYNOPSIS
+        Every program installed on this machine, from the registry Uninstall
+        keys (32-bit and 64-bit, machine and user) plus Windows Apps.
+
+    .DESCRIPTION
+        ARP VISIBILITY RULES ARE APPLIED, not skipped. A raw enumeration of
+        these keys is not an app list - roughly a third of the entries are
+        things Windows deliberately hides: MSI patch/hotfix records, driver
+        payloads, and components marked SystemComponent. Listing them would
+        not be "more thorough", it would bury the user's actual software in
+        several hundred rows of noise and inflate every count in the report.
+        The filter below is the same one the Settings app applies:
+          - a DisplayName is required (nameless keys are bookkeeping)
+          - SystemComponent = 1 is hidden by definition
+          - an entry with a ParentKeyName / ParentDisplayName is a component
+            of another product, already represented by its parent
+          - ReleaseType of Update/Hotfix/Security Update is a patch record
+
+        THE `WingetKey` FIELD is the join that makes the whole deep scan
+        work. winget synthesises an id for anything it finds in ARP but
+        cannot match to a package - `ARP\Machine\X64\<registry key name>` -
+        and for Store packages `MSIX\<PackageFullName>`. Building the same
+        string here means the inventory can be correlated against winget's
+        own listing EXACTLY, by identity rather than by fuzzy name matching,
+        so "is this program known to a package source?" is answered
+        precisely instead of guessed.
+
+        Read-only throughout: no key is opened for write, nothing is
+        mutated, and every access is -ErrorAction SilentlyContinue because a
+        single ACL-protected vendor key must not abort the inventory.
+    #>
+    $Items = @()
+    $Seen = @{}
+
+    foreach ($Key in $Script:UninstallKeyPaths) {
+        if (-not (Test-Path $Key.Path)) { continue }
+        $Children = @(Get-ChildItem -Path $Key.Path -ErrorAction SilentlyContinue)
+        foreach ($Child in $Children) {
+            $P = $null
+            try { $P = Get-ItemProperty -Path $Child.PSPath -ErrorAction Stop } catch { continue }
+            if (-not $P) { continue }
+
+            $Name = "$($P.DisplayName)".Trim()
+            if ([string]::IsNullOrWhiteSpace($Name)) { continue }
+            if ("$($P.SystemComponent)" -eq "1") { continue }
+            if (-not [string]::IsNullOrWhiteSpace("$($P.ParentKeyName)")) { continue }
+            if (-not [string]::IsNullOrWhiteSpace("$($P.ParentDisplayName)")) { continue }
+            if ("$($P.ReleaseType)" -match '^(Update|Hotfix|Security Update|ServicePack)$') { continue }
+
+            $WingetKey = "ARP\$($Key.Scope)\$($Key.Arch)\$($Child.PSChildName)"
+            if ($Seen.ContainsKey($WingetKey)) { continue }
+            $Seen[$WingetKey] = $true
+
+            $Items += [PSCustomObject]@{
+                Name       = $Name
+                Version    = "$($P.DisplayVersion)".Trim()
+                Publisher  = "$($P.Publisher)".Trim()
+                Source     = "Registry"
+                Scope      = $Key.Scope
+                Arch       = $Key.Arch
+                WingetKey  = $WingetKey
+            }
+        }
+    }
+
+    # Windows Apps. -PackageTypeFilter Main excludes framework/resource
+    # packages, which are dependencies rather than things a user installed;
+    # NonRemovable/system packages are left in because they DO appear in the
+    # Store's update list and genuinely can have updates.
+    try {
+        foreach ($Pkg in @(Get-AppxPackage -PackageTypeFilter Main -ErrorAction SilentlyContinue)) {
+            if ($Pkg.IsFramework) { continue }
+            $Display = "$($Pkg.Name)".Trim()
+            if ([string]::IsNullOrWhiteSpace($Display)) { continue }
+            $WingetKey = "MSIX\$($Pkg.PackageFullName)"
+            if ($Seen.ContainsKey($WingetKey)) { continue }
+            $Seen[$WingetKey] = $true
+            $Items += [PSCustomObject]@{
+                Name       = $Display
+                Version    = "$($Pkg.Version)".Trim()
+                Publisher  = "$($Pkg.Publisher)".Trim()
+                Source     = "Store"
+                Scope      = "User"
+                Arch       = "$($Pkg.Architecture)"
+                WingetKey  = $WingetKey
+            }
+        }
+    } catch {
+        # Appx is unavailable in some constrained/Server SKUs. The registry
+        # half of the inventory is still perfectly valid, so degrade rather
+        # than fail the whole scan.
+        Write-Log "Deep inventory: Get-AppxPackage unavailable - $($_.Exception.Message)"
+    }
+
+    return $Items
+}
+
+function Get-WingetPackageIndex {
+    <#
+    .SYNOPSIS
+        ONE `winget list` call, turned into an Id -> {Name, Installed,
+        Available} lookup covering every package winget can see.
+
+    .DESCRIPTION
+        This is the fast half of the update scan and the reason it no longer
+        feels frozen. `winget list` resolves against winget's LOCAL source
+        cache - it measured 0.9s here against 13s for `winget upgrade`,
+        which pays for a network manifest round trip - and it already
+        populates the Available column for anything with a pending upgrade.
+        So the first wave of real results can be on screen in about a
+        second, and the slow authoritative pass becomes a top-up rather than
+        the thing the user waits on.
+
+        Parsed with ConvertFrom-WingetUpgradeTable because `winget list` and
+        `winget upgrade` share one column layout - which is exactly why that
+        parser was written source-agnostic.
+    #>
+    $Index = @{}
+    if (-not $global:WingetAvailable) { return $Index }
+    try {
+        $Raw = & (Get-WingetPath) list --accept-source-agreements --disable-interactivity 2>$null
+        foreach ($Item in (ConvertFrom-WingetUpgradeTable -Raw $Raw)) {
+            if ([string]::IsNullOrWhiteSpace($Item.Id)) { continue }
+            $Index[$Item.Id] = $Item
+        }
+    } catch {
+        Write-Log "winget package index build failed: $($_.Exception.Message)"
+    }
+    return $Index
+}
+
+function Test-RealUpgradeAvailable {
+    <# True when an `Available` column value represents a genuine pending
+       upgrade. winget prints a literal "Unknown" for packages whose
+       installed version it cannot determine, and an empty cell for
+       already-current ones; treating either as an update would fill the
+       Update Center with rows that upgrade to nothing. #>
+    param([string]$Current, [string]$Available)
+    if ([string]::IsNullOrWhiteSpace($Available)) { return $false }
+    if ($Available -eq "Unknown") { return $false }
+    if ($Available -eq $Current) { return $false }
+    return $true
+}
+
+function Invoke-DeepUpdateScan {
+    <#
+    .SYNOPSIS
+        The Update Center's scan: a complete installed-program inventory,
+        matched against every update source, streamed to the caller as
+        results are found rather than delivered in one lump at the end.
+
+    .DESCRIPTION
+        FOUR PHASES, ORDERED BY LATENCY - fastest first, so the list starts
+        filling immediately instead of after the slowest call returns. The
+        old scan ran the 13-second `winget upgrade` first and showed nothing
+        until it finished, which is the entire "feels broken" complaint:
+
+          1. Deep inventory      ~0.3s  every installed program (both
+                                        registry architectures, both hives,
+                                        plus Windows Apps)
+          2. winget list         ~0.9s  local correlation; every package with
+                                        a pending upgrade is streamed here,
+                                        so real rows appear ~1s in
+          3. winget upgrade      ~13s   the authoritative network pass, with
+                                        --include-unknown; tops up anything
+                                        phase 2 could not resolve
+          4. winget upgrade
+             --source msstore    ~0.6s  Store packages, which are dropped
+                                        from the unscoped listing unless the
+                                        msstore source agreement is accepted
+                                        in a scoped call (see the note that
+                                        was on Get-WingetUpgradeList)
+
+        De-duplicated by Id across all phases, first writer winning, so a
+        row streamed early is never contradicted by a later phase - the
+        frontend can render on arrival without rows shuffling underneath the
+        user's cursor.
+
+        -OnItem / -OnStage are optional. Called with one argument each, they
+        let the GUI dispatcher stream without this function knowing anything
+        about the ##PULSE## wire format; the console menu passes neither and
+        gets the same return value.
+
+        Returns @{ Updates; Inventory; MatchedCount; UnmatchedCount } - the
+        counts are what let the caller report honestly on coverage instead
+        of implying that everything without an update has an update source.
+    #>
+    param(
+        [scriptblock]$OnItem,
+        [scriptblock]$OnStage
+    )
+
+    # ArrayList, not a PowerShell array: the collector below is a closure
+    # over it, and `$arr += x` inside a scriptblock rebinds a COPY in the
+    # scriptblock's own scope rather than appending to the caller's - the
+    # classic silent "nothing accumulated" bug. .Add() mutates the one
+    # instance, so there is only ever one list.
+    $Collected = [System.Collections.ArrayList]::new()
+    $SeenIds = @{}
+
+    $Stage = {
+        param([string]$Text)
+        if ($OnStage) { & $OnStage $Text }
+    }
+    $Collect = {
+        param($Item)
+        if (-not $Item -or [string]::IsNullOrWhiteSpace($Item.Id)) { return }
+        if ($SeenIds.ContainsKey($Item.Id)) { return }
+        $SeenIds[$Item.Id] = $true
+        [void]$Collected.Add($Item)
+        if ($OnItem) { & $OnItem $Item }
+    }
+
+    # -- phase 1: the inventory ----------------------------------
+    & $Stage "Reading installed programs (registry, 32-bit and 64-bit, plus Windows Apps)…"
+    $Inventory = @(Get-InstalledProgramInventory)
+    & $Stage "Found $($Inventory.Count) installed programs. Matching them against update sources…"
+
+    if (-not $global:WingetAvailable) {
+        # No package manager: the inventory is still real and worth
+        # reporting, there is simply nothing to match it against.
+        return @{
+            Updates        = @()
+            Inventory      = $Inventory
+            MatchedCount   = 0
+            UnmatchedCount = $Inventory.Count
+        }
+    }
+
+    # -- phase 2: the fast local pass ----------------------------
+    $Index = Get-WingetPackageIndex
+    # Sorted, so the rows that stream in during phase 2 arrive in a stable,
+    # readable order instead of hashtable order - the user is watching this
+    # list build itself, and a random order looks like a glitch.
+    foreach ($Entry in ($Index.Values | Sort-Object Name)) {
+        if (Test-RealUpgradeAvailable -Current $Entry.CurrentVersion -Available $Entry.AvailableVersion) {
+            & $Collect ([PSCustomObject]@{
+                Id               = $Entry.Id
+                Name             = $Entry.Name
+                CurrentVersion   = $Entry.CurrentVersion
+                AvailableVersion = $Entry.AvailableVersion
+                Source           = "winget"
+            })
+        }
+    }
+    if ($Collected.Count -gt 0) {
+        & $Stage "$($Collected.Count) update(s) so far — checking the full catalog for the rest…"
+    } else {
+        & $Stage "Checking the full winget catalog (this is the slow part)…"
+    }
+
+    # -- phase 3: the authoritative pass -------------------------
+    try {
+        $Raw = & (Get-WingetPath) upgrade --include-unknown --accept-source-agreements --disable-interactivity 2>$null
+        foreach ($Item in (ConvertFrom-WingetUpgradeTable -Raw $Raw)) {
+            & $Collect ([PSCustomObject]@{
+                Id               = $Item.Id
+                Name             = $Item.Name
+                CurrentVersion   = $Item.CurrentVersion
+                AvailableVersion = $Item.AvailableVersion
+                Source           = "winget"
+            })
+        }
+    } catch {
+        Write-Log "Deep scan: default winget upgrade pass failed - $($_.Exception.Message)"
+    }
+
+    # -- phase 4: the Store pass ---------------------------------
+    & $Stage "Checking Microsoft Store apps…"
+    try {
+        $StoreRaw = & (Get-WingetPath) upgrade --include-unknown --source msstore --accept-source-agreements --disable-interactivity 2>$null
+        foreach ($Item in (ConvertFrom-WingetUpgradeTable -Raw $StoreRaw)) {
+            & $Collect ([PSCustomObject]@{
+                Id               = $Item.Id
+                Name             = $Item.Name
+                CurrentVersion   = $Item.CurrentVersion
+                AvailableVersion = $Item.AvailableVersion
+                Source           = "msstore"
+            })
+        }
+    } catch {
+        Write-Log "Deep scan: msstore upgrade pass failed - $($_.Exception.Message)"
+    }
+
+    # Coverage, measured by IDENTITY rather than by name similarity - see the
+    # WingetKey note on Get-InstalledProgramInventory. winget enumerates the
+    # same ARP hives this inventory does and lists each entry either under a
+    # real package id or under its `ARP\...` / `MSIX\...` fallback id. So an
+    # inventory entry whose WingetKey turns up IN the index is one winget
+    # could not match to any package: installed software with no automated
+    # update path, which the summary reports rather than quietly implying
+    # every program was covered.
+    $NoSource = 0
+    foreach ($Prog in $Inventory) {
+        if ($Index.ContainsKey($Prog.WingetKey)) { $NoSource++ }
+    }
+
+    return @{
+        Updates        = @($Collected.ToArray())
+        Inventory      = $Inventory
+        MatchedCount   = ($Inventory.Count - $NoSource)
+        UnmatchedCount = $NoSource
+    }
 }
 
 function Get-WingetUpgradeList {
