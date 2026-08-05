@@ -245,3 +245,119 @@ def test_paint_cost_stays_within_the_frame_budget(window, qapp, theme_name):
         if window.theme.t["name"] != started:
             window._toggle_theme_animated()
             settle(qapp, 900)
+
+
+# ============================================================
+#  CONTINUITY ACROSS NAVIGATION  (v10.3 final pass)
+# ============================================================
+# Reported from real-world testing on low-spec hardware: "the ambient
+# circles freeze during a tab switch, then reset and restart their path".
+#
+# Nothing ever reset them — _build_particles runs once, in __init__. What
+# happened is that _tick RETURNED BEFORE INTEGRATING while deferred, so a
+# page switch cost the field the entire deferral: 150 ms warm, 360 ms the
+# first time a module is opened (PAGE_FADE_MS, then CASCADE_BUDGET_MS +
+# CASCADE_MS). Motion resumed from where it stopped instead of from where
+# continuous motion would have put it, which from the outside is
+# indistinguishable from the field snapping back.
+#
+# Measured over a three-lap sweep of all four modules before the fix: the
+# field advanced 661 ms of a 2695 ms sweep — 75% frozen, with dead stalls
+# of 1061 ms. The deferral itself is NOT the bug and must stay: the wash's
+# cost is the full-window repaint it forces through every translucent
+# surface above it (18.5 ms), and landing one mid-transition is the hitch
+# it was introduced to remove. Skipping the PAINT is the whole saving;
+# skipping the arithmetic with it was free to do and expensive to have done.
+
+def _deferred_tick(glow, elapsed_s: float):
+    """Drive one tick that lands `elapsed_s` after arming, while deferred."""
+    glow.defer(5000)
+    glow._armed_at = time.perf_counter() - elapsed_s
+    glow._tick()
+
+
+def test_a_deferred_tick_still_advances_the_field(window):
+    """The whole fix in one assertion: a frame we choose not to PAINT is
+    still a frame the field MOVED through."""
+    glow = window._glow
+    try:
+        before_t = glow._t
+        before_y = [p["y"] for p in glow._particles]
+        _deferred_tick(glow, 0.10)
+
+        assert glow._t > before_t, (
+            "a deferred tick did not advance _t — the field is losing wall "
+            "time on every page transition and will resume from a stale "
+            "position, which is the reported 'freeze and snap back'")
+        moved = sum(1 for p, y0 in zip(glow._particles, before_y)
+                    if abs(p["y"] - y0) > 1e-9)
+        assert moved == len(glow._particles), (
+            f"only {moved}/{len(glow._particles)} particles drifted during a "
+            "deferred frame")
+    finally:
+        glow._defer_until = 0.0
+
+
+def test_a_deferred_tick_does_not_repaint(window):
+    """...and the saving the deferral exists for is still banked. If this
+    ever starts painting, navigation gets its 18.5 ms hitch back."""
+    glow = window._glow
+    calls = []
+    original = glow.update
+    glow.update = lambda *a, **k: calls.append(1)
+    try:
+        _deferred_tick(glow, 0.10)
+        assert not calls, (
+            "a deferred tick repainted — the deferral buys nothing and the "
+            "page transition pays the full-window repaint it was meant to "
+            "step out of the way of")
+    finally:
+        glow.update = original
+        glow._defer_until = 0.0
+
+
+def test_the_governor_ignores_deferred_ticks(window):
+    """Lateness means 'adding a repaint here would hurt'. A deferred tick
+    is not adding one, so it must not ratchet the field toward the ceiling
+    — that is what left the wash crawling at 4.5fps for ~1s AFTER a switch
+    had already finished."""
+    glow = window._glow
+    try:
+        glow._interval = float(glow._INTERVAL_MS)
+        # a tick arriving far beyond _LATE_MS, but deferred
+        _deferred_tick(glow, (glow._LATE_MS + 200.0) / 1000.0)
+        assert glow._interval == float(glow._INTERVAL_MS), (
+            f"the governor backed off to {glow._interval:.0f}ms on a frame "
+            "that never painted")
+    finally:
+        glow._defer_until = 0.0
+        glow._interval = float(glow._INTERVAL_MS)
+
+
+def test_navigation_does_not_freeze_the_field(window, qapp):
+    """End-to-end: sweep every module and assert the field keeps up with
+    the wall clock. Pre-fix this ran at 17-25% and is the user-visible
+    symptom; the threshold is deliberately loose so it fails on a
+    regression rather than on scheduler noise."""
+    from frontend.menu_structure import CATEGORIES
+
+    window._revealed.clear()          # force the 360 ms first-visit defer
+    window.go_home()
+    settle(qapp, 500)
+
+    t_start = glow_t0 = window._glow._t
+    wall_start = time.perf_counter()
+    for _ in range(2):
+        for index in range(len(CATEGORIES)):
+            window.open_category(index)
+            settle(qapp, 180)
+    wall = time.perf_counter() - wall_start
+    advanced = window._glow._t - t_start
+
+    assert advanced > wall * 0.70, (
+        f"the ambient field advanced {advanced * 1000:.0f} ms across a "
+        f"{wall * 1000:.0f} ms navigation sweep "
+        f"({advanced / wall * 100:.0f}% — pre-fix this was 17-25%). The wash "
+        "is freezing through page transitions instead of only skipping the "
+        "repaint.")
+    assert glow_t0 == t_start          # guard the measurement itself

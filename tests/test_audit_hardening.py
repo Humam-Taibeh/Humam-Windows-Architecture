@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 import gc
 import subprocess
+import time
 import weakref
 from pathlib import Path
 
@@ -468,3 +469,171 @@ def test_the_ambient_glow_caches_stay_bounded(window, qapp):
     assert len(glow._star_cache) <= 32, (
         f"star cache reached {len(glow._star_cache)} entries during a resize — "
         "star sizes must stay quantised")
+
+
+# ============================================================
+#  5. WORKER-DIALOG TEARDOWN  (v10.3 final pass)
+# ============================================================
+# Seven dialogs run a PowerShellTask on a QThread parented to themselves.
+# Each cancelled its worker in reject() — but cancelling only kills the
+# backend PROCESS; the QThread lives on for the moment its read loop needs
+# to unwind. Destroying a QThread that is still running is not an
+# exception, it is qFatal: the process ABORTS, with no traceback, no Qt
+# warning, and an exit code that says nothing.
+#
+# main.PulseApp.closeEvent has always paired cancel() with wait(3000) for
+# the shell's own task thread. The dialogs only ever did the first half.
+# Nothing caught it because the leak roster above deliberately stopped at
+# the eleven thread-free dialogs — and extending it was not a "add three
+# more names" change, it KILLED THE TEST RUNNER mid-session rather than
+# reporting a failure, which is precisely why the gap survived this long.
+_WORKER_DIALOGS = [
+    "HealthReportDialog", "ActivationStatusDialog", "InspectorDialog",
+    "StorageAnalyzerDialog", "UpdateCenterDialog", "StartupManagerDialog",
+]
+
+
+def _worker_dialog_builders(window):
+    from frontend import widgets as W
+
+    t = window.theme.t
+    # Empty ps1_path: the dialogs still build their thread and worker, so
+    # the teardown path under test is exercised in full, but the spawn
+    # fails immediately instead of running a real backend scan in a test.
+    return {name: (lambda n=name: getattr(W, n)(window, "", t))
+            for name in _WORKER_DIALOGS}
+
+
+def test_the_worker_dialog_roster_is_complete():
+    """A hand-written list of class names is exactly the thing that goes
+    stale. Parse widgets.py and assert nothing grew a QThread without
+    being added here."""
+    tree = ast.parse((_SRC / "frontend" / "widgets.py").read_text(
+        encoding="utf-8"))
+    threaded = {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and "QThread(" in ast.unparse(node)
+    }
+    # DnsSwitcherDialog / ContextMenuDialog also own threads but are
+    # constructed with extra arguments; they inherit the same guard.
+    missing = threaded - set(_WORKER_DIALOGS) - {
+        "DnsSwitcherDialog", "ContextMenuDialog"}
+    assert not missing, (
+        f"these dialogs grew a QThread and are not covered: {sorted(missing)}")
+
+
+@pytest.mark.parametrize("name", _WORKER_DIALOGS)
+def test_closing_a_worker_dialog_settles_its_thread(window, qapp, name):
+    """After close, NO QThread the dialog owns may still be running.
+
+    This is the assertion that stands between the app and a qFatal abort:
+    anything that destroys the dialog after this point — Qt tearing down
+    the parent window, a test calling deleteLater — is only safe because
+    the thread is already joined.
+    """
+    from PySide6.QtCore import QThread
+
+    dialog = _worker_dialog_builders(window)[name]()
+    dialog.show()
+    _drain(qapp, 2)
+    dialog.reject()
+    _drain(qapp, 2)
+
+    running = [obj for obj in vars(dialog).values()
+               if isinstance(obj, QThread) and obj.isRunning()]
+    assert not running, (
+        f"{name}: {len(running)} worker thread(s) still running after close — "
+        "destroying the dialog now would abort the process (qFatal), not "
+        "raise. PulseDialog.done() must cancel and join them.")
+    dialog.deleteLater()
+    _drain(qapp)
+
+
+@pytest.mark.parametrize("name", _WORKER_DIALOGS)
+def test_repeated_worker_dialog_opens_do_not_accumulate(window, qapp, name):
+    """The leak loop the roster above could not safely run until the
+    teardown guard existed."""
+    from frontend.widgets import PulseDialog
+
+    build = _worker_dialog_builders(window)[name]
+    counts = []
+    for _ in range(3):
+        dialog = build()
+        dialog.show()
+        _drain(qapp, 2)
+        dialog.reject()
+        dialog.deleteLater()
+        del dialog
+        _drain(qapp)
+        gc.collect()
+        counts.append(len(window.findChildren(PulseDialog)))
+
+    assert counts[0] == counts[-1], (
+        f"{name}: live dialog count climbed {counts} across three cycles")
+
+
+def test_the_dialog_wait_budget_matches_the_shell():
+    """Same hazard, same budget. If main.py's wait is retuned and the
+    dialogs' is not, the two disagree about how long a backend kill is
+    allowed to take to land."""
+    from frontend.widgets import PulseDialog
+
+    shell = (_SRC / "frontend" / "main.py").read_text(encoding="utf-8")
+    assert f"wait({PulseDialog._WORKER_WAIT_MS})" in shell, (
+        f"PulseDialog._WORKER_WAIT_MS is {PulseDialog._WORKER_WAIT_MS}ms but "
+        "main.PulseApp.closeEvent no longer waits for that long — the shell "
+        "and its dialogs must give a cancelled backend the same grace")
+
+
+def test_grace_precedes_cancel_and_is_shorter_than_the_join():
+    """The two budgets have different jobs and must not be transposed.
+
+    GRACE is how long a worker gets to finish ON ITS OWN before it is
+    killed; JOIN is how long the already-killed thread gets to unwind.
+    Grace exists because two of the seven worker dialogs — the DNS
+    switcher and the context-menu manager — run tasks that WRITE, and
+    neither overrides reject(), so closing one mid-apply lands in this
+    guard. A grace of 0 would turn 'user dismissed the sheet' into a
+    process kill between the IPv4 and IPv6 resolver writes.
+    """
+    from frontend.widgets import PulseDialog
+
+    assert 0 < PulseDialog._WORKER_GRACE_MS < PulseDialog._WORKER_WAIT_MS, (
+        f"grace ({PulseDialog._WORKER_GRACE_MS}ms) must be a positive window "
+        f"SHORTER than the post-cancel join ({PulseDialog._WORKER_WAIT_MS}ms)")
+
+
+def test_an_already_cancelled_worker_costs_no_grace(window, qapp):
+    """The five read-only dialogs cancel in their own reject(), so the
+    backend process is already dead when the guard runs and the grace
+    wait must return at once. If cancel and grace were ever reordered,
+    every one of them would stall the full grace window on close —
+    measured at 0.5ms today against a 1200ms budget.
+    """
+    dialog = _worker_dialog_builders(window)["UpdateCenterDialog"]()
+    dialog.show()
+    _drain(qapp, 2)
+    if dialog._worker is not None:
+        dialog._worker.cancel()
+
+    start = time.perf_counter()
+    dialog._settle_worker_threads()
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+    assert elapsed_ms < 500.0, (
+        f"settling an already-cancelled worker blocked for {elapsed_ms:.0f} ms "
+        "— the grace wait is being spent on a thread that was already done")
+    dialog.reject()
+    dialog.deleteLater()
+    _drain(qapp)
+
+
+def test_done_is_the_guard_point_not_reject():
+    """reject() is not the only way out: a dialog that closes by ACCEPTING
+    with a scan still in flight is the same hazard. done() is the funnel
+    both paths pass through, so the guard belongs there."""
+    from frontend.widgets import PulseDialog
+
+    assert "done" in vars(PulseDialog), (
+        "PulseDialog.done() is where the worker-thread join lives — moving "
+        "it to reject() would leave accept() unguarded")

@@ -352,14 +352,50 @@ class TestAmbientDefer:
     """defer() is what keeps a full-window ambient repaint out of the
     middle of a transition the user is watching."""
 
-    def test_a_deferred_field_does_not_advance(self, window, qapp):
+    def test_a_deferred_field_does_not_repaint(self, window, qapp):
+        """The saving a deferral exists for, asserted directly.
+
+        This used to read `glow._t == mark`. That was a PROXY for the thing
+        the message already named — no full-window repaint mid-transition —
+        and it was a sound proxy only because advancing and painting used
+        to be the same event: _tick returned before both.
+
+        They are no longer the same event. The field now integrates while
+        deferred and skips only the paint, because the 18.5 ms this guards
+        is the repaint through every translucent surface above the glow,
+        not the arithmetic over 126 particles that costs microseconds.
+        Freezing the maths as well cost the field the whole deferral —
+        75% of a navigation sweep, in stalls over a second long — and
+        surfaced as the orbs stopping dead and snapping back on every tab
+        change. Asserting on _t here would now pin the bug in place.
+        """
         glow = window._glow
-        glow.defer(500)
-        mark = glow._t
-        settle(qapp, 300)
-        assert glow._t == mark, (
-            "the ambient field ran during a deferral — an 18.5 ms "
-            "full-window repaint lands in the middle of the transition")
+        painted = []
+        original = glow.update
+        glow.update = lambda *a, **k: painted.append(1)
+        try:
+            glow.defer(500)
+            settle(qapp, 300)
+            assert not painted, (
+                "the ambient field repainted during a deferral — an 18.5 ms "
+                "full-window repaint lands in the middle of the transition")
+        finally:
+            glow.update = original
+            glow._defer_until = 0.0
+
+    def test_a_deferred_field_keeps_simulating(self, window, qapp):
+        """The other half of the same contract — see the note above."""
+        glow = window._glow
+        try:
+            glow.defer(500)
+            mark = glow._t
+            settle(qapp, 300)
+            assert glow._t > mark, (
+                "the field stopped integrating while deferred, so it will "
+                "resume from a stale position — the reported 'particles "
+                "freeze and restart their path' on every tab switch")
+        finally:
+            glow._defer_until = 0.0
 
     def test_it_resumes_unaided(self, window, qapp):
         glow = window._glow

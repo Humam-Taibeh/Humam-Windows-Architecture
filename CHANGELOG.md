@@ -108,6 +108,57 @@ GUI version, with core changes called out explicitly.
   shape of content and must colour a tone identically — two private copies
   of that mapping would eventually disagree about what amber means.
 
+### Fixed
+- **The ambient field froze through every tab switch and resumed from a
+  stale position** — reported from real-world testing on low-spec hardware
+  as the background orbs stopping dead and restarting their path. Nothing
+  ever reset them (`_build_particles` runs once, in `__init__`);
+  `AmbientGlow._tick` returned *before* integrating while deferred, so a
+  page switch cost the field the entire deferral — 150 ms warm, 360 ms the
+  first time a module is opened. Measured over a three-lap sweep of all
+  four modules: the field advanced **661 ms of a 2695 ms sweep (75%
+  frozen)**, in dead stalls of up to **1061 ms**; on a simulated low-spec
+  profile, 74.8% frozen with 1194 ms stalls. It now advances **99.9%** of
+  wall time, with no stall longer than one tick interval.
+  - The deferral itself is unchanged and still does its job: the cost it
+    exists to keep out of a transition is the **full-window repaint**
+    (18.5 ms, of which 10.9 is the card grid) forced through every
+    translucent surface above the glow — not the arithmetic over 126
+    particles and five orbs, which is microseconds. The tick now skips the
+    paint and keeps the maths.
+  - The frame governor no longer reads a **deferred** tick's lateness as
+    thread contention. It was ratcheting the field toward its 220 ms
+    ceiling on the way through a transition that added no repaint, then
+    crawling back at 10% a frame for ~1 s *after* the switch had finished
+    — most of "the particles choke when I change tabs" on a slow machine.
+  - `test_navigation_perf.py`'s `test_a_deferred_field_does_not_advance`
+    asserted on `_t` as a *proxy* for "did not repaint" (sound only while
+    the two were the same event). It now asserts the repaint directly, and
+    a sibling pins that the field keeps simulating.
+- **Destroying a dialog with a live worker thread aborted the process.**
+  Seven dialogs run a `PowerShellTask` on a `QThread` parented to
+  themselves and cancelled the worker on close — but cancelling only kills
+  the backend *process*; the thread lives on while its read loop unwinds,
+  and destroying a running `QThread` is `qFatal`, not an exception: no
+  traceback, no Qt warning. `main.PulseApp.closeEvent` had always paired
+  `cancel()` with `wait(3000)`; the dialogs only ever did the first half.
+  `PulseDialog.done()` — the funnel `accept()` and `reject()` share — now
+  joins them, discovering threads by scanning `__dict__` so no name list
+  can go stale.
+  - **Grace before cancel**, not cancel-first: the DNS switcher and
+    context-menu manager run tasks that *write* and neither overrides
+    `reject()`, so a plain cancel could strand an adapter with its IPv4
+    resolvers changed and its IPv6 ones not. A worker gets
+    `_WORKER_GRACE_MS` (1200) to finish on its own before it is killed.
+    Measured: 0.5 ms for already-cancelled read-only dialogs, ~740 ms for
+    a DNS apply that is allowed to complete.
+  - Unreachable from the shipped UI by luck rather than design —
+    `_exec_dialog` drops its reference but the dialog is parented, so C++
+    keeps it alive past the danger. It was reachable from the test suite,
+    where it **killed the runner mid-session** instead of failing, which
+    is why the leak roster in `test_audit_hardening.py` had stopped at the
+    eleven thread-free dialogs. All eighteen are now covered.
+
 ---
 
 ## [10.0.0] — 2026-07-28

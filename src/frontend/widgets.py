@@ -249,6 +249,120 @@ class PulseDialog(QDialog):
             return
         super().mousePressEvent(e)
 
+    # -- worker-thread teardown ---------------------------------------
+    #: Bound on how long a closing dialog waits for its own worker thread.
+    #: Matches main.PulseApp.closeEvent's 3000ms for the shell's task
+    #: thread — same hazard, same budget, and the two must not drift.
+    _WORKER_WAIT_MS = 3000
+    #: How long a still-running worker is given to finish ON ITS OWN before
+    #: it is cancelled. Small, because in the common case it is already
+    #: over: five of the seven worker dialogs cancel in their own reject(),
+    #: so by the time we get here the backend process is dead and the read
+    #: loop unwinds in single-digit milliseconds. It is spent in full only
+    #: by the two dialogs that mutate — see _settle_worker_threads.
+    _WORKER_GRACE_MS = 1200
+
+    def done(self, result: int):
+        """Close, having first SETTLED any worker thread this dialog owns.
+
+        Seven dialogs (Update Center, Startup Manager, Health Report,
+        Activation, the Inspectors, DNS, Context Menu) run a PowerShellTask
+        on a QThread parented to themselves. Each already cancels its worker
+        in reject() — but cancelling only kills the backend PROCESS. The
+        QThread lives on for the moment its read loop needs to unwind, and
+        destroying a QThread that is still running is not an exception:
+        Qt calls qFatal and the process ABORTS, with no traceback and no
+        Qt warning to say why.
+
+        main.PulseApp.closeEvent has always paired cancel() with
+        wait(3000) for exactly this reason; the dialogs only ever did the
+        first half. It was unreachable from the shipped UI by luck rather
+        than design — main._exec_dialog drops its reference but the dialog
+        is parented, so C++ keeps it alive past the danger. Anything that
+        deletes a worker dialog deliberately (a leak test doing what
+        tests/test_audit_hardening.py already does for the other eleven)
+        killed the interpreter outright instead of failing.
+
+        done() rather than reject(): it is the single funnel both accept()
+        and reject() pass through, so a dialog that closes by ACCEPTING
+        with a scan still in flight is covered by the same guard. A no-op
+        (two dict scans) for the eleven dialogs that own no thread.
+        """
+        self._settle_worker_threads()
+        super().done(result)
+
+    def _settle_worker_threads(self, timeout_ms: int | None = None):
+        """Join every QThread this dialog owns, cancelling only if needed.
+
+        Threads and tasks are discovered by scanning __dict__ rather than
+        by naming attributes: the roster uses `_thread`/`_worker` in six
+        dialogs and `_scan_thread`/`_toggle_thread` in the Startup Manager,
+        and a hand-maintained list of names is exactly the kind of thing
+        that goes stale the next time a dialog grows a second worker.
+
+        WHY GRACE BEFORE CANCEL. Cancelling is a process-tree KILL, and
+        two of the seven worker dialogs run tasks that WRITE: the DNS
+        switcher (SetDnsProfile / RestoreDns) and the context-menu manager
+        (ContextMenuToggle / ContextMenuRestore). Neither overrides
+        reject(), so dismissing one with Escape or a backdrop click while
+        its apply is in flight reaches this method mid-mutation. Killing
+        there could strand an adapter with its IPv4 resolvers changed and
+        its IPv6 ones not — a worse state than either outcome the user was
+        choosing between. Everything these two run finishes well inside
+        the grace window, so in practice they complete rather than being
+        interrupted.
+
+        The five read-only dialogs pay nothing for it: their reject() has
+        already cancelled, so the process is gone and the first wait()
+        returns almost immediately.
+
+        ORDER IS LOAD-BEARING on the cancel path. cancel() must come
+        before quit(): it terminates the backend process tree, which is
+        what unblocks the worker's blocking stdout read. quit() alone
+        cannot — the thread's event loop is sitting inside run(), so the
+        quit stays queued until run() returns.
+        """
+        if timeout_ms is None:
+            timeout_ms = self._WORKER_WAIT_MS
+        held = list(self.__dict__.values())
+        threads = [o for o in held if isinstance(o, QThread)]
+        tasks = [o for o in held if isinstance(o, PowerShellTask)]
+
+        def running(thread) -> bool:
+            try:
+                return thread.isRunning()
+            except RuntimeError:      # C++ side already gone
+                return False
+
+        # 1. let anything still in flight land on its own terms
+        for thread in threads:
+            if not running(thread):
+                continue
+            try:
+                thread.quit()
+                thread.wait(self._WORKER_GRACE_MS)
+            except RuntimeError:
+                pass
+
+        # 2. anything that outlasted the grace is cancelled and joined —
+        #    a dialog must never be destroyed with a live QThread, which
+        #    is qFatal (an abort), not an exception.
+        if not any(running(thread) for thread in threads):
+            return
+        for task in tasks:
+            try:
+                task.cancel()
+            except RuntimeError:
+                pass
+        for thread in threads:
+            if not running(thread):
+                continue
+            try:
+                thread.quit()
+                thread.wait(timeout_ms)
+            except RuntimeError:
+                pass
+
 
 # Every scrollable "row list" selector (App Selector, Dev Hub, Update
 # Center, Startup Manager, and a hub's own landing screen) shares this one
@@ -2206,13 +2320,16 @@ class AmbientGlow(QWidget):
         # than teleporting the whole field.
         elapsed = (now - self._armed_at) if self._armed_at else self._interval / 1000.0
         late = max(0.0, elapsed * 1000.0 - self._interval)
-        self._govern(late)
-
-        if now < self._defer_until:
-            # An interaction owns the GUI thread — re-arm for whatever is
-            # left of the deferral and paint nothing.
-            self._arm((self._defer_until - now) * 1000.0)
-            return
+        deferred = now < self._defer_until
+        # The governor reads lateness as "adding a repaint here would hurt".
+        # A DEFERRED tick is not adding one, so its lateness says nothing
+        # about the wash — and letting it speak ratcheted the field to the
+        # 220 ms ceiling on the way through every page transition, which it
+        # then crawled back from at 10% a frame for ~1 s AFTER the switch
+        # had finished. That recovery crawl was most of "the particles choke
+        # when I change tabs" on a slow machine.
+        if not deferred:
+            self._govern(late)
 
         dt = min(max(elapsed, 0.001), self._MAX_INTERVAL_MS / 1000.0)
         self._t += dt
@@ -2254,6 +2371,35 @@ class AmbientGlow(QWidget):
                 pt["x"] += 1.06
             elif pt["x"] > 1.03:
                 pt["x"] -= 1.06
+
+        if deferred:
+            # SIMULATE, DON'T PAINT. Everything above this line is
+            # arithmetic over 126 particles and five orbs — microseconds.
+            # The cost this widget is deferred for is the PAINT: an
+            # update() here dirties the full window and Qt repaints every
+            # translucent surface above it, 18.5 ms of which 10.9 is the
+            # card grid. Skipping the paint is the whole saving; skipping
+            # the maths with it was free to do and expensive to have done.
+            #
+            # It used to return BEFORE integrating, so a page switch cost
+            # the field 150 ms of wall time (360 ms the first time a module
+            # is opened, which also pays the cascade). Motion resumed from
+            # where it stopped rather than from where it should be, so the
+            # wash visibly stalled and then continued — read from the
+            # outside as the orbs freezing and snapping back to the start
+            # of their path. The field is now exactly where continuous
+            # motion puts it when the transition ends; it simply was not
+            # drawn for a frame or two in between.
+            #
+            # Re-armed at the NORMAL cadence rather than for the whole
+            # remaining deferral, so dt stays small and accurate across a
+            # long defer instead of arriving as one lump that the clamp
+            # above would truncate — a 360 ms first-visit defer would lose
+            # 140 ms of drift to that clamp in a single jump.
+            self._arm(min(self._interval,
+                          (self._defer_until - now) * 1000.0))
+            return
+
         self.update()
         self._arm()
 
