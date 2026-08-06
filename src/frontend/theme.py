@@ -26,9 +26,10 @@ Rules:
 from __future__ import annotations
 
 import ctypes
+import math
 import sys
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QRect, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase
 
 # ============================================================
@@ -60,6 +61,77 @@ def to_qcolor(value: str) -> QColor:
             c.setAlphaF(float(parts[3]))
         return c
     return QColor(s)
+
+
+def is_opaque(value: str) -> bool:
+    """Does this token cover what is behind it completely?
+
+    The ambient field asks this, and it is the whole basis of its frame
+    budget. AmbientGlow is the bottom widget in the shell, so an update()
+    there dirties the full window and Qt repaints every NON-OPAQUE widget
+    above it, bottom-up — 15.7ms of an 18.5ms frame, 10.9 of it the
+    14-card grid. But the card tiers are `rgba(22, 24, 29, 1.0)` in dark
+    and `rgba(255, 255, 255, 1.0)` in light: the wash is not visible
+    through a card in either theme, and all 10.9ms of that repaint is
+    spent on pixels the user cannot see.
+
+    So the glow culls those regions (AmbientGlow.set_occluders). Deciding
+    which surfaces qualify is exactly this question, and it is asked of
+    the TOKEN rather than answered by a hardcoded list of widget names —
+    a list would be a second copy of the palette's opacity decisions,
+    free to disagree with it the first time a surface is re-tinted. The
+    content well (0.55) and the sidebar (0.60) are translucent BY DESIGN;
+    the wash showing through them is the effect. They must never end up
+    on the cull list, and with this they cannot: nobody has to remember,
+    because nobody is asked.
+
+    Hex tokens ('#rrggbb') have no alpha channel and are opaque.
+    """
+    return to_qcolor(value).alphaF() >= 1.0
+
+
+#: The fraction of a glass surface's height its translucent top sheen
+#: covers. glass_fill's default, named so the ambient field can ask how far
+#: down a card the wash still shows (see opaque_core) instead of repeating
+#: the number.
+GLASS_SHEEN_STOP = 0.13
+
+#: A rounded rect of radius r contains the axis-aligned rect inset by
+#: r*(1 - 1/sqrt(2)) — the point where the inset corner touches the arc.
+#: Anything less clips the corner; the full radius would be correct too but
+#: throws away most of the surface, and the whole value of occlusion is
+#: area.
+_CORNER_INSET = 1.0 - 0.7071067811865476
+
+
+def opaque_core(rect: QRect, radius: int,
+                sheen_stop: float = GLASS_SHEEN_STOP) -> QRect:
+    """The sub-rect of a glass surface that genuinely covers what's behind
+    it — what AmbientGlow is allowed to treat as an occluder.
+
+    A card is NOT opaque over its whole rect, in either theme, and both
+    exceptions are visible if you get them wrong:
+
+    ROUNDED CORNERS. Qt's opacity contract is per-rect, and the corners
+    outside the radius are not painted by the QSS fill at all — the drop
+    shadow is what lives there. Hence the corner inset above.
+
+    THE SHEEN. glass_fill's top stop is `card_sheen`, which is translucent
+    in BOTH themes — rgba(255,255,255,0.045) dark, rgba(255,255,255,0.9)
+    light. So the top `sheen_stop` of every card is a partial veil the wash
+    shows through, not a cover. Culling it would delete the stars from a
+    band across the top of all fourteen cards, which is exactly the kind of
+    bug that looks like "the particles are flickering" rather than like a
+    geometry error.
+
+    Returns a null QRect when nothing is left to claim (a card shorter than
+    its own sheen band), which callers can simply skip.
+    """
+    inset = int(math.ceil(radius * _CORNER_INSET))
+    top = max(inset, int(math.ceil(rect.height() * sheen_stop)) + 1)
+    core = QRect(rect.left() + inset, rect.top() + top,
+                 rect.width() - 2 * inset, rect.height() - top - inset)
+    return core if core.isValid() and not core.isEmpty() else QRect()
 
 
 def blend(base: str, tint: str) -> str:
@@ -97,7 +169,7 @@ def _parse_color(value: str) -> tuple[int, int, int, float]:
     return r, g, b, 1.0
 
 
-def glass_fill(t: dict, base: str, sheen_stop: float = 0.13) -> str:
+def glass_fill(t: dict, base: str, sheen_stop: float = GLASS_SHEEN_STOP) -> str:
     """The one frosted-glass gradient every translucent surface in the app
     shares: a top sheen highlight falling into a flat base tone. Cards, the
     Welcome hero banner and dialog panels all call this with their own base

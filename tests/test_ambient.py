@@ -13,6 +13,7 @@ cached pixmap and blitted, instead of three smooth-scaled blits per frame.
 """
 from __future__ import annotations
 
+import math
 import time
 
 import pytest
@@ -121,7 +122,12 @@ class TestDensity:
         far = [p for p in by_dim if p["dim"] == by_dim[0]["dim"]]
         near = [p for p in by_dim if p["dim"] == by_dim[-1]["dim"]]
         assert max(p["spd"] for p in far) <= min(p["spd"] for p in near)
-        assert max(p["px"] for p in far) <= min(p["px"] for p in near)
+        # ...and smaller, in BOTH themes' sprite tables. Light carries its
+        # own wider spans (see _STAR_SPAN_MUL); a multiplier that inverted
+        # the tier ordering would put the far stars in front.
+        for key in ("px_dark", "px_light"):
+            assert max(p[key] for p in far) <= min(p[key] for p in near), (
+                f"{key} does not increase with depth tier")
 
     def test_star_textures_are_shared_not_per_star(self, window):
         """The density is affordable because stars are quantised onto a
@@ -133,6 +139,133 @@ class TestDensity:
         assert len(glow._star_cache) <= 16, (
             f"{len(glow._star_cache)} star textures cached — sizes are no "
             "longer quantised")
+
+
+# ============================================================
+#  STAR VISIBILITY — solved against the worst covering surface
+# ============================================================
+#: The translucent surfaces a star is actually seen THROUGH, per theme, as
+#: (label, rgb, alpha). Taken from the tokens themselves: `overlay` is the
+#: content well, `panel` the sidebar. Nobody ever sees a star against the
+#: bare canvas — the wash is the bottom widget in the shell.
+_VEILS = {
+    "dark":  [("content well", (5, 6, 10), 0.45),
+              ("sidebar", (18, 20, 26), 0.55)],
+    "light": [("content well", (242, 242, 247), 0.55),
+              ("sidebar", (255, 255, 255), 0.60)],
+}
+_CANVAS = {"dark": (11, 13, 17), "light": (242, 242, 247)}
+
+
+def _srgb_to_lab(rgb):
+    def lin(c):
+        c /= 255.0
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (lin(v) for v in rgb)
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = (0.2126 * r + 0.7152 * g + 0.0722 * b)
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+    def f(t):
+        return t ** (1 / 3) if t > 0.008856 else (7.787 * t + 16 / 116)
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+
+def _delta_e(a, b):
+    return math.sqrt(sum((x - y) ** 2
+                         for x, y in zip(_srgb_to_lab(a), _srgb_to_lab(b))))
+
+
+def _over(src, alpha, dst):
+    return tuple(s * alpha + d * (1 - alpha) for s, d in zip(src, dst))
+
+
+def _mean_star_delta_e(glow, theme: str, tier_index: int, veil) -> float:
+    """Area-weighted mean dE of one star of `tier_index`, composited over
+    the canvas and then seen through `veil` — the number the eye actually
+    integrates for a 4-16px dot."""
+    _, vrgb, valpha = veil
+    canvas = _CANVAS[theme]
+    base = _over(vrgb, valpha, canvas)
+    star = (38, 50, 120) if theme == "light" else (200, 214, 255)
+    pmax = glow._STAR_PMAX[theme]
+
+    share, (r_lo, r_hi), _spd, dim = glow._PARTICLE_TIERS[tier_index]
+    radius = (r_lo + r_hi) / 2.0
+    span = max(4, round(radius * glow._STAR_SPAN_MUL[theme]) * 2)
+
+    def sprite_alpha(t):
+        # the _star_pixmap gradient: 1.0 @ 0.0, 0.42 @ 0.30, 0.0 @ 1.0
+        if t >= 1.0:
+            return 0.0
+        if t <= 0.30:
+            return 1.0 + (0.42 - 1.0) * (t / 0.30)
+        return 0.42 * (1.0 - (t - 0.30) / 0.70)
+
+    total = 0.0
+    count = 0
+    half = span / 2.0
+    for yy in range(span):
+        for xx in range(span):
+            dx, dy = xx + 0.5 - half, yy + 0.5 - half
+            alpha = pmax * dim * sprite_alpha(math.hypot(dx, dy) / half)
+            lit = _over(vrgb, valpha, _over(star, alpha, canvas))
+            total += _delta_e(lit, base)
+            count += 1
+    return total / count
+
+
+@pytest.mark.parametrize("tier_index", [0, 1, 2])
+def test_light_stars_carry_the_same_weight_as_dark(window, tier_index):
+    """A star is never seen against the bare canvas — it is seen through
+    the content well (0.55) or the sidebar (0.60), which eat 45-60% of its
+    delta before it reaches the eye. Light was tuned against the canvas
+    anyway, so it shipped at 60-65% of dark's weight: the far tier, 46% of
+    the whole field, measured 0.83 dE through the sidebar, under the ~1.0
+    just-noticeable threshold. That is not a subtle effect, it is an
+    absent one, and it is why light mode read as having no particles.
+
+    Light is solved TO DARK rather than to a number of its own — the two
+    modes have to read as one field in different light, and dark is the
+    one that was already right. Measured through each theme's OWN worst
+    covering surface, so the comparison is like-for-like.
+    """
+    glow = window._glow
+    dark = min(_mean_star_delta_e(glow, "dark", tier_index, veil)
+               for veil in _VEILS["dark"])
+    light = min(_mean_star_delta_e(glow, "light", tier_index, veil)
+                for veil in _VEILS["light"])
+    assert light >= dark * 0.9, (
+        f"tier {tier_index}: light stars measure {light:.2f} dE through "
+        f"their worst covering surface against dark's {dark:.2f} — light "
+        "is back to being solved against the bare canvas")
+    assert light <= dark * 1.35, (
+        f"tier {tier_index}: light stars measure {light:.2f} dE against "
+        f"dark's {dark:.2f} — the field is louder in light than in dark, "
+        "which reads as speckle on paper rather than as atmosphere")
+
+
+def test_every_light_star_clears_the_just_noticeable_threshold(window):
+    """The floor, stated directly: a star nobody can see is not ambience.
+    ~1.0 dE is the classic JND; the far tier shipped at 0.83."""
+    glow = window._glow
+    for tier_index in range(len(glow._PARTICLE_TIERS)):
+        worst = min(_mean_star_delta_e(glow, "light", tier_index, veil)
+                    for veil in _VEILS["light"])
+        assert worst >= 1.0, (
+            f"light tier {tier_index} measures {worst:.2f} dE through its "
+            "worst covering surface — below the just-noticeable threshold")
+
+
+def test_dark_star_weight_is_untouched(window):
+    """Light was the bug; dark was the reference. A change that 'fixes'
+    light by also moving dark has re-tuned the mode that was correct."""
+    glow = window._glow
+    assert glow._STAR_PMAX["dark"] == 0.34
+    assert glow._STAR_SPAN_MUL["dark"] == 3.0
 
 
 def test_the_light_wash_tints_the_paper_without_dyeing_it(window, qapp):

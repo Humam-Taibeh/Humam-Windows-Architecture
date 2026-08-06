@@ -1,4 +1,51 @@
 # -*- mode: python ; coding: utf-8 -*-
+#
+#  PULSE — PyInstaller build recipe.
+#
+#  ONEDIR, NOT ONEFILE (v10.3). This used to pass a.binaries/a.datas
+#  straight into EXE(), which produces a single self-extracting executable.
+#  For an INSTALLED application that is the wrong shape, for two reasons
+#  that only appear once it ships:
+#
+#    1. A onefile build re-extracts the ENTIRE bundle — PySide6, Qt's
+#       plugins, the whole PowerShell engine — into %TEMP%\_MEIxxxxxx on
+#       every single launch, then deletes it on exit. That is seconds of
+#       cold start the user pays each time, for nothing, on a tool whose
+#       whole promise is "one launcher".
+#
+#    2. It puts the engine in a user-writable directory. utils/resources.py
+#       documents this exact hazard: with _MEIPASS under %TEMP%, the
+#       "bundled" root ladder resolved to %TEMP%, so %TEMP%\src\backend\
+#       core.ps1 became a candidate location for the script Pulse runs
+#       ELEVATED. Any process running as the user could write it.
+#
+#  Onedir puts _MEIPASS inside the install directory — which the Inno Setup
+#  script installs to Program Files, i.e. somewhere an unelevated process
+#  cannot write. Launch is a plain exec with no extraction at all.
+#
+#  Build:  pyinstaller main.spec      ->  dist/PULSE/PULSE.exe
+#  The installer (installer/pulse.iss) packages that directory wholesale.
+
+import os
+import re
+
+# PyInstaller 6.x does NOT inject these into the spec namespace the way it
+# does Analysis/EXE/COLLECT — a spec that uses them without this import
+# fails with a bare NameError several minutes into the build.
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo,
+    VarStruct, VSVersionInfo,
+)
+
+# The version resource is stamped from the SAME `VERSION` file the GUI and
+# the engine read (see src/utils/version.py). Windows wants a 4-tuple of
+# integers, so the three-component release version gains a trailing 0.
+_here = os.path.abspath(os.getcwd())
+with open(os.path.join(_here, 'VERSION'), encoding='utf-8-sig') as _fh:
+    APP_VERSION = _fh.read().strip()
+if not re.fullmatch(r'\d+\.\d+\.\d+', APP_VERSION):
+    raise SystemExit(f'VERSION is {APP_VERSION!r}; expected MAJOR.MINOR.PATCH')
+_v = tuple(int(p) for p in APP_VERSION.split('.')) + (0,)
 
 a = Analysis(
     ['src/frontend/main.py'],
@@ -19,9 +66,17 @@ a = Analysis(
         # can still drop extra .json files next to the exe — that
         # directory is searched ahead of this one.
         ('playbooks', 'playbooks'),
+        # The single version source (utils/version.py reads it, and so does
+        # core.ps1 via ..\..\VERSION). It has to land at the BUNDLE ROOT:
+        # that is what makes the engine's one relative path resolve in both
+        # the checkout and the bundle. Without this entry both fall back to
+        # their hardcoded literal and the app silently misreports itself
+        # the first time VERSION changes.
+        ('VERSION', '.'),
     ],
     hiddenimports=[
         'utils.helpers',
+        'utils.version',
         'frontend.theme',
         'frontend.animations',
         'frontend.menu_structure',
@@ -38,13 +93,50 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# ============================================================
+#  WINDOWS VERSION RESOURCE
+# ============================================================
+# The exe shipped with NO version resource at all, so its Properties tab
+# was blank, SmartScreen and AV heuristics had nothing to weigh, and the
+# updater had no authoritative version to compare an installed build
+# against. Every string here is derived from `VERSION`; none is a literal.
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=_v, prodvers=_v,
+        mask=0x3F, flags=0x0,
+        OS=0x40004,        # VOS_NT_WINDOWS32
+        fileType=0x1,      # VFT_APP
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo([
+            StringTable('040904B0', [      # US English, Unicode
+                StringStruct('CompanyName', 'Humam Taibeh'),
+                StringStruct('FileDescription',
+                             'PULSE — Windows configuration and repair'),
+                StringStruct('FileVersion', APP_VERSION),
+                StringStruct('InternalName', 'PULSE'),
+                StringStruct('LegalCopyright',
+                             'Copyright (c) Humam Taibeh. MIT License.'),
+                StringStruct('OriginalFilename', 'PULSE.exe'),
+                StringStruct('ProductName', 'PULSE'),
+                StringStruct('ProductVersion', APP_VERSION),
+            ]),
+        ]),
+        VarFileInfo([VarStruct('Translation', [0x0409, 1200])]),
+    ],
+)
+
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    name='Pulse',
+    # ONEDIR: the binaries and datas are collected alongside the exe by
+    # COLLECT below rather than embedded in it. exclude_binaries=True is
+    # what makes that split; without it this silently reverts to onefile.
+    exclude_binaries=True,
+    name='PULSE',
+    version=version_info,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -86,4 +178,20 @@ exe = EXE(
     # user who asked for them — see Initialize-UserHiveTargeting in
     # src/backend/modules/00-Foundation.ps1 for what goes wrong when an
     # elevated session belongs to a different account than the desktop.
+)
+
+# ============================================================
+#  COLLECT — the installable directory
+# ============================================================
+# Produces dist/PULSE/ containing PULSE.exe plus _internal/ (Qt, PySide6,
+# the Python runtime) and the data trees declared above. installer/pulse.iss
+# packages this whole directory; nothing else is needed at runtime.
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,          # same reasoning as EXE: see the note there
+    upx_exclude=[],
+    name='PULSE',
 )

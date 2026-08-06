@@ -28,7 +28,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor, QCursor, QDesktopServices, QFont, QFontMetrics,
     QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient,
-    QTextCursor, QTextLayout, QTextOption,
+    QRegion, QTextCursor, QTextLayout, QTextOption,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
@@ -1593,6 +1593,31 @@ class GlassCard(QFrame):
         # property worth relying on.
         self._sync_height_step()
 
+    # -- ambient occlusion ------------------------------------
+    def opaque_core(self, t: dict) -> QRect:
+        """The part of this card that completely covers the ambient wash,
+        in card-local coordinates — or a null QRect if none of it does.
+
+        Asked by PulseApp._sync_ambient_occluders so the field can skip
+        repainting under it (see AmbientGlow.set_occluders for what that
+        buys). The card answers rather than the shell, because the two
+        exclusions are facts about how a card paints itself:
+
+        THE FEATURED CARD COVERS NOTHING. Its QSS is `background:
+        transparent` — it paints its own squircle, aurora edge and state
+        wash in _paint_featured, with continuous corners that a rounded
+        rect would peek out of. Claiming its rect would cull stars from a
+        region that is genuinely see-through at the edges, on the one
+        card the eye is most drawn to.
+
+        THE REST COVER THEIR OPAQUE CORE. theme.opaque_core trims the
+        rounded corners and the translucent top sheen; see the reasoning
+        there.
+        """
+        if self._featured or not TH.is_opaque(t["card"]):
+            return QRect()
+        return TH.opaque_core(self.rect(), TH.RADIUS["card"])
+
     # -- theming ----------------------------------------------
     def apply_theme(self, t: dict):
         # re-resolve first: the module palette differs per theme (v10)
@@ -1999,9 +2024,440 @@ class GlassCard(QFrame):
 
 
 # ============================================================
+#  AMBIENT SIMULATION — the field's physics, renderer-agnostic
+# ============================================================
+class _AmbientSimulation:
+    """Everything about the ambient field that is not drawing.
+
+    A PLAIN MIXIN, not a QObject: it is inherited alongside QWidget by the
+    raster field (AmbientGlow) and alongside QOpenGLWidget by the GPU one
+    (ambient_gl.GLAmbientField), and a second QObject base would make that
+    metaclass-illegal.
+
+    It exists so the two renderers cannot disagree about where a star is.
+    Only the DRAWING differs between them; the seeded scatter, the
+    per-tier drift, the wrap, the sway, the twinkle phase, the pointer
+    bias, the deferral rules and the frame governor are one implementation
+    used by both. Visual parity is then a property of the code rather than
+    something to re-verify every time either renderer changes.
+
+    It is also nearly free to share: integrating 126 particles is
+    microseconds. The ambient field's cost was never this arithmetic — it
+    was the full-window repaint the arithmetic used to trigger.
+    """
+
+    # ================================================================
+    #  FRAME RATE — matched to the signal, and governed under load
+    # ================================================================
+    # These are the RASTER path's numbers and the reasoning behind them is
+    # in AmbientGlow's own docstring. The GPU path overrides the cadence
+    # (it can afford the display's refresh rate); everything else here —
+    # the governor, the deferral, the tiers — applies to both.
+    _INTERVAL_MS = 100         # base cadence, locked to _LAYER_MS
+
+    #: Ceiling the governor may back off to when the GUI thread is busy
+    #: (~4.5 fps). Past this the orb drift starts to visibly step.
+    _MAX_INTERVAL_MS = 220
+
+    #: Timer lateness, in ms, treated as "the main thread is contended".
+    #: MEASURED against a genuinely idle app: median 9.9ms, p99 17.8 —
+    #: Windows' ~15.6ms timer granularity, not contention. At 6.0 this
+    #: fired on 77% of idle frames and pinned the field at 4.4fps.
+    _LATE_MS = 30.0
+
+    #: Depth tiers, far to near: (share of the field, radius range in px,
+    #: upward speed range in fractions of height/sec, alpha scale). The
+    #: three numbers move TOGETHER on purpose — a far star that is small
+    #: and dim but fast reads as a bug, not as distance.
+    _PARTICLE_TIERS = (
+        (0.46, (0.5, 1.0), (0.005, 0.013), 0.52),
+        (0.34, (1.0, 1.7), (0.013, 0.026), 0.78),
+        (0.20, (1.7, 2.7), (0.026, 0.044), 1.00),
+    )
+    _N_PARTICLES = 126
+
+    # ================================================================
+    #  STAR WEIGHT — solved against the WORST SURFACE COVERING IT
+    # ================================================================
+    # The field used to carry one peak alpha for both themes (0.34), tuned
+    # against the bare canvas. But nobody sees a star against the bare
+    # canvas: the wash sits at the BOTTOM of the shell, so every star is
+    # viewed through whatever translucent surface is over it — the content
+    # well and the sidebar, which are `rgba(242,242,247,0.55)` and
+    # `rgba(255,255,255,0.60)` in light. Those cut a star's delta by 45%
+    # and 60% before it ever reaches the eye.
+    #
+    # That is the same mistake the palette's AA floor made and fixed (see
+    # the text_faint note in theme.py): a value solved against the surface
+    # you WISH it sat on, when the surface it actually lands on is darker,
+    # paler or busier. The fix is the same too — solve against the worst
+    # case, so it clears everywhere rather than only where it was measured.
+    #
+    # MEASURED, in CIE76 dE through the worst covering surface in each
+    # theme, at full twinkle (mean over the whole sprite, which is what the
+    # eye integrates for a 4-16px dot):
+    #
+    #                  dark (shipped)      light BEFORE      light NOW
+    #     far tier         1.28               0.83             1.41
+    #     mid tier         2.04               1.32             2.11
+    #     near tier        2.59               1.68             2.72
+    #
+    # Light was running at 60-65% of dark's weight — the far tier, 46% of
+    # the whole field, sat UNDER the ~1.0 dE just-noticeable threshold.
+    # That is not "subtle", it is absent, and it is why the mode read as
+    # having no particles rather than as having quiet ones.
+    #
+    # DARK IS UNTOUCHED. Light is solved TO dark's proven weight rather
+    # than to a number of its own: the two modes must read as the same
+    # field seen in different light, and dark is the one that was already
+    # right.
+    _STAR_PMAX = {"dark": 0.34, "light": 0.55}
+
+    # Core radius -> texture span multiplier. Light needs a WIDER sprite at
+    # the same peak, and the asymmetry is real rather than a fudge: light
+    # ink on a dark canvas ADDS luminance, which the eye detects at far
+    # smaller areas than the equivalent subtraction of a dark mote on
+    # paper. Raising alpha alone would have produced hard little dots
+    # instead of light; the extra tail is what keeps them reading as
+    # atmosphere at the higher weight.
+    _STAR_SPAN_MUL = {"dark": 3.0, "light": 3.6}
+
+    #: v1.0 pointer-biased drift: the orb field leans almost imperceptibly
+    #: toward the cursor. GAIN is the fraction of the widget dimension one
+    #: full lean can move an orb (the bias caps at +/-0.5, so the real
+    #: maximum is GAIN/2 ~ 2%). Set to 0.0 to neuter the behaviour.
+    _POINTER_GAIN = 0.04
+
+    #: Orb peak alpha, per theme. LIGHT IS A WHISPER and must stay one:
+    #: measured off a real render, the v10 peaks dragged the canvas to a
+    #: visible lavender (#ECEAF4) where the palette specifies the neutral
+    #: system grey #F2F2F7. tests/test_ambient.py pins this at <= 6.0 mean
+    #: channel spread; the regression that shipped twice measures ~10.4.
+    _ORB_PEAKS = {
+        "light": (0.055, 0.05, 0.045, 0.035, 0.03),
+        "dark":  (0.17, 0.12, 0.11, 0.095, 0.085),
+    }
+
+    def __init__(self, gl: bool = False):
+        self._gl = gl
+        self._c1 = QColor("#7d9bff")
+        self._c2 = QColor("#a184ff")
+        self._c3 = QColor("#e784ff")
+        self._light = False
+        self._radius = 24   # must track shell_qss's floating corner radius
+        self._t = 0.0
+        # v9.5: paused while the window is minimized — hideEvent doesn't
+        # fire on minimize (Qt keeps children "visible"), so the loop would
+        # otherwise keep ticking behind a minimized window. Driven by
+        # suspend()/resume() from PulseApp.changeEvent.
+        self._suspended = False
+        self._frozen = False
+        self._particles: list[dict] = []
+        self._build_particles()
+
+        # Independent drift/breathe parameters per orb: (base_x_frac,
+        # base_y_frac, drift_speed, drift_phase, breathe_speed,
+        # breathe_phase, parallax, scale). Parallax is the orb's share of
+        # the pointer bias — mixed signs so the field shears gently around
+        # the cursor instead of sliding as one rigid sheet, which is what
+        # sells depth at a 2% displacement. `scale` is the orb's size as a
+        # fraction of the full blob: the last two are the DEEP layer —
+        # smaller, dimmer and leaning hardest on the pointer, so they read
+        # as sitting behind the foreground wash instead of alongside it.
+        self._orb_motion = [
+            (0.16, -0.06, 0.055, 0.0, 0.42, 0.0,  1.00, 1.00),
+            (1.02,  0.28, 0.041, 2.1, 0.37, 1.3, -0.65, 1.00),
+            (0.70,  1.06, 0.048, 4.0, 0.31, 3.4,  0.45, 1.00),
+            (0.44,  0.34, 0.067, 1.1, 0.53, 2.2, -1.40, 0.52),
+            (0.86,  0.72, 0.073, 5.2, 0.61, 0.7,  1.25, 0.44),
+        ]
+        # Smoothed pointer bias, each axis in [-0.5, 0.5]; eased toward the
+        # cursor in _tick and back to neutral when it leaves the window.
+        self._bias_x = 0.0
+        self._bias_y = 0.0
+
+        # SINGLE-SHOT, re-armed at the end of every tick. A repeating timer
+        # queues its next timeout while the previous frame is still being
+        # painted, so under load the ambient stacks up behind itself; a
+        # chained single-shot cannot, and it is what lets the interval be
+        # re-derived per frame (see _arm / _govern).
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(self._INTERVAL_MS)
+        self._timer.timeout.connect(self._tick)
+        self._interval = float(self._INTERVAL_MS)
+        self._armed_at = 0.0
+        #: perf_counter deadline before which ambient frames are skipped —
+        #: see defer(). Not a suspend: the timer keeps ticking so the field
+        #: resumes on its own with no bookkeeping at the call site.
+        self._defer_until = 0.0
+
+        #: Opaque surfaces currently covering the wash, in LOCAL coords —
+        #: see set_occluders(). Empty until the shell reports its layout,
+        #: which is the correct default: culling nothing is always visually
+        #: right and merely costs what the field cost before.
+        self._occluders: list[QRect] = []
+        self._visible_region: QRegion | None = None
+
+    # -- particle field ---------------------------------------
+    def _build_particles(self):
+        rng = random.Random(7)   # fixed seed → stable, reproducible scatter
+        self._particles = []
+        for share, (r_lo, r_hi), (s_lo, s_hi), dim in self._PARTICLE_TIERS:
+            for _ in range(round(self._N_PARTICLES * share)):
+                radius = rng.uniform(r_lo, r_hi)
+                # Core radius -> full texture span (core + glow tail),
+                # snapped to an even pixel so the star can be blitted at
+                # its texture's native size. A handful of buckets cover the
+                # whole 0.5-2.7px radius range; see _star_pixmap for why
+                # that quantisation is what makes the density affordable.
+                #
+                # BOTH THEMES' SPANS ARE PRECOMPUTED (see _STAR_SPAN_MUL),
+                # rather than derived per frame. The star's scatter, drift
+                # and twinkle phase are all seeded once and must survive a
+                # theme toggle unchanged — recomputing spans at paint time
+                # would work, but rebuilding the field to change one
+                # multiplier would silently reseed every particle and make
+                # the toggle teleport the whole sky.
+                self._particles.append({
+                    "x": rng.random(),
+                    "y": rng.random(),
+                    "px_dark": max(
+                        4, round(radius * self._STAR_SPAN_MUL["dark"]) * 2),
+                    "px_light": max(
+                        4, round(radius * self._STAR_SPAN_MUL["light"]) * 2),
+                    "spd": rng.uniform(s_lo, s_hi),  # frac of height / s, up
+                    # A whisper of lateral drift, signed per star: without
+                    # it 126 stars rising on exactly parallel tracks read
+                    # as a texture being scrolled rather than as a field.
+                    "sway": rng.uniform(-0.10, 0.10),
+                    "tw": rng.random() * math.tau,   # twinkle phase
+                    "tws": rng.uniform(0.5, 1.4),    # twinkle speed
+                    "dim": dim,                      # tier alpha scale
+                })
+
+    # -- theme ------------------------------------------------
+    def _absorb_theme(self, t: dict):
+        """The part of a theme change both renderers share."""
+        self._c1 = QColor(t["accent"])
+        self._c2 = QColor(t["accent2"])
+        self._c3 = QColor(t["accent3"])
+        self._light = t["name"] == "light"
+
+    def orb_peaks(self) -> tuple:
+        return self._ORB_PEAKS["light" if self._light else "dark"]
+
+    def orb_colors(self) -> tuple:
+        # c1, c3, c2, c2, c3 — the deep pair reuses the outer two hues so
+        # the back layer reads as the same aurora seen further away.
+        return (self._c1, self._c3, self._c2, self._c2, self._c3)
+
+    def star_color(self) -> QColor:
+        return (QColor(38, 50, 120) if self._light
+                else QColor(200, 214, 255))
+
+    # ============================================================
+    #  OCCLUSION — never dirty a pixel that something opaque covers
+    # ============================================================
+    def set_occluders(self, rects: list[QRect]):
+        """Declare the opaque surfaces currently covering the wash.
+
+        Callers pass the rects of surfaces whose fill token is opaque (see
+        PulseApp._sync_ambient_occluders, which asks theme.is_opaque
+        rather than deciding for itself). Coordinates are this widget's.
+
+        THE INSET IS THE CALLER'S JOB and it matters in both directions:
+        Qt's opacity contract is per-rect, so a rounded card is only truly
+        opaque INSIDE its corner radius, and its drop shadow spills
+        OUTSIDE its rect entirely. Over-claiming here culls a star that
+        should have been visible — the one failure mode of this whole
+        mechanism that a user can actually see, since under-claiming just
+        costs what the field cost before.
+        """
+        clean = [r for r in rects if r.isValid() and not r.isEmpty()]
+        if clean == self._occluders:
+            return                  # layout churn without a real change
+        self._occluders = clean
+        self._visible_region = None
+        self._update_exposed()
+
+    def _exposed(self) -> QRegion:
+        """The widget's rect minus everything opaque on top of it."""
+        if self._visible_region is None:
+            region = QRegion(self.rect())
+            for rect in self._occluders:
+                region -= QRegion(rect)
+            self._visible_region = region
+        return self._visible_region
+
+    def _update_exposed(self, area: QRegion | QRect | None = None):
+        """update(), clipped to what is actually visible.
+
+        Every repaint request goes through here. A bare self.update() in a
+        renderer is a bug: it re-dirties the card grid and hands back the
+        frame budget this exists to protect. The GPU renderer overrides
+        it — a GL surface is redrawn whole or not at all, and its cost does
+        not scale with dirty area.
+        """
+        region = self._exposed()
+        if area is not None:
+            region = region.intersected(
+                area if isinstance(area, QRegion) else QRegion(area))
+        if not region.isEmpty():
+            self.update(region)
+
+    # -- frame governor ---------------------------------------
+    def _arm(self, delay_ms: float | None = None):
+        """Schedule the next ambient frame. `_armed_at` is what the next
+        tick measures its own lateness against."""
+        delay = self._interval if delay_ms is None else delay_ms
+        self._armed_at = time.perf_counter()
+        self._timer.start(int(max(1.0, delay)))
+
+    def _govern(self, late_ms: float):
+        """Re-derive the interval from how contended the GUI thread is.
+
+        Lateness is used rather than the frame's own paint cost because it
+        is the honest signal: a tick that fires on time proves the thread
+        had room for it, and one that fires late proves something more
+        important was queued ahead — a click, a relayout, a resize step,
+        a task's console output. Backing off then is what keeps the wash
+        from competing with the work the user is actually waiting on, and
+        it needs no knowledge of what that work was.
+
+        Both directions are deliberately partial. Backing off by HALF the
+        overshoot keeps one hiccup from slamming the field to the ceiling
+        it then has to crawl back from; recovering 10% a frame eases back
+        in over ~1s, where snapping straight to the base rate after one
+        quiet frame would oscillate against the very load it just yielded
+        to.
+        """
+        if late_ms > self._LATE_MS:
+            self._interval = min(float(self._MAX_INTERVAL_MS),
+                                 self._interval + late_ms * 0.5)
+        else:
+            self._interval = max(float(self._INTERVAL_MS),
+                                 self._interval * 0.90)
+
+    def defer(self, ms: float):
+        """Skip ambient frames for `ms` — the GUI thread is about to do
+        something the user is watching.
+
+        This is NOT suspend(): the timer keeps running and the field picks
+        itself back up unaided, so a caller can fire and forget.
+
+        Extends an existing deferral rather than shortening it, so
+        overlapping callers cannot cut each other short.
+        """
+        self._defer_until = max(self._defer_until,
+                                time.perf_counter() + max(0.0, ms) / 1000.0)
+
+    def suspend(self):
+        """Pause while the window is minimized, or for the duration of an
+        OS move/resize loop (PulseApp.changeEvent and the WM_ENTERSIZEMOVE
+        handler both call this).
+
+        Also FREEZES the composited orb layer: during a resize the widget
+        is a different size on every step, which would otherwise rebuild a
+        full-window layer per step — the most expensive thing possible in
+        the middle of a drag. While frozen the existing layer is stretched
+        to fit; it is a soft gradient, so scaling it is visually free."""
+        self._suspended = True
+        self._frozen = True
+        self._timer.stop()
+
+    def resume(self):
+        """Resume after restore. No-ops while the widget is hidden (the
+        next showEvent will start it) so we never animate an off-screen
+        surface."""
+        self._suspended = False
+        if self._frozen:
+            self._frozen = False
+            self._on_thaw()
+            self._visible_region = None   # ...rebuild against the final rect
+            self._update_exposed()
+        if self.isVisible() and not self._timer.isActive():
+            self._interval = float(self._INTERVAL_MS)
+            self._arm()
+
+    def _on_thaw(self):
+        """Renderer hook: drop whatever was frozen for the drag."""
+
+    def _tick(self):
+        now = time.perf_counter()
+        # Elapsed is MEASURED, never assumed. The interval is not a
+        # constant (see _govern), and the drift/twinkle/wrap maths below
+        # integrate against it — reading it off the nominal interval would
+        # make the field speed up and slow down with the frame rate, which
+        # is the one artefact a variable rate could actually introduce.
+        elapsed = ((now - self._armed_at) if self._armed_at
+                   else self._interval / 1000.0)
+        late = max(0.0, elapsed * 1000.0 - self._interval)
+        deferred = now < self._defer_until
+        # The governor reads lateness as "adding a repaint here would
+        # hurt". A DEFERRED tick is not adding one, so its lateness says
+        # nothing about the wash — and letting it speak ratcheted the field
+        # to the ceiling on the way through every page transition, which it
+        # then crawled back from for ~1s AFTER the switch had finished.
+        if not deferred:
+            self._govern(late)
+
+        dt = min(max(elapsed, 0.001), self._MAX_INTERVAL_MS / 1000.0)
+        self._t += dt
+        # Pointer bias: one QCursor.pos() read per tick (microseconds), no
+        # event filters — the glow is mouse-transparent, so polling here is
+        # the only way to see the cursor at all. The smoothing factor is
+        # SOLVED from dt rather than hard-coded, so the lean takes 0.6s of
+        # wall time at any frame rate.
+        ease = 1.0 - math.exp(-dt / 0.6)
+        tx = ty = 0.0
+        w, h = self.width(), self.height()
+        if w > 0 and h > 0:
+            pos = self.mapFromGlobal(QCursor.pos())
+            fx = pos.x() / w - 0.5
+            fy = pos.y() / h - 0.5
+            if -0.55 <= fx <= 0.55 and -0.55 <= fy <= 0.55:
+                tx = max(-0.5, min(0.5, fx))
+                ty = max(-0.5, min(0.5, fy))
+        self._bias_x += (tx - self._bias_x) * ease
+        self._bias_y += (ty - self._bias_y) * ease
+        for pt in self._particles:
+            pt["y"] -= pt["spd"] * dt
+            if pt["y"] < -0.03:
+                pt["y"] += 1.06   # wrap back to just below the bottom edge
+            # Sway is integrated, not sampled: a star that drifts sideways
+            # keeps whatever ground it gained, so identical seeds do not
+            # snap back into their starting columns every cycle.
+            pt["x"] += pt["sway"] * dt * 0.02
+            if pt["x"] < -0.03:
+                pt["x"] += 1.06
+            elif pt["x"] > 1.03:
+                pt["x"] -= 1.06
+
+        if deferred:
+            # SIMULATE, DON'T PAINT. Everything above is arithmetic over
+            # 126 particles and five orbs — microseconds. The cost this is
+            # deferred for is the PAINT. Skipping the maths with it was
+            # free to do and expensive to have done: motion used to resume
+            # from where it stopped rather than from where it should be, so
+            # the wash visibly stalled and then continued.
+            #
+            # Re-armed at the NORMAL cadence rather than for the whole
+            # remaining deferral, so dt stays small and accurate across a
+            # long defer instead of arriving as one lump the clamp above
+            # would truncate.
+            self._arm(min(self._interval,
+                          (self._defer_until - now) * 1000.0))
+            return
+
+        self._update_exposed()
+        self._arm()
+
+
+# ============================================================
 #  AMBIENT GLOW — static brand-pair light wash behind the shell
 # ============================================================
-class AmbientGlow(QWidget):
+class AmbientGlow(_AmbientSimulation, QWidget):
     """A LIVING canvas behind the sidebar/content frames (lowest widget in
     the shell's z-order, transparent to mouse events).
 
@@ -2065,61 +2521,11 @@ class AmbientGlow(QWidget):
     # — 3.8 px per frame at this interval, on a sprite whose soft glow tail
     # is ~16 px wide. Twinkle tops out at 1.4 Hz and is still sampled seven
     # times a cycle.
-    _INTERVAL_MS = 100         # base cadence, locked to _LAYER_MS
-
-    #: Ceiling the governor may back off to when the GUI thread is busy
-    #: (~4.5 fps). Past this the orb drift starts to visibly step.
-    _MAX_INTERVAL_MS = 220
-
-    #: Timer lateness, in ms, treated as "the main thread is contended".
-    #: A tick that fires this far past its due time means real work was
-    #: queued ahead of it, so the ambient yields ground instead of piling
-    #: another full-window repaint onto the backlog. Below it, the interval
-    #: eases back toward _INTERVAL_MS.
-    #:
-    #: MEASURED, not guessed, and the measurement is the whole point: a
-    #: threshold under the noise floor makes the governor ratchet itself to
-    #: the ceiling and stay there. Sampling a pinned 100 ms cadence over 8 s
-    #: of a genuinely idle app (blocking event loop, not a poll loop) gives
-    #: a lateness of median 9.9 ms, p99 17.8, max 17.8 — Windows' ~15.6 ms
-    #: timer granularity plus the odds of the tick's own repaint straddling
-    #: the next expiry. None of that is contention. At 6.0 it fired on 77%
-    #: of idle frames and pinned the field at 4.4 fps; at 30 it fires on
-    #: 0.0% of them, while the stalls worth reacting to (a resize drag, a
-    #: task streaming console output) sit far above it.
-    _LATE_MS = 30.0
-
-    #: Depth tiers, far to near: (share of the field, radius range in px,
-    #: upward speed range in fractions of height/sec, alpha scale). The
-    #: three numbers move TOGETHER on purpose — a far star that is small
-    #: and dim but fast reads as a bug, not as distance.
-    _PARTICLE_TIERS = (
-        (0.46, (0.5, 1.0), (0.005, 0.013), 0.52),
-        (0.34, (1.0, 1.7), (0.013, 0.026), 0.78),
-        (0.20, (1.7, 2.7), (0.026, 0.044), 1.00),
-    )
-    _N_PARTICLES = 126
-    # v1.0 pointer-biased drift: the orb field leans almost imperceptibly
-    # toward the cursor. GAIN is the fraction of the widget dimension one
-    # full lean can move an orb (the bias itself caps at ±0.5, so the real
-    # maximum offset is GAIN/2 ≈ 2% — ~29px on a 1440px window). Set to
-    # 0.0 to neuter the behaviour entirely; nothing else changes.
-    _POINTER_GAIN = 0.04
-
     def __init__(self, parent: QWidget):
-        super().__init__(parent)
+        QWidget.__init__(self, parent)
+        _AmbientSimulation.__init__(self, gl=False)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._c1 = QColor("#7d9bff")
-        self._c2 = QColor("#a184ff")
-        self._c3 = QColor("#e784ff")
-        self._light = False
-        self._radius = 24   # must track shell_qss's floating corner radius
-        self._t = 0.0
-        # v9.5: paused while the window is minimized — hideEvent doesn't fire on
-        # minimize (Qt keeps children "visible"), so the loop would otherwise
-        # keep ticking at ~28fps behind a minimized window. Driven by
-        # suspend()/resume() from PulseApp.changeEvent.
-        self._suspended = False
+        # -- raster-only caches ----------------------------------
         self._orb_cache: dict = {}
         # Composited orb layer — see _ensure_layer. Exactly ONE pixmap is
         # ever retained (never a dict keyed on size), which is what keeps
@@ -2127,86 +2533,43 @@ class AmbientGlow(QWidget):
         self._layer: QPixmap | None = None
         self._layer_t = -1e9
         self._layer_size = (0, 0)
-        self._frozen = False
         self._star_cache: dict = {}
-        self._particles: list[dict] = []
-        self._build_particles()
 
-        # Independent drift/breathe parameters per orb: (base_x_frac,
-        # base_y_frac, drift_speed, drift_phase, breathe_speed,
-        # breathe_phase, parallax, scale). Parallax is the orb's share of
-        # the pointer bias — mixed signs so the field shears gently around
-        # the cursor instead of sliding as one rigid sheet, which is what
-        # sells depth at a 2% displacement. `scale` is the orb's size as a
-        # fraction of the full blob: the last two are the DEEP layer —
-        # smaller, dimmer (see the peaks in _build_layer) and leaning
-        # hardest on the pointer, so they read as sitting behind the
-        # foreground wash instead of alongside it.
-        self._orb_motion = [
-            (0.16, -0.06, 0.055, 0.0, 0.42, 0.0,  1.00, 1.00),
-            (1.02,  0.28, 0.041, 2.1, 0.37, 1.3, -0.65, 1.00),
-            (0.70,  1.06, 0.048, 4.0, 0.31, 3.4,  0.45, 1.00),
-            (0.44,  0.34, 0.067, 1.1, 0.53, 2.2, -1.40, 0.52),
-            (0.86,  0.72, 0.073, 5.2, 0.61, 0.7,  1.25, 0.44),
-        ]
-        # Smoothed pointer bias, each axis in [-0.5, 0.5]; eased toward the
-        # cursor in _tick and back to neutral when it leaves the window.
-        self._bias_x = 0.0
-        self._bias_y = 0.0
+    def _on_thaw(self):
+        """The drag is over: rebuild the layer once, at the final size."""
+        self._layer = None
 
-        # SINGLE-SHOT, re-armed at the end of every tick. A repeating timer
-        # queues its next timeout while the previous frame is still being
-        # painted, so under load the ambient stacks up behind itself; a
-        # chained single-shot cannot, and it is what lets the interval be
-        # re-derived per frame (see _arm / _governed_interval).
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.setInterval(self._INTERVAL_MS)
-        self._timer.timeout.connect(self._tick)
-        self._interval = float(self._INTERVAL_MS)
-        self._armed_at = 0.0
-        #: perf_counter deadline before which ambient frames are skipped —
-        #: see defer(). Not a suspend: the timer keeps ticking so the field
-        #: resumes on its own with no bookkeeping at the call site.
-        self._defer_until = 0.0
-
-    # -- particle field ---------------------------------------
-    def _build_particles(self):
-        rng = random.Random(7)   # fixed seed → stable, reproducible scatter
-        self._particles = []
-        for share, (r_lo, r_hi), (s_lo, s_hi), dim in self._PARTICLE_TIERS:
-            for _ in range(round(self._N_PARTICLES * share)):
-                radius = rng.uniform(r_lo, r_hi)
-                # Core radius -> full texture span (core + glow tail),
-                # snapped to an even pixel so the star can be blitted at
-                # its texture's native size. Six buckets cover the whole
-                # 0.5-2.7px radius range; see _star_pixmap for why that
-                # quantisation is what makes the density affordable.
-                span = max(4, round(radius * 6.0 / 2.0) * 2)
-                self._particles.append({
-                    "x": rng.random(),
-                    "y": rng.random(),
-                    "px": span,
-                    "spd": rng.uniform(s_lo, s_hi),  # frac of height / s, upward
-                    # A whisper of lateral drift, signed per star: without
-                    # it 126 stars rising on exactly parallel tracks read
-                    # as a texture being scrolled rather than as a field.
-                    "sway": rng.uniform(-0.10, 0.10),
-                    "tw": rng.random() * math.tau,   # twinkle phase
-                    "tws": rng.uniform(0.5, 1.4),    # twinkle speed
-                    "dim": dim,                      # tier alpha scale
-                })
-
-    # -- theming ----------------------------------------------
+    # ============================================================
+    #  OCCLUSION — never dirty a pixel that something opaque covers
+    # ============================================================
+    # THE FRAME BUDGET IS AN AREA BUDGET. This widget's cost was never its
+    # own paint (2.7ms); it is the full-window repaint an update() here
+    # forces through every translucent surface above it — 18.5ms all told,
+    # of which the 14-card grid alone is 10.9ms.
+    #
+    # But the cards are OPAQUE in both themes (theme.is_opaque: the tiers
+    # are rgba(...,1.0) in dark and light alike). The wash has never been
+    # visible through one. So that 10.9ms bought nothing at all: Qt was
+    # repainting fourteen glass surfaces, with their bevels, sheens, glow
+    # frames and hairlines, underneath pixels that then completely
+    # overwrote them.
+    #
+    # Subtracting those rects from the dirty region is what makes a 60Hz
+    # star layer affordable, and it makes the EXISTING 10Hz orb layer
+    # cheaper on its way past. Nothing about the wash changes visually —
+    # by construction, since the only pixels dropped are ones no one could
+    # see.
     def apply_theme(self, t: dict):
-        self._c1 = QColor(t["accent"])
-        self._c2 = QColor(t["accent2"])
-        self._c3 = QColor(t["accent3"])
-        self._light = t["name"] == "light"
+        self._absorb_theme(t)
         self._orb_cache.clear()   # colors changed — cached orb pixmaps stale
         self._star_cache.clear()  # ...the star texture is per-theme too...
         self._layer = None        # ...and so is the composited orb layer
-        self.update()
+        # NOT the occluders: which surfaces are opaque is a per-theme fact
+        # (theme.is_opaque reads the new token set), so the shell re-reports
+        # them after a toggle. Clearing them here would cull nothing for one
+        # frame — correct, but it would hide a stale-occluder bug behind a
+        # theme switch, which is where such a bug is least likely to be found.
+        self._update_exposed()
 
     def set_radius(self, radius: int):
         """Match the shell's corner radius. Now always 0: the shell is an
@@ -2216,7 +2579,7 @@ class AmbientGlow(QWidget):
         rounded corner if the shell ever regains one.)"""
         if radius != self._radius:
             self._radius = radius
-            self.update()
+            self._update_exposed()
 
     # -- lifecycle: animate only while visible AND not minimized --------
     def showEvent(self, e):
@@ -2228,180 +2591,15 @@ class AmbientGlow(QWidget):
         super().hideEvent(e)
         self._timer.stop()
 
-    # -- frame governor ---------------------------------------
-    def _arm(self, delay_ms: float | None = None):
-        """Schedule the next ambient frame. `_armed_at` is what the next
-        tick measures its own lateness against."""
-        delay = self._interval if delay_ms is None else delay_ms
-        self._armed_at = time.perf_counter()
-        self._timer.start(int(max(1.0, delay)))
-
-    def _govern(self, late_ms: float):
-        """Re-derive the interval from how contended the GUI thread is.
-
-        Lateness is used rather than the frame's own paint cost because it
-        is the honest signal: a tick that fires on time proves the thread
-        had room for it, and one that fires late proves something more
-        important was queued ahead — a click, a relayout, a resize step,
-        a task's console output. Backing off then is what keeps the wash
-        from competing with the work the user is actually waiting on, and
-        it needs no knowledge of what that work was.
-
-        Both directions are deliberately partial. Backing off by HALF the
-        overshoot keeps one hiccup — a dialog opening, a single slow
-        repaint — from slamming the field to the ceiling it then has to
-        crawl back from; sustained contention still reaches it within a few
-        frames. Recovering 10% a frame eases back in over ~1 s, where
-        snapping straight to the base rate after one quiet frame would
-        oscillate against the very load it just yielded to.
-        """
-        if late_ms > self._LATE_MS:
-            self._interval = min(float(self._MAX_INTERVAL_MS),
-                                 self._interval + late_ms * 0.5)
-        else:
-            self._interval = max(float(self._INTERVAL_MS),
-                                 self._interval * 0.90)
-
-    def defer(self, ms: float):
-        """Skip ambient frames for `ms` — the GUI thread is about to do
-        something the user is watching.
-
-        This is NOT suspend(): the timer keeps running and the field picks
-        itself back up unaided, so a caller can fire and forget. It exists
-        because the ambient field's cost is not its own paint (2.7 ms) but
-        the full-window repaint it forces through every translucent surface
-        above it (18.5 ms all told, 10.9 of that the card grid) — landing
-        one of those in the middle of a page transition is what put a
-        visible hitch in navigation. Deferring is free: the wash is
-        ambient, and nobody has ever looked at it during a click.
-
-        Extends an existing deferral rather than shortening it, so
-        overlapping callers cannot cut each other short.
-        """
-        self._defer_until = max(self._defer_until,
-                                time.perf_counter() + max(0.0, ms) / 1000.0)
-
-    def suspend(self):
-        """Pause the animation while the window is minimized, or for the
-        duration of an OS move/resize loop (PulseApp.changeEvent and the
-        WM_ENTERSIZEMOVE handler both call this).
-
-        Also FREEZES the composited orb layer: during a resize the widget
-        is a different size on every step, which would otherwise invalidate
-        the cache and rebuild a full-window layer per step — the most
-        expensive thing possible in the middle of a drag. While frozen the
-        existing layer is simply stretched to fit (see paintEvent); it is a
-        soft gradient, so scaling it is visually free, and the correct
-        layer is rebuilt once on resume."""
-        self._suspended = True
-        self._frozen = True
-        self._timer.stop()
-
-    def resume(self):
-        """Resume after restore. No-ops while the widget is hidden (the next
-        showEvent will start it) so we never animate an off-screen surface."""
-        self._suspended = False
-        if self._frozen:
-            self._frozen = False
-            self._layer = None      # rebuild once, at the final size
-            self.update()
-        if self.isVisible() and not self._timer.isActive():
-            self._interval = float(self._INTERVAL_MS)
-            self._arm()
-
-    def _tick(self):
-        now = time.perf_counter()
-        # Elapsed is MEASURED, never assumed. The interval is no longer a
-        # constant (see _govern), and the drift/twinkle/wrap maths below all
-        # integrate against it — reading it off the nominal interval would
-        # make the field speed up and slow down with the frame rate, which
-        # is the one artefact a variable rate could actually introduce.
-        # Clamped so a stalled frame (a modal, a resize drag) resumes rather
-        # than teleporting the whole field.
-        elapsed = (now - self._armed_at) if self._armed_at else self._interval / 1000.0
-        late = max(0.0, elapsed * 1000.0 - self._interval)
-        deferred = now < self._defer_until
-        # The governor reads lateness as "adding a repaint here would hurt".
-        # A DEFERRED tick is not adding one, so its lateness says nothing
-        # about the wash — and letting it speak ratcheted the field to the
-        # 220 ms ceiling on the way through every page transition, which it
-        # then crawled back from at 10% a frame for ~1 s AFTER the switch
-        # had finished. That recovery crawl was most of "the particles choke
-        # when I change tabs" on a slow machine.
-        if not deferred:
-            self._govern(late)
-
-        dt = min(max(elapsed, 0.001), self._MAX_INTERVAL_MS / 1000.0)
-        self._t += dt
-        # Pointer bias: one QCursor.pos() read per tick (microseconds), no
-        # event filters — the glow is mouse-transparent, so polling here is
-        # the only way to see the cursor at all. The target eases via an
-        # exponential lerp with a ~0.6 s time constant: the field drifts
-        # after the cursor, never chases it. Outside the window the target
-        # is neutral, so the lean releases just as gently. The bias is
-        # consumed by _build_layer at its own 100 ms cadence.
-        #
-        # The smoothing factor is SOLVED from dt rather than hard-coded, so
-        # the lean takes 0.6 s of wall time at any frame rate. It used to be
-        # a flat 0.055 per frame, which silently meant "0.6 s, but only at
-        # 36 ms frames" — under the governor that would have stretched the
-        # same lean to seconds on exactly the busy machines where a slow
-        # parallax reads as the app lagging behind the mouse.
-        ease = 1.0 - math.exp(-dt / 0.6)
-        tx = ty = 0.0
-        w, h = self.width(), self.height()
-        if w > 0 and h > 0:
-            pos = self.mapFromGlobal(QCursor.pos())
-            fx = pos.x() / w - 0.5
-            fy = pos.y() / h - 0.5
-            if -0.55 <= fx <= 0.55 and -0.55 <= fy <= 0.55:
-                tx = max(-0.5, min(0.5, fx))
-                ty = max(-0.5, min(0.5, fy))
-        self._bias_x += (tx - self._bias_x) * ease
-        self._bias_y += (ty - self._bias_y) * ease
-        for pt in self._particles:
-            pt["y"] -= pt["spd"] * dt
-            if pt["y"] < -0.03:
-                pt["y"] += 1.06   # wrap back to just below the bottom edge
-            # Sway is integrated, not sampled: a star that drifts sideways
-            # keeps whatever ground it gained, so identical seeds do not
-            # snap back into their starting columns every cycle.
-            pt["x"] += pt["sway"] * dt * 0.02
-            if pt["x"] < -0.03:
-                pt["x"] += 1.06
-            elif pt["x"] > 1.03:
-                pt["x"] -= 1.06
-
-        if deferred:
-            # SIMULATE, DON'T PAINT. Everything above this line is
-            # arithmetic over 126 particles and five orbs — microseconds.
-            # The cost this widget is deferred for is the PAINT: an
-            # update() here dirties the full window and Qt repaints every
-            # translucent surface above it, 18.5 ms of which 10.9 is the
-            # card grid. Skipping the paint is the whole saving; skipping
-            # the maths with it was free to do and expensive to have done.
-            #
-            # It used to return BEFORE integrating, so a page switch cost
-            # the field 150 ms of wall time (360 ms the first time a module
-            # is opened, which also pays the cascade). Motion resumed from
-            # where it stopped rather than from where it should be, so the
-            # wash visibly stalled and then continued — read from the
-            # outside as the orbs freezing and snapping back to the start
-            # of their path. The field is now exactly where continuous
-            # motion puts it when the transition ends; it simply was not
-            # drawn for a frame or two in between.
-            #
-            # Re-armed at the NORMAL cadence rather than for the whole
-            # remaining deferral, so dt stays small and accurate across a
-            # long defer instead of arriving as one lump that the clamp
-            # above would truncate — a 360 ms first-visit defer would lose
-            # 140 ms of drift to that clamp in a single jump.
-            self._arm(min(self._interval,
-                          (self._defer_until - now) * 1000.0))
-            return
-
-        self.update()
-        self._arm()
+    def resizeEvent(self, e):
+        """The exposed region is derived from rect() and the occluders, so
+        it dies with either. The shell re-reports occluders after the
+        relayout a resize triggers; dropping the cache here means the frame
+        in between culls against the NEW rect rather than a region that
+        stops short of the new edges (which would leave the wash missing
+        along the grown side until the next layout pass)."""
+        super().resizeEvent(e)
+        self._visible_region = None
 
     # -- orb pixmap cache -------------------------------------
     # v10: orbs are rendered ONCE at a fixed texture size and SCALED on
@@ -2553,9 +2751,10 @@ class AmbientGlow(QWidget):
         # step with their size. In light mode they are dimmer again,
         # because the whole light wash has to stay under the "tint the
         # paper, don't dye it" ceiling above.
-        peaks = ((0.055, 0.05, 0.045, 0.035, 0.03) if self._light
-                 else (0.17, 0.12, 0.11, 0.095, 0.085))
-        colors = (self._c1, self._c3, self._c2, self._c2, self._c3)
+        # Read from the shared tables (_ORB_PEAKS / orb_colors) rather than
+        # restated here, so the GPU renderer cannot drift from this one.
+        peaks = self.orb_peaks()
+        colors = self.orb_colors()
         amp_x, amp_y = w * 0.06, h * 0.06
         for i, (bx, by, dspd, dph, bspd, bph, par, scale) in enumerate(self._orb_motion):
             dx = math.sin(self._t * dspd * math.tau + dph) * amp_x
@@ -2613,21 +2812,39 @@ class AmbientGlow(QWidget):
         p.setOpacity(1.0)
 
         # --- particle field: slow upward drift + twinkle -----------------
+        # Peak alpha and sprite span are per-theme and SOLVED, not picked —
+        # see _STAR_PMAX / _STAR_SPAN_MUL for the measurement and why light
+        # needs both a higher alpha and a wider tail to land at the same
+        # perceived weight as dark.
         if self._light:
-            base = QColor(38, 50, 120)     # deep indigo motes, clearly readable
-            pmax = 0.34                     # on porcelain
+            base = QColor(38, 50, 120)     # deep indigo motes on porcelain
+            span_key = "px_light"
+            pmax = self._STAR_PMAX["light"]
         else:
             base = QColor(200, 214, 255)   # cool starlight on deep space
-            pmax = 0.34
+            span_key = "px_dark"
+            pmax = self._STAR_PMAX["dark"]
         # Most repaints here are small regions dirtied by the animations
         # sitting above this widget, so skip the stars outside them — Qt
         # would clip the drawing anyway, but not the per-particle trig and
-        # texture lookup that precede it. The margin covers the glow's
-        # tail, which reaches ~3x the star's core radius.
-        dirty = QRectF(e.rect().adjusted(-12, -12, 12, 12))
+        # texture lookup that precede it.
+        #
+        # THE REGION, NOT e.rect(). Since the field culls occluded surfaces
+        # (see set_occluders) its dirty area is routinely a ring of exposed
+        # margins around a block of cards, whose BOUNDING RECT is very
+        # nearly the whole widget — so testing against e.rect() would have
+        # quietly stopped skipping anything at all on exactly the pages
+        # where there is most to skip. Testing the sprite's own rect against
+        # the region also replaces the old ±12px point-margin with the real
+        # footprint, so a star whose glow tail reaches into the dirty area
+        # is drawn even when its centre does not.
+        dirty = e.region()
         for pt in self._particles:
             x, y = pt["x"] * w, pt["y"] * h
-            if not dirty.contains(x, y):
+            span = pt[span_key]
+            if not dirty.intersects(QRect(int(x - span / 2.0) - 1,
+                                          int(y - span / 2.0) - 1,
+                                          span + 2, span + 2)):
                 continue
             tw = 0.5 + 0.5 * math.sin(self._t * pt["tws"] * math.tau + pt["tw"])
             # Twinkle is carried entirely by OPACITY: a star that visibly
@@ -2635,7 +2852,6 @@ class AmbientGlow(QWidget):
             # only brightens reads as atmosphere — and a fixed size is
             # what keeps every blit on the native-size fast path.
             p.setOpacity(pmax * pt["dim"] * (0.22 + 0.78 * tw))
-            span = pt["px"]
             p.drawPixmap(QPointF(x - span / 2.0, y - span / 2.0),
                          self._star_pixmap(base, span))
         p.setOpacity(1.0)

@@ -39,6 +39,20 @@ if _SRC not in sys.path:
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+# --- 3. AMBIENT RENDERER: pinned to raster for the whole suite -----------
+# PulseApp picks its ambient renderer by probing the machine's OpenGL (see
+# ambient_gl.capability), so `window._glow` would otherwise be a different
+# class on a developer's GPU box than on a headless CI runner — and the
+# raster field's contracts (the cached orb layer, the star texture cache,
+# the paint budget) are about a QPainter implementation that the GPU field
+# does not have.
+#
+# A suite whose subject depends on the host's graphics driver is not a
+# regression suite. This pins every test that goes through PulseApp to the
+# raster path; the GPU renderer is covered by tests/test_ambient_gl.py,
+# which constructs it explicitly and skips when there is no usable GL.
+os.environ.setdefault("PULSE_AMBIENT", "raster")
+
 WINDOWS_ONLY = pytest.mark.skipif(
     sys.platform != "win32", reason="Win32 window integration is Windows-only")
 

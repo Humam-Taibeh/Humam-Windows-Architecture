@@ -1203,17 +1203,78 @@ def test_command_palette_entries_are_runnable(qapp):
     assert all(crumb for _, crumb in entries)
 
 
+# ============================================================
+#  VERSION — one source, and every quote of it agrees
+# ============================================================
+def _version_file() -> str:
+    with open(os.path.join(_ROOT, "VERSION"), encoding="utf-8-sig") as handle:
+        return handle.read().strip()
+
+
 def test_frontend_and_backend_report_the_same_version():
-    """Both constants carry a "keep in lockstep" comment and both drifted
+    """Both constants carried a "keep in lockstep" comment and both drifted
     anyway — main.py and core.ps1 sat at 10.0 through the 10.1, 10.2 and
     10.3 releases, so the title bar, the sidebar footer and QApplication
     all reported a version no changelog entry matched. A comment is not a
-    constraint; this is."""
+    constraint; this is.
+
+    Neither is a literal any more (both read `VERSION`), so this now proves
+    the two READ the same thing rather than that two copies happen to
+    match."""
     from frontend.main import APP_VERSION
 
+    assert APP_VERSION == _version_file(), (
+        f"main.py reports {APP_VERSION}, VERSION says {_version_file()} — "
+        "utils/version.py fell back to its literal, which means VERSION "
+        "was not found from the frontend")
+
+
+def test_the_engines_fallback_matches_the_version_file():
+    """core.ps1 reads VERSION but keeps a hardcoded fallback, because
+    $ErrorActionPreference is "Stop" where it reads and an unreadable file
+    would otherwise abort the engine over a banner string.
+
+    A fallback nobody checks is a lie in waiting: it is the value users see
+    in exactly the situation where nothing else can correct it. Pinning it
+    costs one assert and makes the degraded path honest."""
     core = open(os.path.join(_ROOT, "src/backend/core.ps1"),
                 encoding="utf-8-sig").read()
     match = re.search(r'\$Script:ScriptVersion\s*=\s*"([^"]+)"', core)
     assert match, "ScriptVersion was renamed — update this test with it"
-    assert match.group(1) == APP_VERSION, (
-        f"core.ps1 says {match.group(1)}, main.py says {APP_VERSION}")
+    assert match.group(1) == _version_file(), (
+        f"core.ps1's fallback says {match.group(1)}, VERSION says "
+        f"{_version_file()}")
+
+
+def test_the_python_fallback_matches_the_version_file():
+    """Same argument as the engine's fallback, one layer up."""
+    from utils import version as V
+
+    assert V._FALLBACK == _version_file(), (
+        f"utils/version.py falls back to {V._FALLBACK}, VERSION says "
+        f"{_version_file()}")
+
+
+def test_the_version_is_three_components():
+    """Tags are vMAJOR.MINOR.PATCH and the updater compares integer tuples.
+    The repo's own tags (v1.0.0, v6.1.0) are three-component while the app
+    reported two ("10.3"), which is precisely the ragged comparison
+    utils.version.parse exists to normalise. Keeping the source itself
+    three-component means the installer filename, the git tag and the
+    release title are the same string with no reformatting step."""
+    assert re.fullmatch(r"\d+\.\d+\.\d+", _version_file()), (
+        f"VERSION is {_version_file()!r} — releases are tagged v<VERSION>, "
+        "so it must be MAJOR.MINOR.PATCH")
+
+
+def test_the_bundle_ships_the_version_file():
+    """VERSION has to land at the BUNDLE ROOT: utils/version.py resolves it
+    through resources.bundled_roots() (which is _MEIPASS alone when frozen)
+    and core.ps1 finds it at ..\\..\\VERSION from src/backend. Drop the
+    datas entry and both silently fall back to their literals — a frozen
+    build that misreports its own version is exactly the drift this whole
+    mechanism replaced, except now it only reproduces in the shipped
+    artifact."""
+    spec = open(os.path.join(_ROOT, "main.spec"), encoding="utf-8").read()
+    assert re.search(r"\(\s*['\"]VERSION['\"]\s*,\s*['\"]\.['\"]\s*\)", spec), (
+        "main.spec no longer bundles VERSION at the bundle root")

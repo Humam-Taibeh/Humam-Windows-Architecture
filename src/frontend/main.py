@@ -33,7 +33,7 @@ if sys.platform == "win32":
     import ctypes.wintypes  # MSG / RECT for native window hit-testing
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPropertyAnimation, Qt, QThread,
+    QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, Qt, QThread,
     QTimer, Signal,
 )
 from PySide6.QtGui import (
@@ -52,7 +52,7 @@ _SRC_DIR = os.path.dirname(_FRONTEND_DIR)
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from utils import prefs, resources  # noqa: E402
+from utils import prefs, resources, version  # noqa: E402
 from utils.helpers import (  # noqa: E402
     PowerShellTask, SystemPulseSampler, TaskResult, ToastManager, has_battery,
 )
@@ -66,7 +66,7 @@ from frontend.menu_structure import (  # noqa: E402
     hub_items, iter_leaf_items, recurring_days, requires_admin,
 )
 from frontend.widgets import (  # noqa: E402
-    ActivationStatusDialog, ActivityDrawer, AmbientGlow,
+    ActivationStatusDialog, ActivityDrawer,
     BreathingIcon,
     CloseConfirmDialog, CommandPalette, ConfirmDialog, DepthCard,
     ContextMenuDialog, DnsSwitcherDialog, ElidedCaption,
@@ -81,6 +81,7 @@ from frontend.widgets import (  # noqa: E402
     refit_dialog,
 )
 from frontend.playbooks import PlaybookRunner, load_playbooks  # noqa: E402
+from frontend.ambient_gl import make_ambient_field  # noqa: E402
 
 # ============================================================
 #  APP CONSTANTS
@@ -91,10 +92,14 @@ APP_NAME = "PULSE"
 # through v7-v10, then at 10.0 through the 10.1/10.2/10.3 releases — so
 # the title bar, the sidebar footer and QApplication all reported a
 # version no document, changelog entry or bug report matched.
-# KEEP IN LOCKSTEP with $Script:ScriptVersion in src/backend/core.ps1;
-# tests/test_contract.py fails the build if the two drift again.
-APP_VERSION = "10.3"
-APP_CHANNEL = "Beta"   # release channel — rendered as a badge, never in prose
+#
+# NO LONGER A LITERAL HERE. It is read from `VERSION` at the repo root,
+# which core.ps1, the PyInstaller spec, the Inno Setup script and the
+# updater all quote from as well — see utils/version.py for why five
+# copies of one string was the problem and a "keep in lockstep" comment
+# was not the fix.
+APP_VERSION = version.VERSION
+APP_CHANNEL = version.CHANNEL   # rendered as a badge, never in prose
 PS1_FILENAME = "core.ps1"
 DEFAULT_TIMEOUT = 900
 
@@ -1431,8 +1436,25 @@ class PulseApp(QMainWindow):
 
         # Created first so later siblings (titlebar/sidebar/content, added
         # below) stack above it — the ambient wash sits behind everything.
-        self._glow = AmbientGlow(self._shell)
+        #
+        # WHICH RENDERER is decided here, once, by probing the machine's
+        # OpenGL (ambient_gl.capability). The GPU field runs the same
+        # simulation at 60fps for 10.9% of one core where the raster field
+        # costs 40.2% at that rate; but a machine with software-emulated GL
+        # (llvmpipe / WARP / GDI generic — RDP sessions, VMs, legacy
+        # drivers) is FASTER on the raster path, so it silently gets that
+        # one. The reason is recorded, never surfaced: a technician on a
+        # remote session should get a smooth app, not a dialog about
+        # OpenGL.
+        self._glow, self._glow_backend = make_ambient_field(self._shell)
         self._glow.apply_theme(t)
+        # Coalescing timer for the occlusion re-sync — see
+        # _queue_occluder_sync. Interval 0 = "next event-loop turn", which
+        # is after Qt has finished the layout pass that moved the cards.
+        self._occluder_sync = QTimer(self)
+        self._occluder_sync.setSingleShot(True)
+        self._occluder_sync.setInterval(0)
+        self._occluder_sync.timeout.connect(self._sync_ambient_occluders)
 
         root = QVBoxLayout(self._shell)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1554,6 +1576,8 @@ class PulseApp(QMainWindow):
             page.task_requested.connect(self.request_task)
             self.pages.append(page)
             self.stack.addWidget(page)
+            self._track_occluders(page)
+        self._track_occluders(self.welcome)
         content.addWidget(self.stack, 1)
 
         # -- Activity drawer (v7): auto-collapsing live output ----
@@ -1600,6 +1624,10 @@ class PulseApp(QMainWindow):
         self.setAutoFillBackground(True)
         self._shell.setStyleSheet(TH.shell_qss(t))
         self._glow.apply_theme(t)
+        # Which surfaces are opaque is a per-theme fact — GlassCard.opaque_core
+        # asks theme.is_opaque of the NEW token set — so the cull list has to
+        # be re-derived, not carried over.
+        self._queue_occluder_sync()
         self._sidebar.setStyleSheet(TH.sidebar_qss(t))
         self._content.setStyleSheet(TH.content_qss(t))
         self._search_btn.setStyleSheet(TH.sidebar_search_qss(t))
@@ -1673,6 +1701,7 @@ class PulseApp(QMainWindow):
             # smooth 150 ms fade and a fade that drops frames.
             self._glow.defer(PAGE_FADE_MS)
             self.stack.setCurrentIndex(0)
+            self._queue_occluder_sync()
             self.fader.fade_in(self.welcome, rise_px=10)
 
     def open_category(self, index: int):
@@ -1705,12 +1734,20 @@ class PulseApp(QMainWindow):
         # repaints the entire content column.
         self._glow.defer(PAGE_FADE_MS)
         self.stack.setCurrentIndex(index + 1)
+        self._queue_occluder_sync()
         if index in self._revealed:
             return
         self._revealed.add(index)
         self._glow.defer(CASCADE_BUDGET_MS + CASCADE_MS)
         # let the layout place the cards, then run the staggered entrance
         QTimer.singleShot(0, lambda p=page: self.cascade.play(*p.entrance_waves()))
+        # ...and re-sync once it has settled. Cards fade and rise during the
+        # entrance, so mid-cascade they are neither opaque nor where they
+        # will end up. The defer above keeps the wash from painting across
+        # that window at all; this is what puts the occluders back in step
+        # with the cards the moment it reopens.
+        QTimer.singleShot(CASCADE_BUDGET_MS + CASCADE_MS,
+                          self._queue_occluder_sync)
 
     def _select_nav(self, index: int | None):
         for i, btn in enumerate(self._nav_buttons):
@@ -2568,10 +2605,96 @@ class PulseApp(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._glow.setGeometry(self._shell.rect())
+        self._queue_occluder_sync()
         self.toasts.reposition()
         active = QApplication.activeModalWidget()
         if isinstance(active, PulseDialog):
             refit_dialog(active)
+
+    # ============================================================
+    #  AMBIENT OCCLUSION — tell the wash what it is hidden behind
+    # ============================================================
+    # The ambient field's cost is the full-window repaint an update() forces
+    # through every translucent surface above it (~18.5 ms, of which the
+    # 14-card grid is ~10.9). The cards are opaque in both themes, so that
+    # 10.9 ms repainted fourteen glass surfaces underneath pixels that then
+    # completely covered them. Reporting their geometry lets the glow drop
+    # those rects from its dirty region — see AmbientGlow.set_occluders.
+    #
+    # THE SHELL OWNS THIS, NOT THE GLOW, because it is the only thing that
+    # knows what is currently on screen: which page is raised, which cards a
+    # filter left visible, where the scroll sits. The glow is deliberately
+    # ignorant of all of it and simply subtracts what it is handed.
+    def _track_occluders(self, page: QWidget):
+        """Re-sync whenever `page` moves its cards under the wash.
+
+        TWO SIGNALS, AND BOTH ARE NEEDED. `valueChanged` covers scrolling —
+        the cards move, the viewport does not. `rangeChanged` covers
+        everything that changes how much there is to scroll: a column-count
+        relayout, a status filter hiding rows, the drawer opening and
+        shortening the viewport. Between them there is no way to move a card
+        without one of them firing, which is what keeps the cull list from
+        needing a subscription to every future layout feature.
+        """
+        scroll = getattr(page, "_scroll", None)
+        if scroll is None:
+            return
+        bar = scroll.verticalScrollBar()
+        bar.valueChanged.connect(lambda _v: self._queue_occluder_sync())
+        bar.rangeChanged.connect(lambda _lo, _hi: self._queue_occluder_sync())
+
+    def _queue_occluder_sync(self):
+        """Coalesce a re-sync onto the next event-loop turn.
+
+        Everything that moves a card fires several times in a row — a
+        drag-resize per step, a relayout per column change, a filter per
+        keystroke — and each would otherwise walk the widget tree. One
+        restartable timer collapses a burst into a single walk, the same
+        pattern CategoryPage._remeasure uses for the same reason.
+        """
+        self._occluder_sync.start()
+
+    def _sync_ambient_occluders(self):
+        page = self.stack.currentWidget()
+        rects: list[QRect] = []
+        if page is not None:
+            t = self.theme.t
+            glow = self._glow
+            for card in page.findChildren(GlassCard):
+                if not card.isVisible():
+                    continue
+                core = card.opaque_core(t)
+                if core.isNull():
+                    continue
+                # Global coordinates, not mapTo(): the glow is a SIBLING of
+                # the content column, not an ancestor of these cards, so
+                # mapTo() would silently return an unmapped point.
+                origin = glow.mapFromGlobal(card.mapToGlobal(core.topLeft()))
+                rect = QRect(origin, core.size())
+                # A card scrolled past the viewport edge is still
+                # isVisible() — Qt clips it rather than hiding it — so its
+                # geometry extends over content it does not cover. Claiming
+                # that would cull the wash from the header and the page
+                # margins, which is the one failure mode of this mechanism
+                # a user can see.
+                clip = self._viewport_clip(card)
+                if clip is not None:
+                    rect = rect.intersected(clip)
+                if rect.isValid() and not rect.isEmpty():
+                    rects.append(rect)
+        self._glow.set_occluders(rects)
+
+    def _viewport_clip(self, widget: QWidget) -> QRect | None:
+        """The scroll viewport clipping `widget`, in glow coordinates."""
+        node = widget.parentWidget()
+        while node is not None:
+            if isinstance(node, QScrollArea):
+                viewport = node.viewport()
+                origin = self._glow.mapFromGlobal(
+                    viewport.mapToGlobal(viewport.rect().topLeft()))
+                return QRect(origin, viewport.rect().size())
+            node = node.parentWidget()
+        return None
 
     def _sync_window_state(self):
         """Bring every state-dependent visual in line with the window's

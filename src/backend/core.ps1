@@ -154,7 +154,32 @@ if (-not $Task) {
 }
 $ErrorActionPreference = "Stop"
 
-$Script:ScriptVersion = "10.3"   # keep in lockstep with APP_VERSION (src/frontend/main.py)
+# ============================================================
+#  VERSION — read, never declared
+# ============================================================
+# The one copy lives in `VERSION` at the repo root; the GUI, the installer,
+# the PyInstaller spec and the updater all quote the same file. See
+# src/utils/version.py for why this stopped being a literal.
+#
+# ONE RELATIVE PATH COVERS BOTH LAYOUTS. From a checkout this script is
+# <repo>/src/backend/core.ps1, so "..\..\VERSION" is <repo>\VERSION; inside
+# a PyInstaller bundle it is <_MEIPASS>/src/backend/core.ps1 and the same
+# path is <_MEIPASS>\VERSION, which is exactly where main.spec places it.
+#
+# The fallback is not defensive tidiness: $ErrorActionPreference is "Stop"
+# two lines above, so an unreadable file here would abort the engine before
+# a single module loaded — over a string used in a banner. Being
+# approximately right about a version beats refusing to run.
+$Script:ScriptVersion = "10.3.0"
+try {
+    $VersionFile = Join-Path $PSScriptRoot "..\..\VERSION"
+    if (Test-Path -LiteralPath $VersionFile) {
+        $VersionText = (Get-Content -LiteralPath $VersionFile -TotalCount 1 -ErrorAction Stop).Trim()
+        if ($VersionText) { $Script:ScriptVersion = $VersionText }
+    }
+} catch {
+    # keep the fallback — see above
+}
 
 # When invoked with -Task (i.e. from the GUI), there is no console attached
 # for Read-Host to block on. Ask-User, Invoke-WithRetry, Smart-Deploy and
